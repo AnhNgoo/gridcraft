@@ -1,6 +1,6 @@
 # Architecture
 
-> **Last reviewed:** 2026-10-10 · **Last updated:** 2026-10-10 · **Change:** major (created from the code on main; supersedes the local-only plan/architecture.md for committed docs) · **Target:** Microsoft Excel (Microsoft 365)
+> **Last reviewed:** 2026-10-10 · **Last updated:** 2026-10-11 · **Change:** minor (engine building blocks for multi-command actions) · **Target:** Microsoft Excel (Microsoft 365)
 
 How GridCraft is built today. Rules for contributors are in [`AGENTS.md`](../AGENTS.md).
 
@@ -43,6 +43,27 @@ including tests, 2026-10-10.
 5. **Files**: `engine/io.rs` sniffs content (XLSX, XLSB, ODS) before trusting the extension and
    dispatches to `crates/xlsx`; imports that lose data return warnings shown to the user.
 
+## Engine building blocks for multi-command actions
+
+Actions made of many commands (macros, a debugger that runs one step per call) use these parts of
+`Session` and the engine:
+
+- **Undo groups.** `Session::grouped(label, f)` runs `f` as one undo step and rolls every change
+  back if `f` fails; `group_begin`, `group_end` and `group_rollback` do the same across calls.
+  While a group is open on a document, its commands add no undo steps of their own and Undo and
+  Redo are disabled there. Groups nest; the outermost one makes the step.
+- **Recording buffer** (`record.rs`). `Session::start_recording` collects each successful
+  top-level command with the document, sheet and selection it ran in, without secret parameters.
+  Commands run by other commands are not recorded, and the buffer is independent of the journal
+  (Automate › Record Actions still records through the journal).
+- **Document trust.** `DocState::trust` is `Local` for workbooks made in the session and
+  `FromFile` for workbooks opened from a file, and for workbooks that received formulas, formats
+  or validation pasted from one. Active content in a `FromFile` workbook asks before it runs.
+- **Workbook data in hidden names** (`cmd/stash.rs`). An item is split over hidden
+  workbook-scope names `_gc_<key>_0`, `_gc_<key>_1`, … of string literals within Excel's 255- and
+  8,192-character limits, so it survives an xlsx round trip. The older single-name `_sc_<key>`
+  items are read as well.
+
 ## Agent control
 
 - Desktop control channel: `gridcraft --control 7979`, JSON lines on localhost
@@ -68,4 +89,5 @@ rpm, tarball), FreeBSD, and web (WASM; WebGPU or WebGL2). Release workflows in
 
 | Date | Change | Summary |
 |---|---|---|
+| 2026-10-11 | minor | Engine building blocks for multi-command actions: undo groups, recording buffer, document trust, chunked hidden-name storage |
 | 2026-10-10 | major | Created from the code on main: crates, layers, data flow, agent control, known gaps |

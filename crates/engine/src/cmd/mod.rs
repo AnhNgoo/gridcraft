@@ -19,6 +19,7 @@ pub mod sheet;
 pub mod slicer;
 pub mod solver;
 pub mod spelling;
+pub mod stash;
 pub mod view;
 pub mod whatif;
 
