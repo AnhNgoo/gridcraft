@@ -559,6 +559,49 @@ impl Machine {
         self.frames.is_empty()
     }
 
+    /// Starts the time limit again (the debugger gives each action its own).
+    pub fn restart_clock(&mut self) {
+        self.clock = Stopwatch::start();
+    }
+
+    /// The current step for the debugger: its path, kind, command, parameters as they would run
+    /// now, and the Repeat pass.
+    pub fn current_json(&self, wb: &Workbook) -> Json {
+        let Some((path, st)) = self.current() else { return Json::Null };
+        let env = self.env(wb);
+        let mut out = json!({"step": path, "breakpoint": st.breakpoint});
+        if !st.note.is_empty() {
+            out["note"] = json!(st.note);
+        }
+        match &st.kind {
+            StepKind::Command { id, params } => {
+                out["kind"] = json!("command");
+                out["command"] = json!(id);
+                match resolve::resolve_params(params, &env) {
+                    Ok(p) => out["params"] = p,
+                    Err(e) => out["paramsError"] = json!(e.message()),
+                }
+            }
+            StepKind::Repeat { over, of, .. } => {
+                out["kind"] = json!("repeat");
+                out["over"] = json!(resolve::resolve_ref(over, &env).map(|p| resolve::a1(p, &env)).unwrap_or_else(|e| e.message().to_string()));
+                out["of"] = json!(if *of == RepeatOf::Rows { "rows" } else { "columns" });
+            }
+            StepKind::If { cell, .. } => {
+                out["kind"] = json!("if");
+                out["cell"] = json!(resolve::resolve_ref(cell, &env).map(|p| resolve::a1(p, &env)).unwrap_or_else(|e| e.message().to_string()));
+            }
+            StepKind::Stop { message, .. } => {
+                out["kind"] = json!("stop");
+                out["message"] = json!(message);
+            }
+        }
+        if let Some((at, count)) = self.iteration() {
+            out["iteration"] = json!({"at": at, "of": count});
+        }
+        out
+    }
+
     /// The step that runs next, with its path.
     pub fn current(&self) -> Option<(String, &Step)> {
         let f = self.frames.last()?;

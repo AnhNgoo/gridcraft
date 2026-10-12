@@ -1,5 +1,5 @@
 //! Macros: typed command lists that run as one undo step. See [`crate::macros`] for the model,
-//! tokens, runner and policy. Automate scripts (`automate.*`) are a separate, older feature.
+//! tokens, runner, debugger and policy. Automate scripts (`automate.*`) are a separate, older feature.
 
 use serde_json::Value as Json;
 
@@ -24,6 +24,15 @@ pub fn specs() -> Vec<CommandSpec> {
             "{name, inputs?, timeLimit?: seconds} validates the inputs and dry-runs the macro on the workbook (then puts everything back) → {ok, errors?, needsApproval?, inputs, output?, conflicts, footprint}",
             has_doc,
             check
+        ),
+        cmd!(
+            "macro.debug",
+            "Step Into",
+            [],
+            None,
+            "{action: start|step|continue|runTo|stop|state, name? and inputs?, onConflict?, approve? (start), step: path (runTo), keep?: bool (stop), breakpoints?: [\"3\", \"2.1\"], breakpointsOnly?: bool (the list replaces the steps' own breakpoints)} debugs a macro one step at a time as one undo step; edits of the workbooks it touched wait until it finishes or stops (other workbooks stay editable) → {state: paused|finished|stopped|failed, current: {step, kind, command?, params?, iteration?}, lastParams, executed, changed, atBreakpoint?, error?}",
+            has_doc,
+            |s, p| crate::macros::debug::debug(s, p)
         ),
     ]
 }
