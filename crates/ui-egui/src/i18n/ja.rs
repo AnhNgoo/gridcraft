@@ -421,6 +421,8 @@ pub(super) const CORE: &[(&str, &str)] = &[
     ("Run\nMacro", "マクロの実行"),
     ("Macros…", "マクロ…"),
     ("Recording", "記録中"),
+    ("New Macro", "新しいマクロ"),
+    ("Show", "表示"),
 ];
 
 /// English label → Japanese for the dialog, message, Backstage and menu strings beyond [`CORE`].

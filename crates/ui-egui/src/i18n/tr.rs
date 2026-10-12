@@ -418,6 +418,8 @@ pub(super) fn translate(text: &str) -> Option<&'static str> {
         "Macros…" => "Makrolar…",
         "Recording" => "Kaydediliyor",
         "Stop" => "Durdur",
+        "New Macro" => "Yeni Makro",
+        "Show" => "Göster",
         _ => return None,
     })
 }

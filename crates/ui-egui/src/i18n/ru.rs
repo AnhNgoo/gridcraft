@@ -446,6 +446,8 @@ pub(super) fn translate(text: &str) -> Option<&'static str> {
         "Macros…" => "Макросы…",
         "Recording" => "Запись",
         "Stop" => "Остановить",
+        "New Macro" => "Новый макрос",
+        "Show" => "Показать",
         _ => return None,
     })
 }

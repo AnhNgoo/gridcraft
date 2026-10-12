@@ -1,6 +1,6 @@
 # Macros
 
-> **Last updated:** 2026-10-25 · **Change:** minor (recording macros and the management commands; Record Macro takes a name, shortcut and description; the macro interface: Automate › Macros, the Macros and Record Macro dialogs, shortcuts)
+> **Last updated:** 2026-10-25 · **Change:** minor (recording macros and the management commands; Record Macro takes a name, shortcut and description; the macro interface: Automate › Macros, the Macros and Record Macro dialogs, the step editor, shortcuts)
 
 GridCraft macros are typed, declarative lists of commands, not VBA. Every step runs a GridCraft
 command (the same ids the ribbon, CLI and MCP use) or one of three bounded control steps. A macro
@@ -272,12 +272,30 @@ other macros open; a macro that was left out is not in the saved file.
   starts recording and stays off while the name or the letter cannot be used, with the reason
   under the fields. While recording, the button reads Stop Recording, the status bar shows a red
   dot, "Recording · N steps" and Stop, and Use Relative References is locked. Run Macro runs the
-  macro run last (or the only one); its menu lists the recent macros, then every macro.
+  macro run last (or the only one); its menu lists the recent macros, then every macro. New
+  Macro opens the step editor on a new macro.
 - **Macros dialog** (Automate › Macros, View › Macros, Alt+F8). It lists the workbook's macros
   (with their shortcuts), then its Automate scripts, and says when the file carries a VBA project.
-  Run runs the selected macro on the selection or the selected script; Delete asks first; Options
-  sets a macro's shortcut letter and description. The dialog keeps the result of `view.macros`,
+  Run runs the selected macro on the selection or the selected script; Step Into, Edit and Create
+  open the step editor; Delete asks first; Options sets a macro's shortcut letter and description. The dialog keeps the result of `view.macros`,
   as before macros existed.
+- **Step editor.** A resizable window that works on a draft and saves it with `macro.save`. The
+  step list shows each step's number, a breakpoint dot in the gutter (click to set or clear), a
+  category icon, a summary, an error marker and an enabled checkbox; Repeat bodies and If branches
+  are indented under their step, and rows drag to reorder within their list. Add Step opens a
+  command picker (control steps first; commands a macro may never run are left out); Duplicate and
+  Delete act on the selected step. The inspector's Details tab edits the selected step, with
+  reference boxes that take a typed reference or a selection on the grid and switch between a
+  token relative to the example input (Rel) and an absolute reference (Abs); the Inputs tab sets
+  each input's shape, header and column types, and Use current selection as example infers them;
+  the Output tab sets the anchor and what to do when results would land on data.
+- **Debug bar.** Check dry-runs the macro and colours the grid: inputs blue, the cells it writes
+  green, the cells among them that hold data red. Run runs it as one undo step. Step, Continue and
+  Run to Here start the debugger when needed (`macro.debug` with the editor's breakpoints and
+  `breakpointsOnly: true`, so a dot cleared while paused takes effect at once); the current step is
+  selected, its parameters are shown as they will run, and its target is outlined on the grid.
+  Stop asks whether to keep the changes so far or undo them. While a macro is debugged the status
+  bar says "Debugging" with the macro's name, and Show reopens the editor.
 - **Questions.** A macro that needs approval offers Run; a macro whose output would land on data
   offers Overwrite, Shift Down and Shift Right. Each button runs the command again with
   `approve: true` or the chosen `onConflict`.

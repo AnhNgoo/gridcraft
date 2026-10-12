@@ -190,6 +190,8 @@ pub struct GridState {
     pub wheel_zoom: Option<WheelZoom>,
     /// A one-finger touch drag in progress: it pans the sheet instead of selecting.
     pub touch_pan: bool,
+    /// What the macro step editor shows on the grid (Check, debugging).
+    pub macro_overlay: Option<crate::macro_editor::MacroOverlay>,
 }
 
 /// Ctrl+wheel zoom for one (doc uid, sheet). egui eases a notch in over several frames and
@@ -3795,6 +3797,9 @@ pub(crate) fn paint_overlays(
         egui::Tooltip::always_open(ui.ctx().clone(), ui.layer_id(), egui::Id::new("link_tip"), egui::PopupAnchor::Pointer).show(|ui| {
             ui.label(tip);
         });
+    }
+    if let Some(o) = &app.grid.macro_overlay {
+        crate::macro_editor::paint_overlay(p, geo, sh, o);
     }
     // Trace precedents / dependents arrows.
     if let Some(trace) = app.grid.trace.clone()

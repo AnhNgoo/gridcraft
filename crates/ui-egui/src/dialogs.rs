@@ -908,6 +908,7 @@ impl Dialog {
             "journal" => Dialog::custom("journal", "Action Journal", json!({})),
             "macros" => crate::macro_ui::open_dialog(app, &params),
             "recordMacro" => return crate::macro_ui::open_record(app, &params),
+            "macroEditor" => return crate::macro_editor::open(app, &params),
             "statistics" => {
                 let mut d = Dialog::custom("statistics", "Workbook Statistics", json!({}));
                 d.result = app.session.run("review.workbookStatistics", json!({})).ok();
@@ -1250,6 +1251,18 @@ pub(crate) fn build_params(d: &Dialog) -> Json {
 
 pub fn show(app: &mut SheetApp, ctx: &egui::Context) {
     let Some(mut d) = app.dialog.take() else { return };
+    // The macro step editor is a large resizable window of its own.
+    if d.name == "macroEditor" {
+        let mut open = true;
+        crate::macro_editor::window(app, ctx, &mut d, &mut open);
+        if open {
+            app.dialog = Some(d);
+        } else {
+            app.macros.editor = None;
+            app.grid.macro_overlay = None;
+        }
+        return;
+    }
     if d.name == "pasteSpecial" {
         paste_special_shortcuts(&mut d, ctx);
     }

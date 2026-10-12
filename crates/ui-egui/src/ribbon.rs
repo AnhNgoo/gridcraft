@@ -2587,6 +2587,9 @@ fn automate(app: &mut SheetApp, ui: &mut Ui) {
         if r.clicked() && !recording {
             app.macros.relative = !rel;
         }
+        if small_button(ui, Icon::Macro, "New Macro", "Write a macro step by step", false).clicked() {
+            app.open_dialog("macroEditor", json!({}));
+        }
     });
     let macros = crate::macro_ui::macro_list(app);
     let recent: Vec<String> = app.macros.recent.iter().filter(|r| macros.iter().any(|(n, ..)| n.eq_ignore_ascii_case(r))).cloned().collect();

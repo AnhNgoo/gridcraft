@@ -444,6 +444,8 @@ pub(super) fn translate(text: &str) -> Option<&'static str> {
         "Macros…" => "매크로…",
         "Recording" => "기록 중",
         "Stop" => "중지",
+        "New Macro" => "새 매크로",
+        "Show" => "표시",
         _ => return None,
     })
 }

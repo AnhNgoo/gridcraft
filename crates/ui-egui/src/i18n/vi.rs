@@ -420,6 +420,8 @@ pub(super) fn translate(text: &str) -> Option<&'static str> {
         "Macros…" => "Macro…",
         "Recording" => "Đang ghi",
         "Stop" => "Dừng",
+        "New Macro" => "Macro Mới",
+        "Show" => "Hiện",
         _ => return None,
     })
 }

@@ -436,6 +436,8 @@ pub(super) fn translate(text: &str) -> Option<&'static str> {
         "Macros…" => "宏…",
         "Recording" => "正在录制",
         "Stop" => "停止",
+        "New Macro" => "新建宏",
+        "Show" => "显示",
         _ => return None,
     })
 }

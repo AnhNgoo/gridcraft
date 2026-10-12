@@ -154,7 +154,8 @@ a character (e.g. Ctrl+Alt+A for `ä`) never trigger a shortcut, Ctrl+letter one
 Format Cells, Insert Function/Formula Builder, Find and Replace, Go To and Go To Special, Sort,
 Name Manager, Data Validation, Paste Special, Conditional Formatting manager, Page Setup, Goal
 Seek, Scenario Manager, Data Analysis, Forecast Sheet, Macros (macros, Automate scripts and a
-note on a VBA project; Run, Delete, Options) and Record Macro and others exist. Missing or partial: Options,
+note on a VBA project; Run, Step Into, Edit, Create, Delete, Options), Record Macro, the macro step
+editor (Excel's VBA editor has no counterpart here) and others exist. Missing or partial: Options,
 Solver, Power Query editor, Insert Object, Equation editor, Protect/Allow Edit Ranges,
 Workbook Links, Accessibility checker. Like Excel's, every dialog opens centred and moves by its
 title bar, keeping its place while it is open (#1250).
@@ -189,6 +190,7 @@ scrollbar bugs 2–4 · pixel/feel pass against observed Excel 7–12.
 | Date | Change | Summary |
 |---|---|---|
 | 2026-10-25 | minor | Paste Name lays out only the names in view, so a workbook with thousands of names opens it at once; the arrow keys still scroll the chosen name into view. Go To matches a `Sheet2!Name` reference and hides a workbook name behind the active sheet's own name in any case and script (`Größe` = `GRÖSSE`), as formulas do. The two Page Layout view rows are one; the 0.7 in side margin used when Align with Page Margins is off is marked unverified |
+| 2026-10-24 | minor | Macro step editor: step list with breakpoints, drag to reorder and a command picker, an inspector with reference boxes, a debug bar and grid overlays |
 | 2026-10-24 | minor | Automate › Macros group (Record Macro, Use Relative References, Run Macro), recording status in the status bar, Macros dialog with macros beside scripts, Record Macro dialog, Ctrl+Shift+letter macro shortcuts; View › Macros keytips open the dialogs |
 | 2026-10-24 | minor | Ribbon catalog count 275 / 291 → 276 / 292 (View › Macros › Record Macro) |
 | 2026-10-24 | minor | Go To lists the named ranges on every sheet, as Excel's does ("The Go to popup window shows named ranges on every worksheet in your workbook"): a name scoped to another sheet appears as `Sheet2!Name`, and hidden names, constants and formulas are left out. It keeps the references entered (newest first, ten at most), and a double-click on an entry goes there. The Reference box and `edit.goTo` take several names or references separated by commas (`Price, Type`, `B14:C22,F19:G30,H21:H29`) and select them all; `edit.goTo {list: true}` returns the list |

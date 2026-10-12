@@ -984,6 +984,8 @@ pub(super) fn translate(text: &str) -> Option<&'static str> {
         "Run\nMacro" => "Εκτέλεση μακροεντολής",
         "Macros…" => "Μακροεντολές…",
         "Recording" => "Καταγραφή",
+        "New Macro" => "Νέα μακροεντολή",
+        "Show" => "Εμφάνιση",
         _ => return None,
     })
 }

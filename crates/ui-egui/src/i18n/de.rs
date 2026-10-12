@@ -460,6 +460,8 @@ pub(super) fn translate(text: &str) -> Option<&'static str> {
         "Macros…" => "Makros…",
         "Recording" => "Aufzeichnung",
         "Stop" => "Beenden",
+        "New Macro" => "Neues Makro",
+        "Show" => "Anzeigen",
         _ => return None,
     })
 }

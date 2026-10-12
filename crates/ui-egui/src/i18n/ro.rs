@@ -1040,6 +1040,8 @@ pub(super) fn translate(text: &str) -> Option<&'static str> {
         "Run\nMacro" => "Rulare macrocomandă",
         "Macros…" => "Macrocomenzi…",
         "Recording" => "Înregistrare",
+        "New Macro" => "Macrocomandă nouă",
+        "Show" => "Afișare",
         _ => return None,
     })
 }
