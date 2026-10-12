@@ -4,7 +4,7 @@
 use serde_json::json;
 
 use super::{s, v};
-use crate::{EngineError, Session};
+use crate::{EngineError, Session, Trust};
 
 fn undo_labels(s: &Session) -> Vec<String> {
     s.doc().unwrap().undo.iter().map(|e| e.label.clone()).collect()
@@ -292,4 +292,69 @@ fn record_actions_is_unchanged_by_the_buffer() {
     let r = s.execute("automate.recordActions", json!({"stop": true, "name": "Typed"})).unwrap();
     assert_eq!(r["steps"], 1);
     assert!(s.recorder.is_none());
+}
+
+// ---------------------------------------------------------------- trust
+
+fn open_json(s: &mut Session, wb: &gridcraft_model::Workbook) {
+    let bytes = serde_json::to_vec(wb).unwrap();
+    s.execute("file.open", json!({"name": "theirs.json", "base64": crate::io::base64_encode(&bytes)})).unwrap();
+}
+
+fn trust(s: &Session) -> Trust {
+    s.doc().unwrap().trust
+}
+
+#[test]
+fn documents_know_where_they_came_from() {
+    let mut s = s();
+    assert_eq!(trust(&s), Trust::Local);
+    assert!(Trust::Local.allows_code() && !Trust::FromFile.allows_code());
+    s.execute("file.new", json!({"sample": "sales"})).unwrap();
+    assert_eq!(trust(&s), Trust::Local);
+    assert_eq!(s.execute("document.inspect", json!({})).unwrap()["trust"], "local");
+    open_json(&mut s, &gridcraft_model::Workbook::new());
+    assert_eq!(trust(&s), Trust::FromFile);
+    assert_eq!(s.execute("document.inspect", json!({})).unwrap()["trust"], "fromFile");
+    // A second window on the same workbook is the same workbook.
+    s.execute("view.newWindow", json!({})).unwrap();
+    assert_eq!(trust(&s), Trust::FromFile);
+    // Moving and copying sheets inside it changes nothing.
+    s.execute("sheet.move", json!({"to": 0, "copy": true})).unwrap();
+    assert_eq!(trust(&s), Trust::FromFile);
+}
+
+#[test]
+fn pasting_from_a_file_carries_its_trust() {
+    let mut s = s(); // document 0: Local
+    open_json(&mut s, &gridcraft_model::Workbook::new()); // document 1: FromFile
+    let theirs = s.active_index();
+    set(&mut s, "A1", "=1+1");
+    s.execute("edit.copy", json!({"range": "A1"})).unwrap();
+    s.new_workbook();
+    let mine = s.active_index();
+    // Values carry nothing that runs.
+    s.execute("edit.pasteSpecial", json!({"what": "values", "at": "B1"})).unwrap();
+    assert_eq!(trust(&s), Trust::Local);
+    s.execute("edit.paste", json!({"at": "C1"})).unwrap();
+    assert_eq!(trust(&s), Trust::FromFile);
+    assert_eq!(v(&s, "C1").display(), "2");
+
+    // Pasting within a workbook changes nothing, and content from a local workbook leaves the
+    // destination as it was.
+    s.set_active(theirs);
+    s.execute("edit.paste", json!({"at": "A3"})).unwrap();
+    assert_eq!(trust(&s), Trust::FromFile, "pasting within a workbook");
+    s.new_workbook();
+    set(&mut s, "A1", "=3");
+    s.execute("edit.copy", json!({"range": "A1"})).unwrap();
+    s.set_active(mine);
+    s.execute("edit.paste", json!({"at": "D1"})).unwrap();
+    assert_eq!(trust(&s), Trust::FromFile, "still untrusted from the earlier paste");
+    s.new_workbook();
+    s.execute("edit.paste", json!({"at": "D1"})).unwrap();
+    assert_eq!(trust(&s), Trust::Local);
+    assert_eq!(Trust::Local.receive(Trust::FromFile), Trust::FromFile);
+    assert_eq!(Trust::FromFile.receive(Trust::Local), Trust::FromFile);
+    assert_eq!(Trust::Local.receive(Trust::Local), Trust::Local);
 }
