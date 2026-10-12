@@ -9,13 +9,14 @@
 
 use std::collections::{BTreeMap, HashMap, HashSet};
 
-use gridcraft_model::{DefinedName, Macro, Workbook};
+use gridcraft_model::{DefinedName, Macro, Step, StepKind, Workbook};
 use serde_json::{Value as Json, json};
 
 use crate::cmd::stash;
 
 pub mod debug;
 pub mod policy;
+pub mod recorder;
 pub mod resolve;
 pub mod run;
 
@@ -259,6 +260,32 @@ impl Taken {
             n = after;
         }
     }
+}
+
+/// The first free `Macro1`, `Macro2`… name.
+pub fn next_name(wb: &Workbook) -> String {
+    (1..).map(|n| format!("Macro{n}")).find(|n| find(wb, n).is_none()).unwrap_or_else(|| "Macro".into())
+}
+
+/// Every command step of `steps` (inside Repeat and If too), with its path.
+pub fn command_steps(steps: &[Step]) -> Vec<(String, &str, &Json)> {
+    fn walk<'a>(steps: &'a [Step], prefix: &str, out: &mut Vec<(String, &'a str, &'a Json)>) {
+        for (i, st) in steps.iter().enumerate() {
+            let path = if prefix.is_empty() { (i + 1).to_string() } else { format!("{prefix}.{}", i + 1) };
+            match &st.kind {
+                StepKind::Command { id, params } => out.push((path, id.as_str(), params)),
+                StepKind::Repeat { body, .. } => walk(body, &path, out),
+                StepKind::If { then, otherwise, .. } => {
+                    walk(then, &format!("{path}.then"), out);
+                    walk(otherwise, &format!("{path}.else"), out);
+                }
+                StepKind::Stop { .. } => {}
+            }
+        }
+    }
+    let mut out = Vec::new();
+    walk(steps, "", &mut out);
+    out
 }
 
 #[cfg(test)]

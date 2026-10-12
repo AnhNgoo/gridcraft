@@ -327,6 +327,8 @@ pub struct Session {
     pub macro_approvals: std::collections::HashSet<(u64, String)>,
     /// The macro being debugged, between debugger actions.
     pub macro_debug: Option<macros::debug::Debugger>,
+    /// Where the macro recorder started (beside `recorder`, its buffer).
+    pub macro_recording: Option<macros::recorder::RecordingStart>,
     /// Windows hidden with View › Hide.
     pub hidden_windows: Vec<usize>,
     /// Draw tab tool: "" (select), "pen" or "eraser"; pen colour and width.
@@ -462,7 +464,16 @@ impl Session {
             if let Some((doc, sheet, sheet_name, selection)) = place
                 && let Some(rec) = self.recorder.as_mut()
             {
-                rec.push(record::RecordedStep { doc, sheet, sheet_name, selection, id: id.to_string(), params: cmd::journal_params(&params) });
+                // A toggle (Bold) is recorded with the state it set, as Excel records
+                // `Bold = True`: playing it back sets that state rather than flipping it again.
+                let mut params = cmd::journal_params(&params);
+                if let (Ok(Json::Object(r)), Json::Object(p)) = (&result, &mut params)
+                    && !p.contains_key("on")
+                    && let Some(on @ Json::Bool(_)) = r.get("on")
+                {
+                    p.insert("on".into(), on.clone());
+                }
+                rec.push(record::RecordedStep { doc, sheet, sheet_name, selection, id: id.to_string(), params });
             }
             self.journal.push((id.to_string(), cmd::journal_params(&params)));
             if self.journal.len() > 10_000 {
