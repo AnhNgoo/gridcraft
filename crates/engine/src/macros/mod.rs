@@ -14,6 +14,8 @@ use serde_json::{Value as Json, json};
 
 use crate::cmd::stash;
 
+pub mod resolve;
+
 /// The hidden-data key prefix of a stored macro (`macro_<n>`).
 const MACRO_KEY: &str = "macro_";
 
