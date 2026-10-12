@@ -415,6 +415,12 @@ pub(super) const CORE: &[(&str, &str)] = &[
     ("Workbook calculation", "ブックの計算"),
     ("Enable iterative calculation", "反復計算を行う"),
     ("Calculation settings are saved with the workbook.", "計算の設定はブックと共に保存されます。"),
+    ("Record Macro", "マクロの記録"),
+    ("Stop Recording", "記録終了"),
+    ("Use Relative References", "相対参照で記録"),
+    ("Run\nMacro", "マクロの実行"),
+    ("Macros…", "マクロ…"),
+    ("Recording", "記録中"),
 ];
 
 /// English label → Japanese for the dialog, message, Backstage and menu strings beyond [`CORE`].

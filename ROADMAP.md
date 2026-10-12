@@ -2,7 +2,7 @@
 
 **Stage: alpha** · next: beta, ~25 points of "ready for real work" and ~160–240 h away
 
-> **Last reviewed:** 2026-10-11 · **Last updated:** 2026-10-24 · **Change:** minor (macro engine and `macro.*` commands) · **Target:** Microsoft Excel (Microsoft 365)
+> **Last reviewed:** 2026-10-11 · **Last updated:** 2026-10-24 · **Change:** minor (macro engine and `macro.*` commands; macro interface on the Automate tab) · **Target:** Microsoft Excel (Microsoft 365)
 
 GridCraft aims at full Microsoft Excel parity, and at being better in places: faster, open (XLSX
 is the native format), fully scriptable by agents (MCP, control channel, CLI), and on the web.
@@ -86,7 +86,7 @@ collaboration, mobile, AI).
 | Get & Transform, external data, data model | ~15% | ~10% | 60–100 | [target-app-parity.md](docs/target-app-parity.md#feature-areas) |
 | Insert objects (pictures, shapes, ink, SmartArt, equations) | ~55% | ~45% | 25–40 | [target-app-parity.md](docs/target-app-parity.md#feature-areas) |
 | Review, comments, protection, collaboration | ~55% | ~40% | 35–55 | [target-app-parity.md](docs/target-app-parity.md#feature-areas) |
-| Automation (recorded scripts; typed macros in the engine, no interface yet; no VBA) | ~30% | ~20% | 12–20 | [target-app-parity.md](docs/target-app-parity.md#feature-areas) |
+| Automation (recorded scripts; typed macros with a recorder and a Macros dialog; no VBA) | ~30% | ~20% | 12–20 | [target-app-parity.md](docs/target-app-parity.md#feature-areas) |
 
 ## Languages
 
@@ -135,6 +135,7 @@ Ranked; estimates in Opus 5.5 agent-hours. Detail and the full beta-gate list in
 
 | Date | What landed |
 |---|---|
+| 2026-10-24 | Macro interface ([macros.md](docs/macros.md#in-the-window)): an Automate › Macros group (Record Macro, which turns into Stop Recording, Use Relative References, Run Macro with recent macros); "Recording · N steps" with Stop in the status bar; a Record Macro dialog (checked name, free Ctrl+Shift shortcut, description); the Macros dialog lists macros beside Automate scripts and a VBA project, with Run, Delete and Options; Ctrl+Shift+letter macro shortcuts; questions that offer Run, Overwrite, Shift Down or Shift Right |
 | 2026-10-24 | Go To lists the named ranges of every sheet (`Sheet2!Name` for a name scoped to another sheet; hidden names, constants and formulas left out) and the references entered before, a double-click goes to an entry, and the Reference box takes several names or references separated by commas (`Price, Type`, `B14:C22,F19:G30`) |
 | 2026-10-24 | Status bar: a right-click opens a menu that sets which selection statistics show (Average, Count and Sum by default; Numerical Count, Minimum and Maximum are new), kept with the preferences (`view.statusBar`) |
 | 2026-10-24 | Ctrl+Shift+U (Control+Shift+U on a Mac) expands and collapses the formula bar, on the grid and while editing (`view.expandFormulaBar`); on Windows and Linux it used to underline |
@@ -236,6 +237,7 @@ Ranked; estimates in Opus 5.5 agent-hours. Detail and the full beta-gate list in
 
 | Date | Change | Summary |
 |---|---|---|
+| 2026-10-24 | minor | Macro interface on the Automate tab; progress log row |
 | 2026-10-24 | minor | Macro engine and `macro.*` commands; catalog 275 / 291 → 276 / 292 (View › Macros › Record Macro); progress log row |
 | 2026-10-23 | minor | Progress log: accounting negatives in number text |
 | 2026-10-23 | minor | Progress log: INDEX with one index on a 2-D reference is #REF! |

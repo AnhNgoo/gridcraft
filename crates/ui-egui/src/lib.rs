@@ -24,6 +24,7 @@ pub mod i18n;
 pub mod icons;
 pub mod keymap;
 pub mod keytips;
+pub mod macro_ui;
 pub mod outline;
 pub mod panes;
 pub mod paper_view;
@@ -301,6 +302,8 @@ pub struct SheetApp {
     /// A run of Tabs: (doc uid, sheet, column it started in, cell the last Tab landed on).
     /// Enter on that cell goes to the next row in the starting column, as in Excel (#911).
     tab_run: Option<(u64, usize, u32, CellRef)>,
+    /// Automate › Macros: relative recording, recent macros, a macro's question.
+    pub macros: macro_ui::MacroUi,
     pub started: f64,
     /// Every unsaved workbook has been answered for quitting (or `app.quit` asked): the next
     /// window close goes through.
@@ -349,6 +352,7 @@ impl SheetApp {
             clipboard_text_at_copy: None,
             cut_text: None,
             tab_run: None,
+            macros: macro_ui::MacroUi::default(),
             started: now_ms(),
             allow_close: false,
         }
@@ -1326,6 +1330,7 @@ impl SheetApp {
             });
         }
         dialogs::show(self, &ctx);
+        macro_ui::question_box(self, &ctx);
         widgets::message_box(self, &ctx);
         widgets::toast(self, &ctx);
         control::issue_screenshots(self, &ctx);
@@ -1368,6 +1373,7 @@ impl SheetApp {
         let enabled = self.editor.is_none()
             && self.dialog.is_none()
             && self.message.is_none()
+            && self.macros.question.is_none()
             && self.name_box.is_none()
             && !ctx.text_edit_focused()
             && self.grid.context_menu.is_none()

@@ -436,6 +436,14 @@ pub(super) fn translate(text: &str) -> Option<&'static str> {
         "Next sheet" => "다음 시트",
         "All sheets" => "모든 시트",
         "New sheet (⇧F11)" => "새 시트 (⇧F11)",
+        "Macros" => "매크로",
+        "Record Macro" => "매크로 기록",
+        "Stop Recording" => "기록 중지",
+        "Use Relative References" => "상대 참조로 기록",
+        "Run\nMacro" => "매크로 실행",
+        "Macros…" => "매크로…",
+        "Recording" => "기록 중",
+        "Stop" => "중지",
         _ => return None,
     })
 }

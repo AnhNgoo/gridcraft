@@ -438,6 +438,14 @@ pub(super) fn translate(text: &str) -> Option<&'static str> {
         "Next sheet" => "Следующий лист",
         "All sheets" => "Все листы",
         "New sheet (⇧F11)" => "Новый лист (⇧F11)",
+        "Macros" => "Макросы",
+        "Record Macro" => "Запись макроса",
+        "Stop Recording" => "Остановить запись",
+        "Use Relative References" => "Относительные ссылки",
+        "Run\nMacro" => "Выполнить макрос",
+        "Macros…" => "Макросы…",
+        "Recording" => "Запись",
+        "Stop" => "Остановить",
         _ => return None,
     })
 }

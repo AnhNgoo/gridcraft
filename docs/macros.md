@@ -1,6 +1,6 @@
 # Macros
 
-> **Last updated:** 2026-10-25 · **Change:** minor (Record Macro takes a name, shortcut and description; recording: kept steps, the input as it was, text that stays text, size limit, parameters refused; saving needs `replace: true` to replace; kept macros count and keep their names; earlier: recording macros and the management commands)
+> **Last updated:** 2026-10-25 · **Change:** minor (recording macros and the management commands; Record Macro takes a name, shortcut and description; the macro interface: Automate › Macros, the Macros and Record Macro dialogs, shortcuts)
 
 GridCraft macros are typed, declarative lists of commands, not VBA. Every step runs a GridCraft
 command (the same ids the ribbon, CLI and MCP use) or one of three bounded control steps. A macro
@@ -9,7 +9,7 @@ error (a file it already wrote stays), checks where its results will land before
 and does not touch files without permission.
 Agents run macros with `macro.run` like any other command.
 
-This page describes the engine and its commands, not a user interface for macros.
+This page describes the engine, its commands and the macro interface in the window.
 
 
 ## A macro
@@ -264,6 +264,28 @@ than the next open keeps. Their names are taken: saving or renaming a macro to o
 a recording gets a suffix. A macro that is
 damaged or over the limits is left out with one warning, and the rest of the workbook and its
 other macros open; a macro that was left out is not in the saved file.
+
+## In the window
+
+- **Automate › Macros group.** Macros opens the Macros dialog. Record Macro opens the Record
+  Macro dialog (name, Ctrl+Shift shortcut letter, description, Use Relative References); OK
+  starts recording and stays off while the name or the letter cannot be used, with the reason
+  under the fields. While recording, the button reads Stop Recording, the status bar shows a red
+  dot, "Recording · N steps" and Stop, and Use Relative References is locked. Run Macro runs the
+  macro run last (or the only one); its menu lists the recent macros, then every macro.
+- **Macros dialog** (Automate › Macros, View › Macros, Alt+F8). It lists the workbook's macros
+  (with their shortcuts), then its Automate scripts, and says when the file carries a VBA project.
+  Run runs the selected macro on the selection or the selected script; Delete asks first; Options
+  sets a macro's shortcut letter and description. The dialog keeps the result of `view.macros`,
+  as before macros existed.
+- **Questions.** A macro that needs approval offers Run; a macro whose output would land on data
+  offers Overwrite, Shift Down and Shift Right. Each button runs the command again with
+  `approve: true` or the chosen `onConflict`.
+- **Shortcuts.** Ctrl+Shift+letter (⌘⇧letter on a Mac) on the grid runs the macro with that
+  letter. The letters GridCraft uses itself keep their own meaning.
+
+Commands with empty parameters never open these dialogs: `macro.record {}` starts recording
+under the next free name, and the dialogs are opened only from the ribbon, the menus and keys.
 
 ## Automate scripts and VBA
 

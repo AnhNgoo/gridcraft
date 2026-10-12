@@ -981,6 +981,12 @@ pub(super) fn translate(text: &str) -> Option<&'static str> {
         "Report Layout" => "Layout rapporto",
         "Compact" => "Compatto",
         "Tabular" => "Tabulare",
+        "Record Macro" => "Registra macro",
+        "Stop Recording" => "Interrompi registrazione",
+        "Use Relative References" => "Usa riferimenti relativi",
+        "Run\nMacro" => "Esegui macro",
+        "Macros…" => "Macro…",
+        "Recording" => "Registrazione",
         _ => return None,
     })
 }

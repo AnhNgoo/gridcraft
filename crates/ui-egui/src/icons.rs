@@ -135,6 +135,12 @@ pub enum Icon {
     OpenFolder,
     Info,
     Print,
+    /// A macro: a script page with a run arrow.
+    Macro,
+    /// Record Macro: a ring around the recording dot.
+    Record,
+    /// Use Relative References: a cell and an arrow to a cell offset from it.
+    Relative,
 }
 
 struct G<'a> {
@@ -194,11 +200,12 @@ impl G<'_> {
 struct Palette {
     paper: Color32,
     cat: [Color32; 8],
+    recording: Color32,
 }
 
 impl Palette {
     fn of(t: &Tokens) -> Palette {
-        Palette { paper: t.paper, cat: t.cat }
+        Palette { paper: t.paper, cat: t.cat, recording: t.recording }
     }
 
     fn cat(&self, c: Cat) -> Color32 {
@@ -746,6 +753,23 @@ fn paint_with(p: &Painter, rect: Rect, icon: Icon, c: Color32, pal: &Palette) {
             g.line(&[(4.0, 11.5), (1.5, 11.5), (1.5, 5.5), (14.5, 5.5), (14.5, 11.5), (12.0, 11.5)], c, 1.1);
             g.line(&[(4.5, 9.0), (4.5, 14.5), (11.5, 14.5), (11.5, 9.0), (4.5, 9.0)], c, 1.1);
             g.circle(12.3, 7.6, 0.6, Some(c), None);
+        }
+        Icon::Macro => {
+            g.rect(2.5, 1.5, 9.0, 12.0, Some(paper), Some(c));
+            for y in [4.5, 7.0, 9.5] {
+                g.stroke(&[(4.5, y), (9.5, y)], light);
+            }
+            g.poly(&[(9.5, 8.5), (15.0, 11.75), (9.5, 15.0)], green);
+        }
+        Icon::Record => {
+            g.circle(8.0, 8.0, 6.0, None, Some(c));
+            g.circle(8.0, 8.0, 3.5, Some(pal.recording), None);
+        }
+        Icon::Relative => {
+            g.rect(1.5, 1.5, 5.5, 5.0, Some(paper), Some(c));
+            g.rect(9.0, 9.5, 5.5, 5.0, None, Some(c));
+            g.line(&[(5.0, 7.5), (5.0, 12.0), (8.0, 12.0)], c, 1.1);
+            g.poly(&[(7.5, 10.2), (9.6, 12.0), (7.5, 13.8)], c);
         }
     }
 }

@@ -412,6 +412,14 @@ pub(super) fn translate(text: &str) -> Option<&'static str> {
         "Workbook calculation" => "Tính toán sổ làm việc",
         "Enable iterative calculation" => "Bật tính toán lặp",
         "Calculation settings are saved with the workbook." => "Thiết lập tính toán được lưu cùng sổ làm việc.",
+        "Macros" => "Macro",
+        "Record Macro" => "Ghi Macro",
+        "Stop Recording" => "Dừng Ghi",
+        "Use Relative References" => "Dùng Tham chiếu Tương đối",
+        "Run\nMacro" => "Chạy Macro",
+        "Macros…" => "Macro…",
+        "Recording" => "Đang ghi",
+        "Stop" => "Dừng",
         _ => return None,
     })
 }

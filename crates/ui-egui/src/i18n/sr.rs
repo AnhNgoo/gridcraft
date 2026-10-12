@@ -436,6 +436,14 @@ pub(super) fn translate(text: &str) -> Option<&'static str> {
         "Next sheet" => "Следећи лист",
         "All sheets" => "Сви листови",
         "New sheet (⇧F11)" => "Нови лист (⇧F11)",
+        "Macros" => "Makroi",
+        "Record Macro" => "Snimi makro",
+        "Stop Recording" => "Zaustavi snimanje",
+        "Use Relative References" => "Koristi relativne reference",
+        "Run\nMacro" => "Pokreni makro",
+        "Macros…" => "Makroi…",
+        "Recording" => "Snimanje",
+        "Stop" => "Zaustavi",
         _ => return None,
     })
 }

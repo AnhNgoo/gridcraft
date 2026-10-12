@@ -410,6 +410,14 @@ pub(super) fn translate(text: &str) -> Option<&'static str> {
         "Dark" => "Koyu",
         "Sheet Options|View" => "Görünüm",
         "Print" => "Yazdır",
+        "Macros" => "Makrolar",
+        "Record Macro" => "Makro Kaydet",
+        "Stop Recording" => "Kaydı Durdur",
+        "Use Relative References" => "Göreli Başvuruları Kullan",
+        "Run\nMacro" => "Makro Çalıştır",
+        "Macros…" => "Makrolar…",
+        "Recording" => "Kaydediliyor",
+        "Stop" => "Durdur",
         _ => return None,
     })
 }

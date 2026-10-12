@@ -548,6 +548,13 @@ pub(super) fn translate(text: &str) -> Option<&'static str> {
         "AutoSave" => "Automatické ukládání",
         "AutoSave: save after every change (workbooks saved to a file)" => "Automatické ukládání: ukládat po každé změně (sešity uložené do souboru)",
         "All sheets" => "Všechny listy",
+        "Record Macro" => "Záznam makra",
+        "Stop Recording" => "Zastavit záznam",
+        "Use Relative References" => "Použít relativní odkazy",
+        "Run\nMacro" => "Spustit makro",
+        "Macros…" => "Makra…",
+        "Recording" => "Záznam",
+        "Stop" => "Zastavit",
         _ => return None,
     })
 }
