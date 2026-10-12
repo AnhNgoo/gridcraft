@@ -1,6 +1,6 @@
 # Macros
 
-> **Last updated:** 2026-10-25 · **Change:** minor (recording: kept steps, the input as it was, text that stays text, size limit, parameters refused; saving needs `replace: true` to replace; kept macros count and keep their names; earlier: recording macros and the management commands)
+> **Last updated:** 2026-10-25 · **Change:** minor (Record Macro takes a name, shortcut and description; recording: kept steps, the input as it was, text that stays text, size limit, parameters refused; saving needs `replace: true` to replace; kept macros count and keep their names; earlier: recording macros and the management commands)
 
 GridCraft macros are typed, declarative lists of commands, not VBA. Every step runs a GridCraft
 command (the same ids the ribbon, CLI and MCP use) or one of three bounded control steps. A macro
@@ -195,12 +195,17 @@ on its own, never as a step of a script or macro, and is never recorded.
 ## Recording
 
 `macro.record` toggles recording. Starting takes `relative` (default true; `false` for absolute
-references); stopping takes `name` and `description`. A name that another macro has, a kept one
-included, gets a suffix, such as `Tidy (2)`, so stopping never replaces a macro. `cancel: true`
-ends a recording without saving it, the way out of one whose macro can't be saved. A parameter
-the call would ignore is refused: `name` or `description` when starting, `relative` when
-stopping, `stop: false` while recording, `stop`, `relative`, `name` or `description` beside
-`cancel: true`, and one of the wrong kind. The macro is saved in the workbook where recording started, even if another one is active;
+references) and, from the Record Macro dialog, `name`, `shortcut` and `description`: the macro's
+name, its Ctrl+Shift shortcut letter (`"Ctrl+Shift+K"` or `"K"`) and its description. They are
+checked at once, so a name that is taken (a kept one included), too long or holds line breaks, or a
+letter that GridCraft or another macro uses, is refused before anything is recorded. Without a
+name the macro is called `Macro1`, `Macro2` and so on. A `name` or `description` given when
+stopping wins over the one given when starting; a name that another macro has by then gets a
+suffix, such as `Tidy (2)`, so stopping never replaces a macro, and a shortcut another macro took
+meanwhile is left off. `cancel: true` ends a recording without saving it, the way out of one whose
+macro can't be saved. A parameter the call would ignore is refused: `relative` or `shortcut` when
+stopping, `stop: false` while recording, anything beside `cancel: true`, and one of the wrong kind.
+The macro is saved in the workbook where recording started, even if another one is active;
 if that workbook was closed, stopping ends the recording without saving it. When saving the
 recording fails (a name the check refuses, a workbook at its macro limit, a macro being debugged
 in that workbook), recording goes on, so stopping again keeps what was recorded. The person
@@ -230,6 +235,10 @@ recording's 64 MB is left out and listed.
 
 Undo while recording works as in Excel: `edit.undo` is left out (a macro never runs it), and the
 step it undid stays in the recording, so playing the recording back makes that edit again.
+
+GridCraft keeps the Ctrl+Shift letters it uses itself on some platform: F, G, H, J, K, L, R, S, T
+and Z (`macros::RESERVED_SHORTCUTS`). A shortcut a file brings with it on one of these letters is
+kept but does not run the macro.
 
 ## Other commands and storage
 

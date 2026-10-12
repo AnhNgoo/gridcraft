@@ -2077,6 +2077,9 @@ fn kept_macros_count_toward_the_limit_and_keep_their_names() {
         let err = s.execute(cmd, p).unwrap_err().to_string();
         assert!(err.contains("newer version"), "{cmd}: {err}");
     }
+    // Record Macro refuses a kept macro's name when recording starts.
+    let err = s.execute("macro.record", json!({"name": "future"})).unwrap_err().to_string();
+    assert!(err.contains("newer version") && !s.is_recording(), "{err}");
     // A recording takes the next free name, around the kept one, and fills the last place.
     s.execute("macro.record", json!({"relative": false})).unwrap();
     set(&mut s, "A1", "typed");
@@ -2318,12 +2321,13 @@ fn a_recording_past_the_macro_size_is_cut_and_counted() {
 #[test]
 fn record_refuses_parameters_it_would_ignore() {
     let mut s = s();
-    for p in [json!({"name": "Early"}), json!({"description": "d"}), json!({"relative": "no"}), json!({"stop": 1})] {
+    // `name`, `description` and `shortcut` count when starting (Record Macro); wrong kinds don't.
+    for p in [json!({"name": 5}), json!({"shortcut": true}), json!({"relative": "no"}), json!({"stop": 1})] {
         assert!(s.execute("macro.record", p.clone()).is_err(), "{p}");
         assert!(!s.is_recording(), "{p}");
     }
     s.execute("macro.record", json!({"relative": false, "name": null})).unwrap();
-    for p in [json!({"relative": true}), json!({"stop": false}), json!({"cancel": true, "name": "x"}), json!({"name": 3})] {
+    for p in [json!({"relative": true}), json!({"shortcut": "K"}), json!({"stop": false}), json!({"cancel": true, "name": "x"}), json!({"name": 3})] {
         assert!(s.execute("macro.record", p.clone()).is_err(), "{p}");
         assert!(s.is_recording(), "{p}");
     }
@@ -2353,4 +2357,59 @@ fn undo_while_recording_keeps_the_undone_step_as_excel_does() {
     assert_eq!(recorded(&mut s, "Rec"), ["cell.set {\"cell\":\"A1\",\"input\":\"typed\"}"]);
     s.execute("macro.run", json!({"name": "Rec", "onConflict": "overwrite"})).unwrap();
     assert_eq!(v(&s, "A1").display(), "typed");
+}
+
+#[test]
+fn record_checks_a_name_shortcut_and_description_when_it_starts() {
+    let mut s = s();
+    s.execute("macro.save", json!({"name": "Taken", "shortcut": "Ctrl+Shift+P", "steps": []})).unwrap();
+    for (p, needle) in [
+        (json!({"name": "taken"}), "already exists"),
+        (json!({"name": "a\nb"}), "line breaks"),
+        (json!({"name": "x".repeat(300)}), "at most"),
+        (json!({"name": "New", "shortcut": "p"}), "already runs macro"),
+        (json!({"name": "New", "shortcut": "Ctrl+Shift+Z"}), "Redo"),
+        (json!({"name": "New", "shortcut": "F5"}), "one letter"),
+        (json!({"name": "New", "description": "d".repeat(100_000)}), "at most"),
+    ] {
+        let e = s.execute("macro.record", p.clone()).unwrap_err().to_string();
+        assert!(e.contains(needle), "{p}: {e}");
+        assert!(!s.is_recording(), "{p}");
+    }
+    let r = s.execute("macro.record", json!({"name": " Tidy ", "shortcut": "j", "description": "Tidies"}));
+    // J is Ungroup on a Mac, so it is reserved; M is free.
+    assert!(r.is_err_and(|e| e.to_string().contains("Ungroup")));
+    let r = s.execute("macro.record", json!({"name": " Tidy ", "shortcut": "m", "description": "Tidies"})).unwrap();
+    assert_eq!(r["name"], json!("Tidy"));
+    set(&mut s, "A1", "1");
+    let r = s.execute("macro.record", json!({"stop": true})).unwrap();
+    assert_eq!(r["saved"], json!("Tidy"));
+    let m = s.execute("macro.get", json!({"name": "Tidy"})).unwrap();
+    assert_eq!((m["shortcut"].clone(), m["description"].clone()), (json!("Ctrl+Shift+M"), json!("Tidies")));
+    // Empty params record under the next MacroN, as before, and never open a dialog.
+    s.execute("macro.record", json!({})).unwrap();
+    set(&mut s, "A2", "2");
+    let r = s.execute("macro.record", json!({})).unwrap();
+    assert!(r["saved"].as_str().is_some_and(|n| n.starts_with("Macro")), "{r}");
+    assert!(s.take_ui_requests().is_empty(), "no dialog");
+}
+
+#[test]
+fn shortcuts_parse_to_one_letter_and_avoid_reserved_and_taken_ones() {
+    use crate::macros::{parse_shortcut, shortcut_conflict, shortcut_text};
+    assert_eq!(parse_shortcut("Ctrl+Shift+M"), Some('M'));
+    assert_eq!(parse_shortcut("⌘⇧k"), Some('K'));
+    assert_eq!(parse_shortcut(" q "), Some('Q'));
+    for bad in ["Ctrl+Shift+F5", "Ctrl+Shift+", "", "Ctrl+Shift+é"] {
+        assert_eq!(parse_shortcut(bad), None, "{bad}");
+    }
+    assert_eq!(shortcut_text('m'), "Ctrl+Shift+M");
+    let mut wb = gridcraft_model::Workbook::default();
+    wb.macros.push(gridcraft_model::Macro { name: "A".into(), shortcut: Some("Ctrl+Shift+M".into()), ..Default::default() });
+    wb.macros.push(gridcraft_model::Macro { name: "B".into(), ..Default::default() });
+    assert!(shortcut_conflict(&wb, "B", 's').is_some_and(|m| m.contains("Save As")));
+    assert!(shortcut_conflict(&wb, "B", 'm').is_some_and(|m| m.contains("“A”")));
+    // A macro keeps its own letter.
+    assert_eq!(shortcut_conflict(&wb, "a", 'M'), None);
+    assert_eq!(shortcut_conflict(&wb, "B", 'Q'), None);
 }

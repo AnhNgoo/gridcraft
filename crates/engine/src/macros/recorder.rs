@@ -32,7 +32,8 @@ use crate::record::RecordedStep;
 const NEAR_ROWS: u32 = 50;
 const NEAR_COLS: u32 = 26;
 
-/// Where recording started, kept beside the buffer.
+/// Where recording started, kept beside the buffer, with the name, shortcut and description the
+/// macro is to be saved with (from the Record Macro dialog), applied when recording stops.
 #[derive(Clone, Debug)]
 pub struct RecordingStart {
     pub doc: u64,
@@ -44,6 +45,10 @@ pub struct RecordingStart {
     /// started: the recorded steps may change its values (text made into numbers), and the
     /// macro is for data like the data it was recorded on.
     pub input: Option<NamedInput>,
+    /// The name, shortcut and description given when recording started (Record Macro).
+    pub name: Option<String>,
+    pub shortcut: Option<String>,
+    pub description: Option<String>,
 }
 
 impl RecordingStart {
@@ -57,6 +62,9 @@ impl RecordingStart {
             selection: d.selection.clone(),
             relative,
             input: relative.then(|| infer_input(&d.wb, sheet, d.selection.current())),
+            name: None,
+            shortcut: None,
+            description: None,
         }
     }
 }
