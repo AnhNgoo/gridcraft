@@ -201,3 +201,95 @@ fn a_group_owns_the_steps_of_commands_that_run_commands() {
     assert!(v(&s, "A2").is_empty());
     assert_eq!(v(&s, "A1").display(), "kept");
 }
+
+// ---------------------------------------------------------------- recording buffer
+
+fn recorded_ids(s: &Session) -> Vec<String> {
+    s.recorder.as_ref().unwrap().steps.iter().map(|st| st.id.clone()).collect()
+}
+
+#[test]
+fn the_recorder_keeps_top_level_calls_with_where_they_ran() {
+    let mut s = s();
+    s.execute("home.insertSheet", json!({})).unwrap();
+    s.execute("selection.set", json!({"range": "B2:C3"})).unwrap();
+    s.start_recording();
+    assert!(s.is_recording());
+    assert_eq!(s.depth(), 0);
+    set(&mut s, "B2", "10");
+    s.execute("cell.get", json!({"cell": "B2"})).unwrap(); // a query: not recorded
+    assert!(s.execute("sheet.move", json!({})).is_err()); // failed: not recorded
+    s.execute("view.customViews", json!({"save": "Mine"})).unwrap();
+    // Show runs sheet.activate, selection.set and view.zoom inside it: one step.
+    s.execute("view.customViews", json!({"show": "Mine"})).unwrap();
+    assert_eq!(recorded_ids(&s), ["cell.set", "view.customViews", "view.customViews"]);
+    let first = &s.recorder.as_ref().unwrap().steps[0];
+    let d = s.doc().unwrap();
+    assert_eq!((first.doc, first.sheet), (d.uid, d.wb.active_sheet));
+    assert_eq!(first.sheet_name, d.wb.active().unwrap().name);
+    assert_eq!(first.selection.a1(), "B2:C3", "the selection before the command ran");
+    assert_eq!(first.params, json!({"cell": "B2", "input": "10"}));
+    assert_eq!(s.depth(), 0);
+    let rec = s.stop_recording().unwrap();
+    assert_eq!(rec.dropped, 0);
+    set(&mut s, "A1", "after");
+    assert!(s.recorder.is_none() && !s.is_recording());
+}
+
+#[test]
+fn the_recorder_survives_journal_trimming() {
+    let mut s = s();
+    s.start_recording();
+    for i in 0..10_050u32 {
+        s.execute("selection.set", json!({"range": format!("A{}", i % 50 + 1)})).unwrap();
+    }
+    set(&mut s, "C1", "last");
+    assert!(s.journal.len() < 10_051, "the journal was trimmed");
+    let steps = &s.recorder.as_ref().unwrap().steps;
+    assert_eq!(steps.len(), 10_051);
+    assert_eq!(steps[0].params, json!({"range": "A1"}));
+    assert_eq!(steps[10_050].id, "cell.set");
+}
+
+#[test]
+fn the_recorder_has_a_cap() {
+    let mut rec = crate::record::Recorder::default();
+    let step = crate::record::RecordedStep {
+        doc: 1,
+        sheet: 0,
+        sheet_name: "Sheet1".into(),
+        selection: crate::Selection::default(),
+        id: "cell.set".into(),
+        params: json!({}),
+    };
+    for _ in 0..crate::record::RECORD_LIMIT + 3 {
+        rec.push(step.clone());
+    }
+    assert_eq!(rec.steps.len(), crate::record::RECORD_LIMIT);
+    assert_eq!(rec.dropped, 3);
+}
+
+#[test]
+fn passwords_stay_out_of_the_recording_buffer() {
+    const PW: &str = "synthetic-pw-5521";
+    let mut s = s();
+    s.start_recording();
+    s.execute("review.protectSheet", json!({"password": PW, "formatCells": true})).unwrap();
+    s.execute("review.unprotectSheet", json!({"password": PW})).unwrap();
+    let rec = s.stop_recording().unwrap();
+    let text = serde_json::to_string(&rec.steps).unwrap();
+    assert!(!text.contains(PW), "{text}");
+    assert_eq!(rec.steps[0].params, json!({"formatCells": true}));
+}
+
+#[test]
+fn record_actions_is_unchanged_by_the_buffer() {
+    // Automate › Record Actions keeps recording through the journal; the buffer is separate.
+    let mut s = s();
+    s.execute("automate.recordActions", json!({})).unwrap();
+    assert!(!s.is_recording());
+    set(&mut s, "A1", "typed");
+    let r = s.execute("automate.recordActions", json!({"stop": true, "name": "Typed"})).unwrap();
+    assert_eq!(r["steps"], 1);
+    assert!(s.recorder.is_none());
+}
