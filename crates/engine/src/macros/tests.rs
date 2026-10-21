@@ -190,6 +190,13 @@ fn names() {
     assert_eq!(unique_name(&wb, "macro1"), "macro1 (2)");
     assert_eq!(unique_name(&wb, "Other"), "Other");
     assert_eq!(unique_name(&wb, ""), "Macro");
+    // A long name is shortened to make room for the suffix.
+    let long = "y".repeat(MAX_MACRO_NAME);
+    wb.macros.push(Macro { name: long.clone(), ..Macro::default() });
+    let renamed = unique_name(&wb, &long);
+    assert_eq!(renamed, format!("{} (2)", "y".repeat(MAX_MACRO_NAME - 4)));
+    wb.macros.push(Macro { name: renamed, ..Macro::default() });
+    assert_eq!(unique_name(&wb, &long).chars().count(), MAX_MACRO_NAME);
     assert_eq!(find(&wb, " MACRO1 "), Some(0));
     assert_eq!(find(&wb, "Macro2"), None);
 }
@@ -205,4 +212,25 @@ fn json_field_macros_get_the_name_check_too() {
     let names: Vec<&str> = back.macros.iter().map(|m| m.name.as_str()).collect();
     assert_eq!(names, ["Fine"]);
     assert!(warnings.len() == 1 && warnings[0].starts_with("1 macro "), "{warnings:?}");
+}
+
+#[test]
+fn duplicate_names_at_the_length_limit_survive_save_and_reopen() {
+    // Two macros with the same 255-character name: the second is renamed within the limit, so a
+    // save and a second open keep both.
+    let long = "é".repeat(MAX_MACRO_NAME);
+    for file in ["dup.json", "dup.xlsx"] {
+        let mut wb = Workbook::new();
+        wb.macros.push(Macro { name: long.clone(), ..Macro::default() });
+        wb.macros.push(Macro { name: long.clone(), description: "second".into(), ..Macro::default() });
+        let (first, warnings) = crate::io::open_bytes(file, &crate::io::save_bytes(&wb, file).unwrap()).unwrap();
+        assert!(warnings.is_empty(), "{file}: {warnings:?}");
+        assert_eq!(first.macros.len(), 2, "{file}");
+        let renamed = &first.macros[1].name;
+        assert_eq!(renamed.chars().count(), MAX_MACRO_NAME, "{file}");
+        assert!(renamed.ends_with(" (2)") && renamed.starts_with("éé"), "{file}: {renamed}");
+        let (again, warnings) = crate::io::open_bytes(file, &crate::io::save_bytes(&first, file).unwrap()).unwrap();
+        assert!(warnings.is_empty(), "{file}: {warnings:?}");
+        assert_eq!(again.macros, first.macros, "{file}");
+    }
 }

@@ -128,12 +128,14 @@ pub fn load(wb: &mut Workbook) -> Vec<String> {
             bad += 1;
             continue;
         }
-        match m.check_limits().and_then(|()| check_size(&m)) {
-            Ok(()) => {
-                let mut m = m;
-                m.name = unique_name(wb, m.name.trim());
-                wb.macros.push(m);
-            }
+        let mut m = m;
+        let checked = m.check_limits().and_then(|()| {
+            m.name = unique_name(wb, m.name.trim());
+            // The macro as it is kept, renamed, must still pass, or the next save would lose it.
+            m.check_limits().and_then(|()| check_size(&m))
+        });
+        match checked {
+            Ok(()) => wb.macros.push(m),
             Err(_) => bad += 1,
         }
     }
@@ -150,13 +152,22 @@ pub fn load(wb: &mut Workbook) -> Vec<String> {
     warnings
 }
 
-/// `name`, or `name (2)`, `name (3)`… if a macro already has it.
+/// `name`, or `name (2)`, `name (3)`… if a macro already has it. A long name is shortened to make
+/// room for the suffix, so the result stays within [`gridcraft_model::MAX_MACRO_NAME`] characters.
 pub fn unique_name(wb: &Workbook, name: &str) -> String {
     let name = if name.is_empty() { "Macro" } else { name };
     if find(wb, name).is_none() {
         return name.to_string();
     }
-    (2..).map(|n| format!("{name} ({n})")).find(|n| find(wb, n).is_none()).unwrap_or_else(|| name.to_string())
+    (2..)
+        .map(|n| {
+            let suffix = format!(" ({n})");
+            let keep = gridcraft_model::MAX_MACRO_NAME.saturating_sub(suffix.chars().count());
+            let base: String = name.chars().take(keep).collect();
+            format!("{}{suffix}", base.trim_end())
+        })
+        .find(|n| find(wb, n).is_none())
+        .unwrap_or_else(|| name.to_string())
 }
 
 #[cfg(test)]
