@@ -517,10 +517,13 @@ pub fn save(app: &mut SheetApp, ed: &mut Editor) -> bool {
     }
     if let Some(old) = ed.saved_as.clone()
         && !old.eq_ignore_ascii_case(&ed.draft.name)
-        && let Err(e) = app.run("macro.rename", json!({"name": old, "to": ed.draft.name}))
     {
-        app.message = Some(("Save Macro".into(), crate::clean_error(&e)));
-        return false;
+        if let Err(e) = app.run("macro.rename", json!({"name": old, "to": ed.draft.name})) {
+            app.message = Some(("Save Macro".into(), crate::clean_error(&e)));
+            return false;
+        }
+        // The workbook has it under the new name now, even if the save below fails.
+        ed.saved_as = Some(ed.draft.name.clone());
     }
     // A new draft never replaces a macro that has its name.
     let replace = ed.saved_as.is_some();

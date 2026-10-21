@@ -242,3 +242,30 @@ fn a_new_macro_never_replaces_one_with_its_name() {
         h.run_steps(2);
     }
 }
+
+#[test]
+fn a_rename_that_lands_before_a_failed_save_is_remembered() {
+    let mut h = harness();
+    three(&mut h);
+    let big = "x".repeat(5 * 1024 * 1024);
+    {
+        let ed = h.state_mut().macros.editor.as_mut().unwrap();
+        ed.draft.name = "Renamed".into();
+        // Too large to keep in the workbook: the rename lands, the save after it fails.
+        ed.draft.steps.push(gridcraft_engine::model::Step::command("cell.set", json!({"cell": "A4", "input": big})));
+        ed.dirty = true;
+    }
+    h.run_steps(2);
+    click(&mut h, "Save");
+    let msg = h.state_mut().message.take().map(|(_, m)| m).unwrap_or_default();
+    assert!(msg.contains("too large"), "{msg}");
+    assert_eq!(h.state().macros.editor.as_ref().unwrap().saved_as.as_deref(), Some("Renamed"));
+    // Trimmed back, the next Save works.
+    h.state_mut().macros.editor.as_mut().unwrap().draft.steps.pop();
+    h.run_steps(2);
+    click(&mut h, "Save");
+    assert!(h.state_mut().message.take().is_none());
+    let wb = &h.state().session.active().unwrap().wb;
+    assert_eq!(wb.macros.len(), 1);
+    assert_eq!((wb.macros[0].name.as_str(), wb.macros[0].steps.len()), ("Renamed", 3));
+}
