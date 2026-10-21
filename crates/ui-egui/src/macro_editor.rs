@@ -1344,7 +1344,11 @@ fn picker(ui: &mut Ui, ed: &mut Editor) {
     if r.changed() {
         pk.index = 0;
     }
-    let items = picker_items(&pk.search);
+    let mut items = picker_items(&pk.search);
+    // Change swaps a command step's command; it can't turn the step into Repeat, If or Stop.
+    if pk.replace.is_some() {
+        items.retain(|(id, ..)| !id.starts_with('@'));
+    }
     if ui.input(|i| i.key_pressed(egui::Key::ArrowDown)) {
         pk.index = (pk.index + 1).min(items.len().saturating_sub(1));
     }
@@ -1354,9 +1358,6 @@ fn picker(ui: &mut Ui, ed: &mut Editor) {
     let mut chosen = ui.input(|i| i.key_pressed(egui::Key::Enter)).then_some(pk.index);
     egui::ScrollArea::vertical().id_salt("me_pick_list").auto_shrink([false, false]).show(ui, |ui| {
         for (i, (id, label, menu)) in items.iter().enumerate() {
-            if pk.replace.is_some() && id.starts_with('@') {
-                continue;
-            }
             let r = ui.add(egui::Button::selectable(i == pk.index, label.as_str()).min_size(vec2(ui.available_width(), 20.0)));
             if r.clicked() {
                 chosen = Some(i);

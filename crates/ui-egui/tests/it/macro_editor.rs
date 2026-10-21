@@ -285,3 +285,23 @@ fn another_dialog_never_replaces_the_open_editor() {
     click(&mut h, "New Macro");
     assert_eq!(h.state().macros.editor.as_ref().map(|e| e.draft.name.as_str()), Some("Unsaved"));
 }
+
+#[test]
+fn enter_in_change_never_picks_a_control_step() {
+    let mut h = harness();
+    three(&mut h);
+    let enter = Event::Key { key: Key::Enter, physical_key: None, pressed: true, repeat: false, modifiers: Modifiers::NONE };
+    for search in ["", "stop"] {
+        h.state_mut().macros.editor.as_mut().unwrap().selected = Some("1".into());
+        h.run_steps(2);
+        click(&mut h, "Change…");
+        if !search.is_empty() {
+            h.input_mut().events.push(Event::Text(search.into()));
+            h.run_steps(2);
+        }
+        h.input_mut().events.push(enter.clone());
+        h.run_steps(3);
+        let ed = h.state().macros.editor.as_ref().unwrap();
+        assert!(matches!(&ed.draft.steps[0].kind, StepKind::Command { .. }), "{search:?}: {:?}", ed.draft.steps[0].kind);
+    }
+}
