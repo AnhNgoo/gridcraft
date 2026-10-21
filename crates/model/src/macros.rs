@@ -63,7 +63,8 @@ impl Macro {
         count(&self.steps)
     }
 
-    /// Checks the size limits ([`MAX_MACRO_STEPS`], [`MAX_MACRO_DEPTH`], name and text lengths).
+    /// Checks the size limits ([`MAX_MACRO_STEPS`], [`MAX_MACRO_DEPTH`], name and text lengths) and
+    /// that the name has no control characters.
     pub fn check_limits(&self) -> Result<(), String> {
         let name = self.name.trim();
         if name.is_empty() {
@@ -71,6 +72,9 @@ impl Macro {
         }
         if name.chars().count() > MAX_MACRO_NAME {
             return Err(format!("A macro name can be at most {MAX_MACRO_NAME} characters long."));
+        }
+        if name.chars().any(char::is_control) {
+            return Err("A macro name can't hold line breaks or other control characters.".into());
         }
         if self.description.chars().count() > MAX_MACRO_TEXT {
             return Err(format!("A macro description can be at most {MAX_MACRO_TEXT} characters long."));

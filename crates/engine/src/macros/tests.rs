@@ -193,3 +193,16 @@ fn names() {
     assert_eq!(find(&wb, " MACRO1 "), Some(0));
     assert_eq!(find(&wb, "Macro2"), None);
 }
+
+#[test]
+fn json_field_macros_get_the_name_check_too() {
+    // A JSON workbook can't bring in a name that macro.save and macro.rename refuse.
+    let mut wb = Workbook::new();
+    wb.macros.push(Macro { name: "a\nb".into(), ..Macro::default() });
+    wb.macros.push(Macro { name: "Fine".into(), ..Macro::default() });
+    let bytes = crate::io::save_bytes(&wb, "ctl.json").unwrap();
+    let (back, warnings) = crate::io::open_bytes("ctl.json", &bytes).unwrap();
+    let names: Vec<&str> = back.macros.iter().map(|m| m.name.as_str()).collect();
+    assert_eq!(names, ["Fine"]);
+    assert!(warnings.len() == 1 && warnings[0].starts_with("1 macro "), "{warnings:?}");
+}

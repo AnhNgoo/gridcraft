@@ -30,9 +30,6 @@ pub fn parse_macro(v: &Json) -> Result<Macro, String> {
     let mut m: Macro = serde_json::from_value(v).map_err(|e| format!("This isn't a valid macro: {e}"))?;
     m.name = m.name.trim().to_string();
     m.check_limits()?;
-    if m.name.chars().any(char::is_control) {
-        return Err("A macro name can't hold line breaks or other control characters.".into());
-    }
     check_size(&m)?;
     Ok(m)
 }
