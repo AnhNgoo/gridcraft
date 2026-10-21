@@ -59,8 +59,8 @@ Actions made of many commands (macros, a debugger that runs one step per call) u
   Commands run by other commands are not recorded, and the buffer is independent of the journal
   (Automate › Record Actions still records through the journal).
 - **Document trust.** `DocState::trust` is `Local` for workbooks made in the session and
-  `FromFile` for workbooks opened from a file, and for workbooks that received formulas, formats
-  or validation pasted from one. Active content in a `FromFile` workbook asks before it runs.
+  `FromFile` for workbooks opened from a file, and for workbooks that received formulas or
+  validation pasted from one. Active content in a `FromFile` workbook asks before it runs.
 - **Workbook data in hidden names** (`cmd/stash.rs`). An item is split over hidden
   workbook-scope names `_gc_<key>_0`, `_gc_<key>_1`, … of string literals within Excel's 255- and
   8,192-character limits, so it survives an xlsx round trip. The older single-name `_sc_<key>`

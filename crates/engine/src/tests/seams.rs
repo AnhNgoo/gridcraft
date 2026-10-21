@@ -472,6 +472,9 @@ fn pasting_from_a_file_carries_its_trust() {
     // Values carry nothing that runs.
     s.execute("edit.pasteSpecial", json!({"what": "values", "at": "B1"})).unwrap();
     assert_eq!(trust(&s), Trust::Local);
+    // Formats carry cell styles and merged areas, nothing that runs.
+    s.execute("edit.pasteSpecial", json!({"what": "formats", "at": "B3"})).unwrap();
+    assert_eq!(trust(&s), Trust::Local);
     // A linked paste of values still writes formulas.
     s.execute("edit.pasteSpecial", json!({"what": "values", "link": true, "at": "B2"})).unwrap();
     assert_eq!(trust(&s), Trust::FromFile);
