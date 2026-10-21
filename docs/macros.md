@@ -1,6 +1,6 @@
 # Macros
 
-> **Last updated:** 2026-10-21 · **Change:** minor (debugging macros: `macro.debug`)
+> **Last updated:** 2026-10-21 · **Change:** minor (recording macros and the management commands)
 
 GridCraft macros are typed, declarative lists of commands, not VBA. Every step runs a GridCraft
 command (the same ids the ribbon, CLI and MCP use) or one of three bounded control steps. A macro
@@ -9,8 +9,9 @@ error (a file it already wrote stays), checks where its results will land before
 and does not touch files without permission.
 Agents run macros with `macro.run` like any other command.
 
-This page describes the macro format, its tokens, and running, checking and debugging macros.
-The engine has no macro recorder or management commands in this version, and no macro interface.
+This page describes the engine and its commands. The macro interface (a Macros list, a recorder
+button and a step editor) is not part of it yet.
+
 
 ## A macro
 
@@ -115,7 +116,20 @@ command makes them (stopping Record Actions saves a script), and other workbooks
 editable. Each answer gives the next step with its parameters as they would run, the parameters
 of the step that just ran, and the cells changed so far.
 
-## Storage
+## Recording
+
+`macro.record` toggles recording (`relative: false` for absolute references; `name` and
+`description` when stopping). With relative references the selection when recording starts is the
+example input: references in and near it become tokens, and the input's shape, header and column
+types are inferred. Toggles such as Bold are recorded with the state they set (`"on": true`), so
+playing them back sets them rather than flipping them. Commands a macro may not run are left out
+and listed in the result; a macro run while recording is replaced by its steps when it has no
+inputs, and an Automate script run by the script's steps.
+
+## Other commands and storage
+
+`macro.list`, `macro.get`, `macro.save {macro, replace?}`, `macro.delete` and `macro.rename
+{name, to}`. Saving, renaming and deleting are undoable.
 
 Macros are saved in the workbook: as a field in GridCraft's JSON format, and in xlsx as hidden
 defined names (`_gc_macro_<n>_<k>`, the macro's JSON split into string literals within Excel's

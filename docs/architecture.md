@@ -1,6 +1,6 @@
 # Architecture
 
-> **Last reviewed:** 2026-10-10 · **Last updated:** 2026-10-11 · **Change:** minor (engine building blocks for multi-command actions) · **Target:** Microsoft Excel (Microsoft 365)
+> **Last reviewed:** 2026-10-10 · **Last updated:** 2026-10-21 · **Change:** minor (macro engine on the engine building blocks) · **Target:** Microsoft Excel (Microsoft 365)
 
 How GridCraft is built today. Rules for contributors are in [`AGENTS.md`](../AGENTS.md).
 
@@ -66,6 +66,11 @@ Actions made of many commands (macros, a debugger that runs one step per call) u
   8,192-character limits, so it survives an xlsx round trip. The older single-name `_sc_<key>`
   items are read as well.
 
+The macro engine (`engine/src/macros/`, commands in `cmd/macros.rs`, described in
+[`macros.md`](macros.md)) is built on these: a run is an undo group, the recorder reads the
+recording buffer, the policy asks before a macro in a `FromFile` workbook runs, and xlsx keeps
+macros as chunked hidden names (`_gc_macro_<n>`).
+
 ## Agent control
 
 - Desktop control channel: `gridcraft --control 7979`, JSON lines on localhost
@@ -91,5 +96,6 @@ rpm, tarball), FreeBSD, and web (WASM; WebGPU or WebGL2). Release workflows in
 
 | Date | Change | Summary |
 |---|---|---|
+| 2026-10-21 | minor | Macro engine on the building blocks (`macros/`, `cmd/macros.rs`) |
 | 2026-10-11 | minor | Engine building blocks for multi-command actions: undo groups, recording buffer, document trust, chunked hidden-name storage |
 | 2026-10-10 | major | Created from the code on main: crates, layers, data flow, agent control, known gaps |
