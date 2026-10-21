@@ -826,6 +826,9 @@ impl SheetApp {
                 let page = params.get("page").and_then(Json::as_str).and_then(backstage::Page::parse).unwrap_or(backstage::Page::Home);
                 self.open_backstage(page);
             }
+            // The macro step editor stays until it closes itself (its draft, overlays and debug
+            // run go with it), so another dialog can't replace it.
+            _ if self.dialog.as_ref().is_some_and(|d| d.name == "macroEditor") => {}
             other => self.dialog = dialogs::Dialog::open(self, other, params),
         }
     }

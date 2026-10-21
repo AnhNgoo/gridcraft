@@ -269,3 +269,19 @@ fn a_rename_that_lands_before_a_failed_save_is_remembered() {
     assert_eq!(wb.macros.len(), 1);
     assert_eq!((wb.macros[0].name.as_str(), wb.macros[0].steps.len()), ("Renamed", 3));
 }
+
+#[test]
+fn another_dialog_never_replaces_the_open_editor() {
+    let mut h = harness();
+    three(&mut h);
+    h.state_mut().macros.editor.as_mut().unwrap().draft.name = "Unsaved".into();
+    h.run_steps(2);
+    for name in ["formatCells", "macros", "macroEditor"] {
+        h.state_mut().open_dialog(name, json!({}));
+        h.run_steps(2);
+        assert_eq!(h.state().dialog.as_ref().map(|d| d.name.as_str()), Some("macroEditor"), "{name}");
+        assert_eq!(h.state().macros.editor.as_ref().map(|e| e.draft.name.as_str()), Some("Unsaved"), "{name}");
+    }
+    click(&mut h, "New Macro");
+    assert_eq!(h.state().macros.editor.as_ref().map(|e| e.draft.name.as_str()), Some("Unsaved"));
+}
