@@ -43,8 +43,12 @@ const READS_FILES: &[&str] = &["data.getData", "data.fromTextCsv", "insert.pictu
 const EXPORTS: &[&str] = &["file.exportPdf", "file.exportCsv", "file.exportHtml", "file.print", "file.printPreview", "file.saveBytes"];
 
 /// The policy for running command `id` with `params` as a macro step in a document with `trust`.
+///
+/// Any `path` other than `null` counts as touching a file: a token such as `{"$ref": "Input"}`
+/// becomes a path when the step runs, and exports write to `""` and `" "` as file names. The
+/// runner checks the parameters both as written and as resolved.
 pub fn macro_policy(id: &str, params: &Json, trust: Trust) -> Policy {
-    let has_path = params.get("path").and_then(Json::as_str).is_some_and(|p| !p.trim().is_empty());
+    let has_path = params.get("path").is_some_and(|p| !p.is_null());
     let base = if EXPORTS.contains(&id) {
         if has_path { Policy::NeedsPermission("writes a file".into()) } else { Policy::Allow }
     } else if ALLOWED.contains(&id) {
@@ -104,7 +108,14 @@ mod tests {
         // Without a path they touch no file.
         for id in ["data.getData", "insert.picture", "file.exportPdf", "file.saveBytes", "file.printPreview"] {
             assert_eq!(macro_policy(id, &none, Trust::Local), Policy::Allow, "{id}");
-            assert_eq!(macro_policy(id, &json!({"path": " "}), Trust::Local), Policy::Allow, "{id}");
+            assert_eq!(macro_policy(id, &json!({"path": null}), Trust::Local), Policy::Allow, "{id}");
+        }
+        // A path that is blank or a token still touches a file once the step runs.
+        for path in [json!(""), json!(" "), json!({"$ref": "Input"}), json!("{{Input}}.csv"), json!(1)] {
+            for id in ["file.exportCsv", "data.fromTextCsv"] {
+                let p = json!({ "path": path });
+                assert!(matches!(macro_policy(id, &p, Trust::Local), Policy::NeedsPermission(_)), "{id} {p}");
+            }
         }
         for id in ["cell.set", "home.bold", "view.macros", "edit.copy", "file.properties"] {
             assert_eq!(macro_policy(id, &none, Trust::Local), Policy::Allow, "{id}");

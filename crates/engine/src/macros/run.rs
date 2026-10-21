@@ -576,11 +576,20 @@ impl Machine {
 
     fn command(&mut self, s: &mut Session, path: &str, id: &str, params: &Json) -> std::result::Result<(), StepError> {
         let fail = |msg: String| StepError::new(path, Some(id), msg);
-        match macro_policy(id, params, self.trust) {
-            Policy::Deny(why) => return Err(fail(format!("{id} can't run in a macro: {why}."))),
-            Policy::NeedsPermission(what) => {
+        // The policy sees the parameters the command will get, after tokens became A1 text.
+        let resolved = {
+            let wb = &s.doc().map_err(|e| fail(e.to_string()))?.wb;
+            resolve::resolve_params(params, &self.env(wb)).map_err(|e| StepError::resolve(path, Some(id), e))?
+        };
+        match (macro_policy(id, params, self.trust), macro_policy(id, &resolved, self.trust)) {
+            (_, Policy::Deny(why)) | (Policy::Deny(why), _) => return Err(fail(format!("{id} can't run in a macro: {why}."))),
+            (written, Policy::NeedsPermission(what)) => {
                 if !self.permissions.iter().any(|p| p == id) {
                     return Err(fail(format!("{id} {what}. Add it to the macro's permissions to allow it.")));
+                }
+                // The gate asked the person about this step only if it saw the file access.
+                if !matches!(written, Policy::NeedsPermission(_)) {
+                    return Err(fail(format!("{id} {what} only once its parameters are filled in, so it wasn't approved.")));
                 }
                 if self.dry_run {
                     self.partial = Some((path.to_string(), format!("{id} {what}")));
@@ -588,17 +597,13 @@ impl Machine {
                     return Ok(());
                 }
             }
-            Policy::Allow | Policy::Ask(_) => {}
+            (_, Policy::Allow | Policy::Ask(_)) => {}
         }
         if self.dry_run && !previewable(id) {
             self.partial = Some((path.to_string(), format!("{id} can't be previewed")));
             self.frames.clear();
             return Ok(());
         }
-        let resolved = {
-            let wb = &s.doc().map_err(|e| fail(e.to_string()))?.wb;
-            resolve::resolve_params(params, &self.env(wb)).map_err(|e| StepError::resolve(path, Some(id), e))?
-        };
         self.last_params = Some(resolved.clone());
         let queued = s.ui_requests.len();
         let r = s.execute(id, resolved);

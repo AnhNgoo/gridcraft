@@ -359,6 +359,46 @@ fn macros_are_bounded() {
 }
 
 #[test]
+fn a_token_in_a_path_needs_the_permission_and_approval() {
+    let mut s = s();
+    let dir = std::env::temp_dir().join(format!("gc-macro-token-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let files = |dir: &std::path::Path| std::fs::read_dir(dir).unwrap().count();
+    let in_dir = format!("{}/{{{{Input}}}}", dir.to_string_lossy());
+    for path in [json!({"$ref": "Input"}), json!(in_dir), json!(" ")] {
+        let step = json!({"command": "file.exportCsv", "params": {"path": path}});
+        put(&mut s, json!({"name": "Export", "inputs": [{"name": "Input"}], "steps": [step]}));
+        // Without the permission nothing runs, not even the check's dry run.
+        let err = s.execute("macro.run", json!({"name": "Export"})).unwrap_err().to_string();
+        assert!(err.contains("Step 1 (file.exportCsv) writes a file. Add file.exportCsv to the macro's permissions"), "{path}: {err}");
+        let c = s.execute("macro.check", json!({"name": "Export"})).unwrap();
+        assert!(c["errors"][0].as_str().unwrap().contains("writes a file"), "{path}: {c}");
+        assert!(c.get("footprint").is_none());
+        // With it, the person approves first; the check doesn't run it before then.
+        put(&mut s, json!({"name": "Export", "inputs": [{"name": "Input"}], "steps": [step], "permissions": ["file.exportCsv"]}));
+        let r = s.execute("macro.run", json!({"name": "Export"}));
+        let Err(EngineError::Approve(q)) = &r else { panic!("{path}: {r:?}") };
+        assert!(q.contains("file.exportCsv, which writes a file"), "{q}");
+        let c = s.execute("macro.check", json!({"name": "Export"})).unwrap();
+        assert_eq!(c["needsApproval"], json!(["runs file.exportCsv, which writes a file"]), "{path}");
+        assert!(c.get("footprint").is_none());
+        assert_eq!(files(&dir), 0, "{path}");
+        assert!(!std::path::Path::new("A1.csv").exists() && !std::path::Path::new(" .csv").exists());
+    }
+    // Once approved, the check's dry run stops before the step, and only the run writes the file.
+    let step = json!({"command": "file.exportCsv", "params": {"path": in_dir}});
+    put(&mut s, json!({"name": "Export", "inputs": [{"name": "Input"}], "steps": [step], "permissions": ["file.exportCsv"]}));
+    s.execute("macro.run", json!({"name": "Export", "approve": true, "inputs": "B2"})).unwrap();
+    assert_eq!(files(&dir), 1);
+    std::fs::remove_dir_all(&dir).unwrap();
+    std::fs::create_dir_all(&dir).unwrap();
+    let c = s.execute("macro.check", json!({"name": "Export", "inputs": "B2"})).unwrap();
+    assert_eq!(c["footprint"]["partial"]["step"], "1", "{c}");
+    assert_eq!(files(&dir), 0, "the check writes nothing");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
 fn the_policy_keeps_macros_away_from_files_and_the_app() {
     let mut s = s();
     for (id, params) in [
