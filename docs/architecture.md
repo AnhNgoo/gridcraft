@@ -51,7 +51,9 @@ Actions made of many commands (macros, a debugger that runs one step per call) u
 - **Undo groups.** `Session::grouped(label, f)` runs `f` as one undo step and rolls every change
   back if `f` fails; `group_begin`, `group_end` and `group_rollback` do the same across calls.
   While a group is open on a document, its commands add no undo steps of their own and Undo and
-  Redo are disabled there. Groups nest; the outermost one makes the step.
+  Redo are disabled there. Groups nest; the outermost one makes the step. A command that opens and
+  closes its own groups still makes one undo step for itself, covering its edits inside and outside
+  the groups.
 - **Recording buffer** (`record.rs`). `Session::start_recording` collects each successful
   top-level command with the document, sheet and selection it ran in, without secret parameters.
   Commands run by other commands are not recorded, and the buffer is independent of the journal

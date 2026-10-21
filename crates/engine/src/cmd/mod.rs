@@ -187,6 +187,23 @@ pub fn register_test_command(id: &'static str, run: Run) {
     test_commands().push(spec);
 }
 
+/// Test-only: an undoable command, to exercise how `execute` records its step.
+#[cfg(test)]
+pub(crate) fn register_undoable_test_command(id: &'static str, run: Run) {
+    let spec: &'static CommandSpec = Box::leak(Box::new(CommandSpec {
+        id,
+        label: id,
+        menu: &[],
+        shortcut: None,
+        params: "",
+        enabled: |_| Ok(()),
+        run,
+        journal: false,
+        undoable: true,
+    }));
+    test_commands().push(spec);
+}
+
 fn test_commands() -> std::sync::MutexGuard<'static, Vec<&'static CommandSpec>> {
     #[allow(clippy::unwrap_used)] // a poisoned test registry has no meaningful recovery
     match TEST_COMMANDS.lock() {

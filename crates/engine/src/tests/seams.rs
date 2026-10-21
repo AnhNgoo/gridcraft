@@ -202,6 +202,50 @@ fn a_group_owns_the_steps_of_commands_that_run_commands() {
     assert_eq!(v(&s, "A1").display(), "kept");
 }
 
+fn put(s: &mut Session, cell: &str, text: &str) -> crate::Result<()> {
+    s.execute("cell.set", json!({"cell": cell, "input": text})).map(|_| ())
+}
+
+#[test]
+fn a_command_that_runs_its_own_group_makes_one_step() {
+    use crate::cmd::register_undoable_test_command as register;
+    // Edits before its group are part of the step.
+    register("test.editThenGroup", |s, _| {
+        put(s, "A1", "outside")?;
+        s.grouped("Inner", |s| put(s, "A2", "inside"))?;
+        Ok(json!({}))
+    });
+    // A group that fails and rolls back, then an edit outside it.
+    register("test.failThenEdit", |s, _| {
+        let failed: crate::Result<()> = s.grouped("Doomed", |s| {
+            put(s, "B1", "gone")?;
+            Err(EngineError::Other("no".into()))
+        });
+        assert!(failed.is_err());
+        put(s, "B2", "kept")?;
+        Ok(json!({}))
+    });
+    // A command that is one group keeps the group's name.
+    register("test.onlyGroup", |s, _| s.grouped("Named Step", |s| put(s, "D1", "x")).map(|_| json!({})));
+    let mut s = s();
+    s.execute("test.onlyGroup", json!({})).unwrap();
+    assert_eq!(undo_labels(&s), ["Named Step"]);
+    s.execute("edit.undo", json!({})).unwrap();
+    set(&mut s, "C1", "base");
+    s.execute("test.editThenGroup", json!({})).unwrap();
+    assert_eq!(undo_labels(&s), ["Enter Cell", "test.editThenGroup"]);
+    s.execute("edit.undo", json!({})).unwrap();
+    assert!(v(&s, "A1").is_empty() && v(&s, "A2").is_empty());
+    assert_eq!(v(&s, "C1").display(), "base");
+
+    s.execute("test.failThenEdit", json!({})).unwrap();
+    assert!(v(&s, "B1").is_empty());
+    assert_eq!(v(&s, "B2").display(), "kept");
+    assert_eq!(undo_labels(&s), ["Enter Cell", "test.failThenEdit"]);
+    s.execute("edit.undo", json!({})).unwrap();
+    assert!(v(&s, "B2").is_empty());
+}
+
 // ---------------------------------------------------------------- recording buffer
 
 fn recorded_ids(s: &Session) -> Vec<String> {

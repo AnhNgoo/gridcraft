@@ -327,6 +327,8 @@ pub struct Session {
     next_group: u64,
     /// Counts group begins and ends, so `execute` can tell that a command opened or closed one.
     group_epoch: u64,
+    /// The step the last group made: document, its undo length after the step, and the epoch.
+    group_step: Option<(u64, usize, u64)>,
 }
 
 impl Session {
@@ -396,6 +398,8 @@ impl Session {
         let before = self.active().map(|d| (d.uid, d.wb.clone(), d.selection.clone()));
         let params = if params.is_null() { Json::Object(Default::default()) } else { params };
         let (first_group, group_epoch) = (self.next_group, self.group_epoch);
+        // Whether a group was open on the document before the command, and how long its history was.
+        let start = before.as_ref().and_then(|(uid, ..)| self.docs.iter().find(|d| d.uid == *uid).map(|d| (self.in_group(*uid), d.undo.len())));
         // The recorder keeps top-level calls with the place they ran in.
         let place = (self.depth == 0 && self.recorder.is_some()).then(|| match self.active() {
             Some(d) => (d.uid, d.wb.active_sheet, d.wb.active().map(|sh| sh.name.clone()).unwrap_or_default(), d.selection.clone()),
@@ -434,15 +438,31 @@ impl Session {
                 self.journal.drain(..5_000);
             }
         }
-        // Inside an undo group, or when the command opened or closed one, the group owns the step.
-        let grouped = before.as_ref().is_some_and(|(uid, ..)| self.group_epoch != group_epoch || self.in_group(*uid));
+        // Inside an undo group, or when the command ended one that was open before it, the group
+        // owns the step. A command that opened and closed its own groups makes one step of its
+        // own, which replaces the steps those groups made.
+        let epoch_changed = self.group_epoch != group_epoch;
+        let in_group_now = before.as_ref().is_some_and(|(uid, ..)| self.in_group(*uid));
+        let own_groups = epoch_changed && !in_group_now && start.is_some_and(|(was_open, _)| !was_open);
+        let grouped = !own_groups && (epoch_changed || in_group_now);
         if spec.undoable
             && let Some((uid, wb, sel)) = before
             && let Some(d) = self.docs.iter_mut().find(|d| d.uid == uid)
             && !Arc::ptr_eq(&d.wb, &wb)
         {
             if !grouped {
-                d.undo.push(HistoryEntry { label: spec.label.trim_end_matches('…').to_string(), wb, selection: sel });
+                let mut label = spec.label.trim_end_matches('…').to_string();
+                if own_groups && let Some((_, len)) = start {
+                    // A command whose only step is its group's keeps that name ("Run Macro: Totals").
+                    if d.undo.len() == len + 1
+                        && self.group_step.is_some_and(|(doc, n, epoch)| doc == uid && n == len + 1 && epoch != group_epoch)
+                        && let Some(last) = d.undo.last()
+                    {
+                        label = last.label.clone();
+                    }
+                    d.undo.truncate(len);
+                }
+                d.undo.push(HistoryEntry { label, wb, selection: sel });
                 if d.undo.len() > UNDO_LIMIT {
                     d.undo.remove(0);
                 }
@@ -509,6 +529,7 @@ impl Session {
             while d.undo.len() > UNDO_LIMIT {
                 d.undo.remove(0);
             }
+            self.group_step = Some((g.doc, d.undo.len(), self.group_epoch));
             d.redo.clear();
             d.revision += 1;
         }
