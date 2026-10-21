@@ -56,6 +56,8 @@ References in step parameters can be tokens, worked out when the step runs:
 Methods narrow or move a range and chain: `col(2)` or `col("Amount")`, `row(1)`, `cols(2..3)`,
 `rows(2..)`, `cell(r,c)` (relative to the top-left cell; `cell(0,1)` is the cell above),
 `offset(r,c)`, `resize(h,w)`, `data` (without the header row), `below(n)` and `right(n)`.
+`col("Amount")` looks the name up in an input's header row, directly or after `data`; on a range
+without a header row it is refused.
 
 Write a token as the whole value of a reference parameter (`cell`, `range`, `target`, keys ending
 in `Cell` or `Range`…), as `{"$ref": "Input.col(2)"}` anywhere, or as `{{Input.col(2)}}` inside

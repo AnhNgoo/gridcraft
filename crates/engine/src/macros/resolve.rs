@@ -6,10 +6,11 @@
 //! - bases: a declared input (`Input`, `Rates`), `Output` (the output rule's anchor), `Row` or
 //!   `Column` (the current item of the Repeat step around it), and `Name:Total` (a defined name or
 //!   a table's data);
-//! - methods, 1-based and chainable: `.col(n)` or `.col("Amount")` (by header), `.row(n)`,
-//!   `.cols(a..b)`, `.rows(a..)`, `.cell(r,c)` (relative to the top-left cell; any whole numbers,
-//!   so `cell(0,1)` is the cell above), `.offset(r,c)`, `.resize(h,w)`, `.data` (without the
-//!   header row), `.below(n)` and `.right(n)` (the n rows below or columns right of the range).
+//! - methods, 1-based and chainable: `.col(n)` or `.col("Amount")` (by an input's header row,
+//!   also after `.data`), `.row(n)`, `.cols(a..b)`, `.rows(a..)`, `.cell(r,c)` (relative to the
+//!   top-left cell; any whole numbers, so `cell(0,1)` is the cell above), `.offset(r,c)`,
+//!   `.resize(h,w)`, `.data` (without the header row), `.below(n)` and `.right(n)` (the n rows
+//!   below or columns right of the range).
 //!
 //! In parameters a token is written three ways: `{"$ref": "Input.col(2)"}` anywhere; the whole
 //! string `"Input.col(2)"` in a reference parameter (`cell`, `range`, `target`, `to`, keys ending
@@ -181,6 +182,8 @@ pub fn resolve_token(text: &str, env: &Env) -> R<Place> {
     let t = text.trim();
     let mut p = Parser { s: t, at: 0 };
     let (mut place, mut header) = p.base(env)?;
+    // The row of column names `col("…")` reads: the input's header row, kept through `data`.
+    let mut names_row = header.then_some(place.range.start.row);
     while p.eat('.') {
         let name = p.ident();
         if name.is_empty() {
@@ -188,10 +191,14 @@ pub fn resolve_token(text: &str, env: &Env) -> R<Place> {
         }
         let args = if p.eat('(') { p.args(t)? } else { vec![] };
         let r = place.range;
-        let range = match (name.to_ascii_lowercase().as_str(), args.as_slice()) {
+        let method = name.to_ascii_lowercase();
+        let range = match (method.as_str(), args.as_slice()) {
             ("col", [Arg::Int(n)]) => sub(r, None, Some((*n, *n)), t)?,
             ("col", [Arg::Text(h)]) => {
-                let c = header_col(env, place, h).ok_or_else(|| ResolveError::Bad(format!("'{t}': no column is headed '{h}'.")))?;
+                let Some(row) = names_row else {
+                    return bad(format!("'{t}': col(\"{h}\") needs an input with a header row; use col(n)."));
+                };
+                let c = header_col(env, place, row, h).ok_or_else(|| ResolveError::Bad(format!("'{t}': no column is headed '{h}'.")))?;
                 sub(r, None, Some((c, c)), t)?
             }
             ("row", [Arg::Int(n)]) => sub(r, Some((*n, *n)), None, t)?,
@@ -231,8 +238,12 @@ pub fn resolve_token(text: &str, env: &Env) -> R<Place> {
                 ));
             }
         };
-        // After a method the result is plain cells: `data` and `col("…")` no longer apply.
+        // After a method the result is plain cells: `data` no longer applies, and only `data`
+        // keeps the header row for `col("…")`.
         header = false;
+        if method != "data" {
+            names_row = None;
+        }
         place = Place { sheet: place.sheet, range };
     }
     p.skip_ws();
@@ -278,12 +289,12 @@ fn shift(c: CellRef, dr: i64, dc: i64, t: &str) -> R<CellRef> {
     }
 }
 
-/// The 1-based column of `place` whose header (first row) reads `h`.
-fn header_col(env: &Env, place: Place, h: &str) -> Option<i64> {
+/// The 1-based column of `place` whose header (in sheet row `row`) reads `h`.
+fn header_col(env: &Env, place: Place, row: u32, h: &str) -> Option<i64> {
     let sh = env.wb.sheet(place.sheet)?;
     let r = place.range;
     (r.start.col..=r.end.col)
-        .position(|c| crate::display::cell_text(env.wb, sh, CellRef::new(r.start.row, c)).trim().eq_ignore_ascii_case(h.trim()))
+        .position(|c| crate::display::cell_text(env.wb, sh, CellRef::new(row, c)).trim().eq_ignore_ascii_case(h.trim()))
         .map(|i| i as i64 + 1)
 }
 
@@ -532,6 +543,7 @@ mod tests {
             ("Input.col(\"date\").data", "D2:D11"),
             ("Input.data", "B3:D11"),
             ("Input.data.col(2)", "C3:C11"),
+            ("Input.data.col(\"Amount\")", "C3:C11"),
             ("Input.row(1)", "B2:D2"),
             ("Input.rows(2..)", "B3:D11"),
             ("Input.rows(2..4)", "B3:D5"),
@@ -569,13 +581,17 @@ mod tests {
     #[test]
     fn bad_tokens_say_why() {
         let wb = wb();
-        let inputs = vec![("Input".to_string(), place("B2:D11"), false)];
+        // The same cells, read with and without a header row.
+        let inputs = vec![("Input".to_string(), place("B2:D11"), false), ("Headed".to_string(), place("B2:D11"), true)];
         let env = Env { wb: &wb, active_sheet: 0, inputs: &inputs, output: None, item: None };
         for (token, needle, edge) in [
             ("Input.col(4)", "outside the range", false),
             ("Input.col(0)", "outside the range", false),
             ("Input.rows(5..2)", "outside the range", false),
-            ("Input.col(\"Nope\")", "no column is headed", false),
+            ("Headed.col(\"Nope\")", "no column is headed", false),
+            ("Input.col(\"Name\")", "needs an input with a header row", false),
+            ("Headed.col(2).col(\"Amount\")", "needs an input with a header row", false),
+            ("Name:Rates.col(\"Name\")", "needs an input with a header row", false),
             ("Input.colour(1)", "isn't a token method", false),
             ("Input.col(1", "expected", false),
             ("Input.col(x)", "whole number", false),
