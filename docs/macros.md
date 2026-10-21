@@ -1,6 +1,6 @@
 # Macros
 
-> **Last updated:** 2026-10-21 · **Change:** minor (running and checking macros: `macro.run`, `macro.check`)
+> **Last updated:** 2026-10-21 · **Change:** minor (debugging macros: `macro.debug`)
 
 GridCraft macros are typed, declarative lists of commands, not VBA. Every step runs a GridCraft
 command (the same ids the ribbon, CLI and MCP use) or one of three bounded control steps. A macro
@@ -9,8 +9,8 @@ error (a file it already wrote stays), checks where its results will land before
 and does not touch files without permission.
 Agents run macros with `macro.run` like any other command.
 
-This page describes the macro format, its tokens, and running and checking macros. The engine has
-no macro debugger, recorder or management commands in this version, and no macro interface.
+This page describes the macro format, its tokens, and running, checking and debugging macros.
+The engine has no macro recorder or management commands in this version, and no macro interface.
 
 ## A macro
 
@@ -103,6 +103,16 @@ called Output, even when a token or input has that name.
 
 `macro.check {name, inputs?, timeLimit?}` reports the bound inputs, the output anchor, any
 approval needed and the footprint, without changing anything.
+
+## Debugging
+
+`macro.debug {action, …}` with `start` (`name`, `inputs`, `breakpoints`), `step`, `continue`,
+`runTo` (`step`: a path), `stop` (`keep: true` keeps the changes) and `state`. `breakpoints` can
+be given with any action; `breakpointsOnly: true` makes the list replace the steps' own flags. The
+run stays one undo step; while it is open, edits of the workbooks it touched (its own, and any
+other its steps changed) are refused with "Finish or stop the macro first", and other workbooks
+stay editable. Each answer gives the next step with its parameters as they would run, the
+parameters of the step that just ran, and the cells changed so far.
 
 ## Storage
 
