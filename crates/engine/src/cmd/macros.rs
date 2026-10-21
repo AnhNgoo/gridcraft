@@ -223,6 +223,8 @@ fn save_recording(s: &mut Session, p: &Json, rec: &crate::record::Recorder, star
         None => crate::macros::next_name(&wb),
     };
     let mut converted = crate::macros::recorder::convert(&name, &start, &rec.steps, &wb);
+    // Steps past the macro limit are left out and counted with the ones the recorder dropped.
+    let cut = converted.mac.steps.len().saturating_sub(gridcraft_model::MAX_MACRO_STEPS);
     converted.mac.steps.truncate(gridcraft_model::MAX_MACRO_STEPS);
     if let Some(desc) = str_param(p, "description") {
         converted.mac.description = desc.chars().take(gridcraft_model::MAX_MACRO_TEXT).collect();
@@ -235,5 +237,7 @@ fn save_recording(s: &mut Session, p: &Json, rec: &crate::record::Recorder, star
     let saved = s.execute("macro.save", json!({"macro": crate::macros::macro_json(&converted.mac), "replace": false}));
     s.set_active(active);
     saved?;
-    Ok(json!({"recording": false, "saved": name, "steps": steps, "dropped": rec.dropped, "skipped": converted.skipped, "inputs": inputs}))
+    Ok(
+        json!({"recording": false, "saved": name, "steps": steps, "dropped": rec.dropped.saturating_add(cut), "skipped": converted.skipped, "inputs": inputs}),
+    )
 }

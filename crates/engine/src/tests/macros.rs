@@ -1141,3 +1141,25 @@ fn a_name_given_when_recording_stops_never_replaces_a_macro() {
     assert_eq!(recorded(&mut s, "Tidy"), ["cell.set {\"cell\":\"Z9\",\"input\":\"mine\"}"]);
     assert_eq!(recorded(&mut s, "tidy (2)"), ["cell.set {\"cell\":\"A1\",\"input\":\"recorded\"}"]);
 }
+
+#[test]
+fn steps_past_the_macro_limit_are_counted_as_dropped() {
+    let mut s = s();
+    s.execute("macro.record", json!({"relative": false})).unwrap();
+    let (doc, selection) = (s.doc().unwrap().uid, s.doc().unwrap().selection.clone());
+    let rec = s.recorder.as_mut().unwrap();
+    for i in 0..gridcraft_model::MAX_MACRO_STEPS + 5 {
+        rec.push(crate::record::RecordedStep {
+            doc,
+            sheet: 0,
+            sheet_name: "Sheet1".into(),
+            selection: selection.clone(),
+            id: "cell.set".into(),
+            params: json!({"cell": "A1", "input": i.to_string()}),
+        });
+    }
+    rec.dropped = 3;
+    let r = s.execute("macro.record", json!({"stop": true, "name": "Long"})).unwrap();
+    assert_eq!(r["steps"], gridcraft_model::MAX_MACRO_STEPS);
+    assert_eq!(r["dropped"], 8, "{r}");
+}
