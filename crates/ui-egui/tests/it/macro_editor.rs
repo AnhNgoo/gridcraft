@@ -213,3 +213,32 @@ fn run_from_the_editor_asks_before_writing_over_data() {
     click(&mut h, "Overwrite");
     assert_eq!(value(&h, "A2"), Value::Text("new".into()));
 }
+
+#[test]
+fn a_new_macro_never_replaces_one_with_its_name() {
+    let mut h = harness();
+    three(&mut h);
+    h.state_mut().macros.editor = None;
+    h.state_mut().dialog = None;
+    h.run_steps(2);
+    click(&mut h, "New Macro");
+    for button in ["Save", "Check", "Run"] {
+        {
+            let ed = h.state_mut().macros.editor.as_mut().unwrap();
+            ed.draft.name = "three".into();
+            ed.draft.steps = vec![gridcraft_engine::model::Step::command("cell.set", json!({"cell": "B1", "input": "x"}))];
+            ed.dirty = true;
+        }
+        h.run_steps(2);
+        click(&mut h, button);
+        let wb = &h.state().session.active().unwrap().wb;
+        assert_eq!(wb.macros.len(), 1, "{button}");
+        assert_eq!(wb.macros[0].name, "Three", "{button}");
+        assert_eq!(wb.macros[0].steps.len(), 3, "{button}: the saved macro is intact");
+        assert!(value(&h, "B1").is_empty(), "{button}: nothing ran");
+        let msg = h.state_mut().message.take().map(|(_, m)| m).unwrap_or_default();
+        assert!(msg.contains("A macro called 'three' already exists"), "{button}: {msg}");
+        assert!(h.state().macros.editor.as_ref().unwrap().saved_as.is_none());
+        h.run_steps(2);
+    }
+}

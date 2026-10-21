@@ -522,7 +522,9 @@ pub fn save(app: &mut SheetApp, ed: &mut Editor) -> bool {
         app.message = Some(("Save Macro".into(), crate::clean_error(&e)));
         return false;
     }
-    match app.run("macro.save", json!({"macro": gridcraft_engine::macros::macro_json(&ed.draft)})) {
+    // A new draft never replaces a macro that has its name.
+    let replace = ed.saved_as.is_some();
+    match app.run("macro.save", json!({"macro": gridcraft_engine::macros::macro_json(&ed.draft), "replace": replace})) {
         Ok(_) => {
             ed.saved_as = Some(ed.draft.name.clone());
             ed.dirty = false;
