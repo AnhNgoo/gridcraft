@@ -42,6 +42,11 @@ impl Debugger {
     pub fn locks(&self, doc: u64) -> bool {
         self.touched.contains(&doc)
     }
+
+    /// Whether one of the run's steps is running (its machine is out of the session).
+    pub fn stepping(&self) -> bool {
+        self.machine.is_none()
+    }
 }
 
 /// Each open workbook's uid and its current version, to see which ones a step changes.
@@ -339,7 +344,7 @@ fn changed(s: &Session, d: &Debugger) -> Vec<String> {
 /// After a command panicked while a macro was being debugged: if the run lost its place, roll
 /// it back so its undo group doesn't stay open.
 pub(crate) fn recover(s: &mut Session) {
-    if s.macro_debug.as_ref().is_some_and(|d| d.machine.is_none())
+    if s.macro_debug.as_ref().is_some_and(Debugger::stepping)
         && let Some(mut d) = s.macro_debug.take()
         && let Some(token) = d.token.take()
     {
@@ -435,5 +440,33 @@ mod tests {
         assert!(s.execute("cell.set", json!({"cell": "B1", "input": "no"})).is_err());
         s.execute("macro.debug", json!({"action": "stop", "keep": true})).unwrap();
         s.execute("cell.set", json!({"cell": "B1", "input": "free"})).unwrap();
+    }
+
+    #[test]
+    fn edits_run_by_another_command_wait_too() {
+        let mut s = Session::new();
+        s.new_workbook();
+        let m = crate::macros::parse_macro(&json!({"name": "M", "output": {"onConflict": "overwrite"}, "steps": [
+            {"command": "cell.set", "params": {"cell": "A1", "input": "x"}},
+            {"command": "cell.set", "params": {"cell": "A2", "input": "y"}}
+        ]}))
+        .unwrap();
+        let d = s.doc_mut().unwrap();
+        let mut wb = (*d.wb).clone();
+        wb.macros.push(m);
+        d.wb = std::sync::Arc::new(wb);
+        s.execute("automate.recordActions", json!({})).unwrap();
+        s.execute("cell.set", json!({"cell": "C1", "input": "1"})).unwrap();
+        s.execute("macro.debug", json!({"name": "M"})).unwrap();
+        s.execute("macro.debug", json!({"action": "step"})).unwrap();
+        // Record Actions changes nothing itself; stopping it saves the script with a nested
+        // command, which would land in the run's undo group.
+        let e = s.execute("automate.recordActions", json!({"stop": true, "name": "S"})).unwrap_err().to_string();
+        assert!(e.contains(super::BUSY), "{e}");
+        assert!(s.execute("automate.allScripts", json!({})).unwrap().as_array().unwrap().is_empty());
+        // The run's own steps still go ahead.
+        let r = s.execute("macro.debug", json!({"action": "step"})).unwrap();
+        assert_eq!(r["executed"], 2, "{r}");
+        assert!(s.macro_debug.is_none());
     }
 }

@@ -110,9 +110,10 @@ approval needed and the footprint, without changing anything.
 `runTo` (`step`: a path), `stop` (`keep: true` keeps the changes) and `state`. `breakpoints` can
 be given with any action; `breakpointsOnly: true` makes the list replace the steps' own flags. The
 run stays one undo step; while it is open, edits of the workbooks it touched (its own, and any
-other its steps changed) are refused with "Finish or stop the macro first", and other workbooks
-stay editable. Each answer gives the next step with its parameters as they would run, the
-parameters of the step that just ran, and the cells changed so far.
+other its steps changed) are refused with "Finish or stop the macro first", also when another
+command makes them (stopping Record Actions saves a script), and other workbooks stay
+editable. Each answer gives the next step with its parameters as they would run, the parameters
+of the step that just ran, and the cells changed so far.
 
 ## Storage
 
