@@ -486,6 +486,15 @@ fn macros_from_a_file_ask_before_running() {
     assert_eq!(v(&s, "A1").display(), "ran");
     // Approved once per macro content: the second run doesn't ask.
     s.execute("macro.run", json!({"name": "Theirs"})).unwrap();
+    // The approval holds the macro's whole content, not a hash two macros could share.
+    let m = s.doc().unwrap().wb.macros[0].clone();
+    let doc = s.doc().unwrap().uid;
+    let key: (u64, String) = (doc, crate::macros::macro_json(&m).to_string());
+    assert!(s.macro_approvals.contains(&key));
+    // The JSON is canonical: the same macro with its keys in another order is the same macro.
+    let a = crate::macros::parse_macro(&json!({"name": "M", "steps": [{"command": "cell.set", "params": {"cell": "A1", "input": "x"}}]})).unwrap();
+    let b = crate::macros::parse_macro(&json!({"steps": [{"params": {"input": "x", "cell": "A1"}, "command": "cell.set"}], "name": "M"})).unwrap();
+    assert_eq!(crate::macros::fingerprint(&a), crate::macros::fingerprint(&b));
 }
 
 #[test]

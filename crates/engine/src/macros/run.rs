@@ -144,7 +144,7 @@ pub fn approve(s: &mut Session, m: &Macro, doc: u64, asks: &[String], approve: b
     if asks.is_empty() {
         return Ok(());
     }
-    let key = (doc, super::hash(m));
+    let key = (doc, super::fingerprint(m));
     if s.macro_approvals.contains(&key) {
         return Ok(());
     }
@@ -1227,7 +1227,7 @@ pub fn check(s: &mut Session, name: &str, p: &Json) -> Result<Json> {
             return Ok(out);
         }
     };
-    let approved = s.macro_approvals.contains(&(doc, super::hash(&m)));
+    let approved = s.macro_approvals.contains(&(doc, super::fingerprint(&m)));
     if !asks.is_empty() && !approved {
         // Nothing from an unapproved macro runs, not even in a dry run.
         out["needsApproval"] = json!(asks);

@@ -88,12 +88,11 @@ pub fn find(wb: &Workbook, name: &str) -> Option<usize> {
     wb.macros.iter().position(|m| m.name.eq_ignore_ascii_case(name))
 }
 
-/// A stable fingerprint of a macro's content: approval to run a macro from a file holds until
-/// the macro changes.
-pub fn hash(m: &Macro) -> u64 {
-    // FNV-1a over the macro's JSON.
-    let text = macro_json(m).to_string();
-    text.bytes().fold(0xcbf2_9ce4_8422_2325u64, |h, b| (h ^ u64::from(b)).wrapping_mul(0x0100_0000_01b3))
+/// A macro's content as canonical JSON text (object keys sorted): approval to run a macro holds
+/// until the macro changes. It is the text itself rather than a hash, so no two different macros
+/// share it.
+pub fn fingerprint(m: &Macro) -> String {
+    macro_json(m).to_string()
 }
 
 /// A copy of `wb` for xlsx with each macro in hidden names (`_gc_macro_<n>_<k>`) instead of the

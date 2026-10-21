@@ -322,8 +322,9 @@ pub struct Session {
     pub recorder: Option<record::Recorder>,
     /// How many `execute` calls are running (0 between top-level commands).
     depth: u32,
-    /// Macros the person allowed to run in this session: (document uid, macro content hash).
-    pub macro_approvals: std::collections::HashSet<(u64, u64)>,
+    /// Macros the person allowed to run in this session: (document uid, the macro's content as
+    /// canonical JSON, from [`macros::fingerprint`]).
+    pub macro_approvals: std::collections::HashSet<(u64, String)>,
     /// Windows hidden with View › Hide.
     pub hidden_windows: Vec<usize>,
     /// Draw tab tool: "" (select), "pen" or "eraser"; pen colour and width.
