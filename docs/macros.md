@@ -4,8 +4,9 @@
 
 GridCraft macros are typed, declarative lists of commands, not VBA. Every step runs a GridCraft
 command (the same ids the ribbon, CLI and MCP use) or one of three bounded control steps. A macro
-declares the inputs it works on, runs as one undo step, rolls everything back on an error, checks
-where its results will land before it writes them, and does not touch files without permission.
+declares the inputs it works on, runs as one undo step, rolls all workbook changes back on an
+error (a file it already wrote stays), checks where its results will land before it writes them,
+and does not touch files without permission.
 Agents run macros with `macro.run` like any other command.
 
 This page describes the macro format, its tokens, and running and checking macros. The engine has
