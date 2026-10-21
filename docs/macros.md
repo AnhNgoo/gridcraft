@@ -57,7 +57,9 @@ Methods narrow or move a range and chain: `col(2)` or `col("Amount")`, `row(1)`,
 `rows(2..)`, `cell(r,c)` (relative to the top-left cell; `cell(0,1)` is the cell above),
 `offset(r,c)`, `resize(h,w)`, `data` (without the header row), `below(n)` and `right(n)`.
 `col("Amount")` looks the name up in an input's header row, directly or after `data`; on a range
-without a header row it is refused.
+without a header row it is refused. A defined name can hold periods: `Name:Sales.Q1` is the name
+`Sales.Q1`, and `Name:Sales.Q1.cell(1,1)` its first cell, because the longest name or table that
+exists is used and methods follow it.
 
 Write a token as the whole value of a reference parameter (`cell`, `range`, `target`, keys ending
 in `Cell` or `Range`…), as `{"$ref": "Input.col(2)"}` anywhere, or as `{{Input.col(2)}}` inside

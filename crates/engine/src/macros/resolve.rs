@@ -5,7 +5,8 @@
 //!
 //! - bases: a declared input (`Input`, `Rates`), `Output` (the output rule's anchor), `Row` or
 //!   `Column` (the current item of the Repeat step around it), and `Name:Total` (a defined name or
-//!   a table's data);
+//!   a table's data; a name can hold periods, and the longest one that exists is used, so
+//!   `Name:Sales.Q1.cell(1,1)` is a cell of `Sales.Q1`);
 //! - methods, 1-based and chainable: `.col(n)` or `.col("Amount")` (by an input's header row,
 //!   also after `.data`), `.row(n)`, `.cols(a..b)`, `.rows(a..)`, `.cell(r,c)` (relative to the
 //!   top-left cell; any whole numbers, so `cell(0,1)` is the cell above), `.offset(r,c)`,
@@ -177,6 +178,33 @@ fn named(name: &str, env: &Env) -> R<Place> {
     bad(format!("There is no name or table called '{name}'."))
 }
 
+/// Token method names.
+const METHODS: &[&str] = &["col", "row", "cols", "rows", "cell", "offset", "resize", "data", "below", "right"];
+
+/// Where the name ends in `run`, the text after `Name:` up to the first character a name can't
+/// hold: at the end or at a period, the longest choice that is a defined name or table. When
+/// none is, the name ends before the first method (`Nope.cell`), so the error names it.
+fn name_end(run: &str, env: &Env) -> usize {
+    // One pass over the names and tables, as a single lookup makes.
+    let fits = |name: &str| {
+        !name.is_empty()
+            && run.get(..name.len()).is_some_and(|head| head.eq_ignore_ascii_case(name))
+            && run.get(name.len()..).is_some_and(|rest| rest.is_empty() || rest.starts_with('.'))
+    };
+    let names = env.wb.names.iter().filter(|n| n.scope.is_none() || n.scope == Some(env.active_sheet)).map(|n| n.name.as_str());
+    let tables = env.wb.sheets.iter().flat_map(|sh| sh.tables.iter().map(|t| t.name.as_str()));
+    if let Some(end) = names.chain(tables).filter(|n| fits(n)).map(str::len).max() {
+        return end;
+    }
+    run.match_indices('.')
+        .map(|(i, _)| i)
+        .find(|&i| {
+            let next = run.get(i + 1..).unwrap_or("").split('.').next().unwrap_or("");
+            METHODS.iter().any(|m| m.eq_ignore_ascii_case(next))
+        })
+        .unwrap_or(run.len())
+}
+
 /// Resolves a token (see the module docs).
 pub fn resolve_token(text: &str, env: &Env) -> R<Place> {
     let t = text.trim();
@@ -233,9 +261,7 @@ pub fn resolve_token(text: &str, env: &Env) -> R<Place> {
                 RangeRef::new(left, shift(r.end, 0, n, t)?)
             }
             _ => {
-                return bad(format!(
-                    "'{t}': '{name}' with these arguments isn't a token method (col, row, cols, rows, cell, offset, resize, data, below, right)."
-                ));
+                return bad(format!("'{t}': '{name}' with these arguments isn't a token method ({}).", METHODS.join(", ")));
             }
         };
         // After a method the result is plain cells: `data` no longer applies, and only `data`
@@ -351,14 +377,17 @@ impl Parser<'_> {
         self.skip_ws();
         if self.rest().get(..5).is_some_and(|h| h.eq_ignore_ascii_case("name:")) {
             self.at += 5;
-            // A name runs to the first `.` followed by a method, or the end.
-            let n: usize = self.rest().chars().take_while(|c| c.is_alphanumeric() || matches!(c, '_' | '\\')).map(char::len_utf8).sum();
-            let name = self.rest().get(..n).unwrap_or("").to_string();
-            self.at += n;
+            // A name can hold periods (`Sales.Q1`), so it is the longest part of the run, up to
+            // a period or the end, that names something; methods follow it.
+            let n: usize = self.rest().chars().take_while(|c| c.is_alphanumeric() || matches!(c, '_' | '\\' | '.')).map(char::len_utf8).sum();
+            let run = self.rest().get(..n).unwrap_or("").to_string();
+            let end = name_end(&run, env);
+            let name = run.get(..end).unwrap_or("");
             if name.is_empty() {
                 return bad("'Name:' needs a defined name after it.");
             }
-            return Ok((named(&name, env)?, false));
+            self.at += end;
+            return Ok((named(name, env)?, false));
         }
         let base = self.ident();
         if base.eq_ignore_ascii_case("Output") {
@@ -688,6 +717,61 @@ mod tests {
             check(&env, "Input.col(2)", "C2:C11");
             check(&env, "Rates", "F2:F5");
             check(&env, "Row", "B5:D5");
+        }
+    }
+
+    #[test]
+    fn defined_names_can_hold_periods() {
+        // `Sales.Q1` is one defined name, beside `Sales`; `Data.row` has a segment that reads like
+        // a method. The longest name that exists is used, and methods follow it.
+        let mut wb = wb();
+        for (name, formula) in [("Sales", "Sheet1!$A$1"), ("Sales.Q1", "Sheet1!$B$2:$C$5"), ("Data.row", "'My Data'!$E$1:$E$3")] {
+            wb.names.push(gridcraft_model::DefinedName {
+                name: name.into(),
+                scope: None,
+                formula: formula.into(),
+                comment: String::new(),
+                hidden: false,
+            });
+        }
+        let env = Env { wb: &wb, active_sheet: 0, inputs: &[], output: None, item: None };
+        for (token, want) in [
+            ("Name:Sales.Q1", "B2:C5"),
+            ("Name:sales.q1", "B2:C5"),
+            ("Name:Sales.Q1.cell(1,1)", "B2"),
+            ("Name:Sales.Q1.col(2).row(4)", "C5"),
+            ("Name:Sales", "A1"),
+            ("Name:Sales.offset(1,0)", "A2"),
+            ("Name:Data.row", "'My Data'!E1:E3"),
+            ("Name:Data.row.row(2)", "'My Data'!E2"),
+            ("Name:Data.row.cell(1,1)", "'My Data'!E1"),
+            ("Sales.Q1", "B2:C5"),
+        ] {
+            check(&env, token, want);
+        }
+        // In a reference parameter, `$ref` and `{{…}}`, with and without a method.
+        let p = json!({
+            "range": "Name:Sales.Q1",
+            "cell": "Name:Sales.Q1.cell(1,1)",
+            "a": {"$ref": "Name:Sales.Q1"},
+            "b": {"$ref": "Name:Sales.Q1.cell(2,2)"},
+            "formula": "=SUM({{Name:Sales.Q1}})+{{Name:Sales.Q1.cell(1,2)}}"
+        });
+        let r = resolve_params(&p, &env).unwrap();
+        assert_eq!(r, json!({"range": "B2:C5", "cell": "B2", "a": "B2:C5", "b": "C3", "formula": "=SUM(B2:C5)+C2"}));
+        // Unknown names and bad methods still fail, naming what is wrong.
+        for (token, needle) in [
+            ("Name:Nope.Q1", "no name or table called 'Nope.Q1'"),
+            ("Name:Nope.cell(1,1)", "no name or table called 'Nope'"),
+            ("Name:Sales.Q1.bogus(1)", "'bogus' with these arguments isn't a token method"),
+            ("Name:Sales.Q1.cell(1", "expected"),
+            ("Name:Sales.Q1.", "method name"),
+            ("Name:.cell(1,1)", "needs a defined name"),
+        ] {
+            let e = resolve_ref(token, &env).unwrap_err();
+            assert!(e.message().contains(needle), "{token}: {e}");
+            let e = resolve_params(&json!({"formula": format!("={{{{{token}}}}}")}), &env).unwrap_err();
+            assert!(e.message().contains(needle), "{token} in braces: {e}");
         }
     }
 
