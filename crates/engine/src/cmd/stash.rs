@@ -40,7 +40,7 @@ pub fn get(wb: &Workbook, key: &str) -> Option<String> {
         }
     }
     let mut out = String::new();
-    if chunks.is_empty() {
+    if !chunks.contains_key(&0) {
         out = string_literals(legacy?);
     } else {
         // Chunks run 0, 1, 2, …; anything after a gap isn't part of the item.
@@ -269,6 +269,11 @@ mod tests {
         wb.names.push(name("_gc_gap_0", "\"a\""));
         wb.names.push(name("_gc_gap_2", "\"c\""));
         assert_eq!(get(&wb, "gap").as_deref(), Some("a"));
+        // Only a later chunk: no item, and the legacy name is still read.
+        wb.names.push(name("_gc_orphan_2", "\"c\""));
+        assert_eq!(get(&wb, "orphan"), None);
+        wb.names.push(name("_sc_orphan", "\"old\""));
+        assert_eq!(get(&wb, "orphan").as_deref(), Some("old"));
         // Chunks out of order, a duplicate, junk around the literals, an unterminated literal.
         wb.names.push(name("_gc_mix_1", "\"b\"&A1&"));
         wb.names.push(name("_gc_mix_0", "SUM(\"a\")"));
