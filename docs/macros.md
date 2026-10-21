@@ -119,7 +119,8 @@ of the step that just ran, and the cells changed so far.
 ## Recording
 
 `macro.record` toggles recording (`relative: false` for absolute references; `name` and
-`description` when stopping). The macro is saved in the workbook where recording started, even if
+`description` when stopping; a name that another macro has gets a suffix, such as `Tidy (2)`, so
+stopping never replaces a macro). The macro is saved in the workbook where recording started, even if
 another one is active; if that workbook was closed, stopping ends the recording without saving it.
 When saving the recording fails (a name the check refuses, a workbook at its macro limit),
 recording goes on, so stopping again keeps what was recorded. With relative references the

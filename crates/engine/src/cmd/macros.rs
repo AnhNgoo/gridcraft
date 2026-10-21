@@ -45,7 +45,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "Record Macro",
             ["View", "Macros"],
             None,
-            "{stop?: bool, relative?: bool (default true; when starting), name?, description? (when stopping)} toggles recording; with relative references the selection when it starts is the example input → {recording, relative?, input?} or {recording: false, saved, steps, dropped, skipped, inputs}",
+            "{stop?: bool, relative?: bool (default true; when starting), name?, description? (when stopping; a taken name gets a suffix)} toggles recording; with relative references the selection when it starts is the example input → {recording, relative?, input?} or {recording: false, saved, steps, dropped, skipped, inputs}",
             has_doc,
             record
         ),
@@ -217,8 +217,9 @@ fn save_recording(s: &mut Session, p: &Json, rec: &crate::record::Recorder, star
         relative: true,
     });
     let wb = d.wb.clone();
+    // A name another macro has gets a suffix, so stopping never replaces a macro.
     let name = match str_param(p, "name").map(str::trim).filter(|n| !n.is_empty()) {
-        Some(n) => n.to_string(),
+        Some(n) => crate::macros::unique_name(&wb, n),
         None => crate::macros::next_name(&wb),
     };
     let mut converted = crate::macros::recorder::convert(&name, &start, &rec.steps, &wb);
@@ -231,7 +232,7 @@ fn save_recording(s: &mut Session, p: &Json, rec: &crate::record::Recorder, star
     // Saved into that workbook even when another one is active now.
     let active = s.active_index();
     s.set_active(at);
-    let saved = s.execute("macro.save", json!({"macro": crate::macros::macro_json(&converted.mac)}));
+    let saved = s.execute("macro.save", json!({"macro": crate::macros::macro_json(&converted.mac), "replace": false}));
     s.set_active(active);
     saved?;
     Ok(json!({"recording": false, "saved": name, "steps": steps, "dropped": rec.dropped, "skipped": converted.skipped, "inputs": inputs}))

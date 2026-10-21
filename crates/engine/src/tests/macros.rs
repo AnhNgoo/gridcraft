@@ -1126,3 +1126,18 @@ fn a_recording_is_saved_in_the_workbook_where_it_started() {
     assert!(!s.is_recording());
     assert!(s.doc().unwrap().wb.macros.is_empty());
 }
+
+#[test]
+fn a_name_given_when_recording_stops_never_replaces_a_macro() {
+    let mut s = s();
+    let original = json!({"command": "cell.set", "params": {"cell": "Z9", "input": "mine"}});
+    put(&mut s, json!({"name": "Tidy", "description": "keep me", "steps": [original]}));
+    s.execute("macro.record", json!({"relative": false})).unwrap();
+    set(&mut s, "A1", "recorded");
+    let r = s.execute("macro.record", json!({"stop": true, "name": "tidy"})).unwrap();
+    assert_eq!(r["saved"], "tidy (2)");
+    let kept = crate::macros::parse_macro(&s.execute("macro.get", json!({"name": "Tidy"})).unwrap()).unwrap();
+    assert_eq!((kept.name.as_str(), kept.description.as_str(), kept.steps.len()), ("Tidy", "keep me", 1));
+    assert_eq!(recorded(&mut s, "Tidy"), ["cell.set {\"cell\":\"Z9\",\"input\":\"mine\"}"]);
+    assert_eq!(recorded(&mut s, "tidy (2)"), ["cell.set {\"cell\":\"A1\",\"input\":\"recorded\"}"]);
+}
