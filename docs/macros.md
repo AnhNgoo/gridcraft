@@ -1,13 +1,15 @@
 # Macros
 
-> **Last updated:** 2026-10-21 · **Change:** minor (macro tokens)
+> **Last updated:** 2026-10-21 · **Change:** minor (running and checking macros: `macro.run`, `macro.check`)
 
 GridCraft macros are typed, declarative lists of commands, not VBA. Every step runs a GridCraft
 command (the same ids the ribbon, CLI and MCP use) or one of three bounded control steps. A macro
-declares the inputs it works on.
+declares the inputs it works on, runs as one undo step, rolls everything back on an error, checks
+where its results will land before it writes them, and does not touch files without permission.
+Agents run macros with `macro.run` like any other command.
 
-This page describes the macro format, the tokens its steps use and how macros are saved in a
-workbook. The engine has no command that runs macros in this version.
+This page describes the macro format, its tokens, and running and checking macros. The engine has
+no macro debugger, recorder or management commands in this version, and no macro interface.
 
 ## A macro
 
@@ -66,6 +68,30 @@ in `Cell` or `Range`…), as `{"$ref": "Input.col(2)"}` anywhere, or as `{{Input
 any string, such as a formula. Plain A1 references stay absolute; a `Name:` anchor follows
 inserted rows. A reference with a sheet name is never a token, so `Output!A1` is a cell on a sheet
 called Output, even when a token or input has that name.
+
+## Running
+
+`macro.run {name, inputs?, onConflict?, overwrite?, approve?, timeLimit?}`:
+
+1. **Policy.** File, app, window, automate and macro commands, and Undo and Redo, never run in a
+   macro. Reading or writing a file (`data.getData`, `data.fromTextCsv`, `insert.picture` or
+   `pageLayout.background` with a `path`, or an export or print with a `path`) needs the command
+   in the macro's `permissions`. Any `path` other than `null` counts, including a blank one and a
+   token, and the policy is checked again on the parameters as they are when the step runs. A macro that touches files, or that came with a workbook opened
+   from a file, runs once the person approves it: the call fails with `approve: …` and runs with
+   `approve: true`. Approval lasts for the session, until the macro changes.
+2. **Footprint.** The macro first runs in dry-run mode on the real workbook, and everything is put
+   back. Cells it would write outside its inputs that hold data, and sheets and objects it would
+   delete, are conflicts, handled by `onConflict` (or the macro's `output.onConflict`): `ask` (the
+   call fails with `confirm: …`; `overwrite: true` answers it), `fail`, `overwrite`, `shiftDown` or
+   `shiftRight` (Insert Cells makes room, then the footprint is checked again). Steps that touch
+   files, and Solver, end the dry run early; the footprint then says it is partial.
+3. **Run.** One undo step, "Run Macro: Totals". Any error rolls the whole run back and names the
+   step: `Step 3.1 (cell.set): …` (paths are 1-based; `2.1` is inside a Repeat, `4.then.1` inside
+   an If).
+
+`macro.check {name, inputs?}` reports the bound inputs, the output anchor, any approval needed and
+the footprint, without changing anything.
 
 ## Storage
 
