@@ -7,7 +7,7 @@
 //! the open document. Scripts made with Automate › New Script or Record Actions are a separate,
 //! older feature with their own storage; macros neither read nor change them.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashMap, HashSet};
 
 use gridcraft_model::{DefinedName, Macro, Workbook};
 use serde_json::{Value as Json, json};
@@ -142,6 +142,7 @@ pub fn load(wb: &mut Workbook) -> Vec<String> {
     // All of them go through the same limits, and a clashing name gets a suffix.
     let mut all = std::mem::take(&mut wb.macros);
     all.extend(found);
+    let mut taken = Taken::default();
     for m in all {
         if wb.macros.len() >= gridcraft_model::MAX_MACROS {
             bad += 1;
@@ -149,12 +150,15 @@ pub fn load(wb: &mut Workbook) -> Vec<String> {
         }
         let mut m = m;
         let checked = m.check_limits().and_then(|()| {
-            m.name = unique_name(wb, m.name.trim());
+            m.name = taken.unique(m.name.trim());
             // The macro as it is kept, renamed, must still pass, or the next save would lose it.
             m.check_limits().and_then(|()| check_size(&m))
         });
         match checked {
-            Ok(()) => wb.macros.push(m),
+            Ok(()) => {
+                taken.insert(&m.name);
+                wb.macros.push(m);
+            }
             Err(_) => bad += 1,
         }
     }
@@ -181,19 +185,66 @@ fn macro_item(n: &DefinedName) -> Option<(String, Option<u64>)> {
 /// `name`, or `name (2)`, `name (3)`… if a macro already has it. A long name is shortened to make
 /// room for the suffix, so the result stays within [`gridcraft_model::MAX_MACRO_NAME`] characters.
 pub fn unique_name(wb: &Workbook, name: &str) -> String {
-    let name = if name.is_empty() { "Macro" } else { name };
-    if find(wb, name).is_none() {
-        return name.to_string();
+    let mut taken = Taken::default();
+    for m in &wb.macros {
+        taken.insert(&m.name);
     }
-    (2..)
-        .map(|n| {
+    taken.unique(name)
+}
+
+/// Macro names in use, compared as [`find`] compares them, and the next suffix to try for each
+/// shortened name and suffix width, so naming many clashing macros takes near-linear work.
+#[derive(Default)]
+struct Taken {
+    names: HashSet<String>,
+    next: HashMap<(String, usize), u64>,
+    /// Name lookups made, for tests.
+    probes: usize,
+}
+
+impl Taken {
+    fn key(name: &str) -> String {
+        name.trim().to_ascii_lowercase()
+    }
+
+    fn insert(&mut self, name: &str) {
+        self.names.insert(Taken::key(name));
+    }
+
+    fn contains(&mut self, name: &str) -> bool {
+        self.probes = self.probes.saturating_add(1);
+        self.names.contains(&Taken::key(name))
+    }
+
+    /// The first of `name`, `name (2)`, `name (3)`… not in use.
+    fn unique(&mut self, name: &str) -> String {
+        let name = if name.is_empty() { "Macro" } else { name };
+        if !self.contains(name) {
+            return name.to_string();
+        }
+        let mut n: u64 = 2;
+        loop {
             let suffix = format!(" ({n})");
             let keep = gridcraft_model::MAX_MACRO_NAME.saturating_sub(suffix.chars().count());
             let base: String = name.chars().take(keep).collect();
-            format!("{}{suffix}", base.trim_end())
-        })
-        .find(|n| find(wb, n).is_none())
-        .unwrap_or_else(|| name.to_string())
+            let base = base.trim_end();
+            // Every candidate for this base and suffix width below `next` is in use already
+            // (names are only added), so the search goes on from there.
+            let key = (Taken::key(base), suffix.len());
+            let next = self.next.get(&key).copied().unwrap_or(n);
+            if next > n {
+                n = next;
+                continue;
+            }
+            let Some(after) = n.checked_add(1) else { return name.to_string() };
+            self.next.insert(key, after);
+            let candidate = format!("{base}{suffix}");
+            if !self.contains(&candidate) {
+                return candidate;
+            }
+            n = after;
+        }
+    }
 }
 
 #[cfg(test)]

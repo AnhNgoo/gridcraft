@@ -317,3 +317,53 @@ fn a_macro_in_a_newer_format_is_dropped_not_rewritten() {
     assert!(back.names.is_empty(), "{:?}", names_of(&back));
     check("book.xlsx", &back, &warnings);
 }
+
+#[test]
+fn many_macros_with_one_name_all_survive_save_and_reopen() {
+    // MAX_MACROS macros with the same name, at the length limit, so the suffixes run from " (2)"
+    // to " (1000)" and the kept part of the name shrinks as they widen.
+    let long = "é".repeat(MAX_MACRO_NAME);
+    for file in ["same.json", "same.xlsx"] {
+        let mut wb = Workbook::new();
+        wb.macros = (0..MAX_MACROS).map(|i| Macro { name: long.clone(), description: format!("{i}"), ..Macro::default() }).collect();
+        let (first, warnings) = crate::io::open_bytes(file, &crate::io::save_bytes(&wb, file).unwrap()).unwrap();
+        assert!(warnings.is_empty(), "{file}: {warnings:?}");
+        assert_eq!(first.macros.len(), MAX_MACROS, "{file}");
+        let names: std::collections::HashSet<String> = first.macros.iter().map(|m| m.name.to_lowercase()).collect();
+        assert_eq!(names.len(), MAX_MACROS, "{file}: every name is different");
+        assert!(first.macros.iter().all(|m| m.name.chars().count() <= MAX_MACRO_NAME && m.check_limits().is_ok()), "{file}");
+        assert_eq!(first.macros[0].name, long);
+        assert_eq!(first.macros[9].name, format!("{} (10)", "é".repeat(MAX_MACRO_NAME - 5)));
+        assert_eq!(first.macros[MAX_MACROS - 1].name, format!("{} (1000)", "é".repeat(MAX_MACRO_NAME - 7)));
+        assert!(first.macros.iter().enumerate().all(|(i, m)| m.description == format!("{i}")), "{file}: order kept");
+        let (again, warnings) = crate::io::open_bytes(file, &crate::io::save_bytes(&first, file).unwrap()).unwrap();
+        assert!(warnings.is_empty(), "{file}: {warnings:?}");
+        assert_eq!(again.macros, first.macros, "{file}");
+    }
+}
+
+#[test]
+fn naming_clashing_macros_takes_linear_work() {
+    // Each suffix is looked up about once, not once per earlier macro with the same name.
+    let mut taken = Taken::default();
+    // Names a file may already use, in the way of the first suffixes.
+    for n in 2..=500 {
+        taken.insert(&format!("Same ({n})"));
+    }
+    let mut out = Vec::new();
+    for _ in 0..MAX_MACROS {
+        let name = taken.unique("SAME");
+        taken.insert(&name);
+        out.push(name);
+    }
+    assert_eq!(out[..3], ["SAME", "SAME (501)", "SAME (502)"]);
+    assert!(taken.probes <= 3 * MAX_MACROS, "{} lookups", taken.probes);
+    // The smallest free suffix is still the one used.
+    let mut taken = Taken::default();
+    for name in ["A", "A (3)"] {
+        taken.insert(name);
+    }
+    assert_eq!(taken.unique("a"), "a (2)");
+    taken.insert("a (2)");
+    assert_eq!(taken.unique("a"), "a (4)");
+}
