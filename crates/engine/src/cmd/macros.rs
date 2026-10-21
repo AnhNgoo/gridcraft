@@ -185,8 +185,9 @@ fn start_recording(s: &mut Session, relative: bool) -> Result<Json> {
 }
 
 /// Stops recording and saves what was recorded as a macro, in the workbook where recording
-/// started. When saving fails (a bad name, a full workbook) the recording goes on, so stopping
-/// again keeps what was recorded; when that workbook was closed, the recording ends unsaved.
+/// started. When saving fails (a bad name, a full workbook, a macro being debugged there) the
+/// recording goes on, so stopping again keeps what was recorded; when that workbook was closed,
+/// the recording ends unsaved.
 fn stop_recording(s: &mut Session, p: &Json) -> Result<Json> {
     let Some(rec) = s.stop_recording() else { return Ok(json!({"recording": false})) };
     let start = s.macro_recording.take();
@@ -209,6 +210,10 @@ fn stop_recording(s: &mut Session, p: &Json) -> Result<Json> {
 /// Saves the recording into the workbook at index `at`.
 fn save_recording(s: &mut Session, p: &Json, rec: &crate::record::Recorder, start: Option<RecordingStart>, at: usize) -> Result<Json> {
     let d = s.docs.get(at).ok_or(EngineError::NoDocument)?;
+    // A macro being debugged there could still roll the saved macro back with its run.
+    if s.macro_debug.as_ref().is_some_and(|m| m.locks(d.uid)) {
+        return Err(EngineError::Disabled("macro.record".into(), crate::macros::debug::BUSY.into()));
+    }
     let start = start.unwrap_or_else(|| RecordingStart {
         doc: d.uid,
         sheet: d.wb.active_sheet,

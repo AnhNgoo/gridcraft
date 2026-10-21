@@ -1163,3 +1163,22 @@ fn steps_past_the_macro_limit_are_counted_as_dropped() {
     assert_eq!(r["steps"], gridcraft_model::MAX_MACRO_STEPS);
     assert_eq!(r["dropped"], 8, "{r}");
 }
+
+#[test]
+fn a_recording_waits_while_a_macro_in_its_workbook_is_debugged() {
+    let mut s = s();
+    stepper(&mut s);
+    s.execute("macro.record", json!({"relative": false})).unwrap();
+    set(&mut s, "Z1", "typed");
+    debug(&mut s, json!({"name": "Walk", "inputs": "B2:C5"}));
+    debug(&mut s, json!({"action": "step"}));
+    // Saved now, the macro would go into the run's undo group, and stopping the run without
+    // keeping its changes would delete it again.
+    let r = s.execute("macro.record", json!({"stop": true, "name": "Typed"}));
+    assert!(matches!(&r, Err(EngineError::Disabled(id, why)) if id == "macro.record" && why == crate::macros::debug::BUSY), "{r:?}");
+    assert!(s.is_recording());
+    debug(&mut s, json!({"action": "stop"}));
+    let r = s.execute("macro.record", json!({"stop": true, "name": "Typed"})).unwrap();
+    assert_eq!(r["saved"], "Typed");
+    assert_eq!(recorded(&mut s, "Typed"), ["cell.set {\"cell\":\"Z1\",\"input\":\"typed\"}"]);
+}
