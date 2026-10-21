@@ -1,14 +1,13 @@
 # Macros
 
-> **Last updated:** 2026-10-21 · **Change:** major (created: the macro format and storage)
+> **Last updated:** 2026-10-21 · **Change:** minor (macro tokens)
 
 GridCraft macros are typed, declarative lists of commands, not VBA. Every step runs a GridCraft
 command (the same ids the ribbon, CLI and MCP use) or one of three bounded control steps. A macro
 declares the inputs it works on.
 
-This page describes the macro format and how macros are saved in a workbook. Step parameters
-can hold tokens such as `Input` and `Output`; the engine does not resolve or run them in this
-version.
+This page describes the macro format, the tokens its steps use and how macros are saved in a
+workbook. The engine has no command that runs macros in this version.
 
 ## A macro
 
@@ -42,6 +41,26 @@ version.
   (for the first input) the selection, and refuses with messages that name the cells:
   "Input column 2 (Amount) must hold numbers; C4 holds text."
 - **Limits**: 1,000 macros a workbook, 10,000 steps a macro, and Repeat and If nested 4 deep.
+
+## Tokens
+
+References in step parameters can be tokens, worked out when the step runs:
+
+| Token | Means |
+|---|---|
+| `Input`, or another input's name | the range the input is bound to |
+| `Output` | the output rule's anchor |
+| `Row`, `Column` | the current row or column of the Repeat around the step |
+| `Name:Total` | a defined name, or a table's data |
+
+Methods narrow or move a range and chain: `col(2)` or `col("Amount")`, `row(1)`, `cols(2..3)`,
+`rows(2..)`, `cell(r,c)` (relative to the top-left cell; `cell(0,1)` is the cell above),
+`offset(r,c)`, `resize(h,w)`, `data` (without the header row), `below(n)` and `right(n)`.
+
+Write a token as the whole value of a reference parameter (`cell`, `range`, `target`, keys ending
+in `Cell` or `Range`…), as `{"$ref": "Input.col(2)"}` anywhere, or as `{{Input.col(2)}}` inside
+any string, such as a formula. Plain A1 references stay absolute; a `Name:` anchor follows
+inserted rows.
 
 ## Storage
 
