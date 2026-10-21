@@ -60,7 +60,8 @@ Methods narrow or move a range and chain: `col(2)` or `col("Amount")`, `row(1)`,
 Write a token as the whole value of a reference parameter (`cell`, `range`, `target`, keys ending
 in `Cell` or `Range`…), as `{"$ref": "Input.col(2)"}` anywhere, or as `{{Input.col(2)}}` inside
 any string, such as a formula. Plain A1 references stay absolute; a `Name:` anchor follows
-inserted rows.
+inserted rows. A reference with a sheet name is never a token, so `Output!A1` is a cell on a sheet
+called Output, even when a token or input has that name.
 
 ## Storage
 

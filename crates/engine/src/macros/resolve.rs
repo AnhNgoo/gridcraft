@@ -110,7 +110,8 @@ pub fn is_ref_key(key: &str) -> bool {
 /// The most nesting [`resolve_params`] walks into.
 const MAX_JSON_DEPTH: usize = 64;
 
-/// Whether `text` starts like a token (its base is one this environment knows).
+/// Whether `text` starts like a token (its base is one this environment knows). A reference on a
+/// sheet with such a name (`Output!A1`) is not a token.
 pub fn is_token(text: &str, env: &Env) -> bool {
     let t = text.trim();
     if t.get(..5).is_some_and(|h| h.eq_ignore_ascii_case("name:")) {
@@ -118,6 +119,9 @@ pub fn is_token(text: &str, env: &Env) -> bool {
     }
     let n: usize = t.chars().take_while(|c| c.is_alphanumeric() || *c == '_').map(char::len_utf8).sum();
     let base = t.get(..n).unwrap_or("");
+    if t.get(n..).unwrap_or("").trim_start().starts_with('!') {
+        return false;
+    }
     is_builtin(base) || env.inputs.iter().any(|(n, ..)| n.eq_ignore_ascii_case(base))
 }
 
@@ -639,6 +643,36 @@ mod tests {
         }
         assert!(resolve_params(&deep, &env).is_err());
         assert!(resolve_params(&json!({"cell": "Input.col(9)"}), &env).is_err());
+    }
+
+    #[test]
+    fn references_on_sheets_named_like_tokens_stay_references() {
+        // Sheets named after the built-in bases and after an input: `Output!A1` is a cell on the
+        // sheet Output, in a reference key, in `$ref` and in `{{…}}`.
+        let mut wb = Workbook::new();
+        for name in ["Output", "Row", "Column", "Input", "Rates"] {
+            wb.sheets.push(std::sync::Arc::new(gridcraft_model::Sheet::new(name)));
+        }
+        let inputs = vec![("Input".to_string(), place("B2:D11"), true), ("Rates".to_string(), place("F2:F5"), false)];
+        for output in [None, Some(place("H2"))] {
+            let env = Env { wb: &wb, active_sheet: 0, inputs: &inputs, output, item: Some((RepeatOf::Rows, place("B5:D5"))) };
+            for (sheet, i) in [("Output", 1), ("Row", 2), ("Column", 3), ("Input", 4), ("Rates", 5)] {
+                for text in [format!("{sheet}!A1:B2"), format!("'{sheet}'!A1:B2")] {
+                    let want = Place { sheet: i, range: RangeRef::parse("A1:B2").unwrap() };
+                    assert_eq!(resolve_ref(&text, &env), Ok(want), "{text}");
+                    let a = a1(want, &env);
+                    let p = json!({"range": text, "target": {"$ref": text}, "formula": format!("=SUM({{{{{text}}}}})")});
+                    let r = resolve_params(&p, &env).unwrap();
+                    // A plain reference in a reference key is passed on as written.
+                    assert_eq!(r, json!({"range": text, "target": a, "formula": format!("=SUM({a})")}), "{text}");
+                }
+            }
+            assert!(!is_token("Output !A1", &env));
+            // The bare names are still tokens.
+            check(&env, "Input.col(2)", "C2:C11");
+            check(&env, "Rates", "F2:F5");
+            check(&env, "Row", "B5:D5");
+        }
     }
 
     #[test]
