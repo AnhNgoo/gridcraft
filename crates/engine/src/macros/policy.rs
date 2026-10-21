@@ -30,8 +30,13 @@ const DENIED_PREFIXES: &[(&str, &str)] = &[
 ];
 
 /// Single commands that never run in a macro.
-const DENIED: &[(&str, &str)] =
-    &[("edit.undo", "a macro is undone as one step after it runs"), ("edit.redo", "a macro is undone as one step after it runs")];
+const DENIED: &[(&str, &str)] = &[
+    ("edit.undo", "a macro is undone as one step after it runs"),
+    ("edit.redo", "a macro is undone as one step after it runs"),
+    ("view.newWindow", "macros don't open, hide or show windows"),
+    ("view.hideWindow", "macros don't open, hide or show windows"),
+    ("view.unhideWindow", "macros don't open, hide or show windows"),
+];
 
 /// Commands under a denied prefix that only change the workbook.
 const ALLOWED: &[&str] = &["file.properties"];
@@ -97,6 +102,9 @@ mod tests {
             "macro.record",
             "edit.undo",
             "edit.redo",
+            "view.newWindow",
+            "view.hideWindow",
+            "view.unhideWindow",
         ] {
             assert!(matches!(macro_policy(id, &none, Trust::Local), Policy::Deny(_)), "{id}");
             assert!(matches!(macro_policy(id, &path, Trust::FromFile), Policy::Deny(_)), "{id}");

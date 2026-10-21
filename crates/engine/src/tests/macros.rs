@@ -419,6 +419,8 @@ fn the_policy_keeps_macros_away_from_files_and_the_app() {
         ("automate.runScript", json!({"name": "Script 1"})),
         ("edit.undo", json!({})),
         ("macro.run", json!({"name": "Self"})),
+        ("view.newWindow", json!({})),
+        ("view.hideWindow", json!({})),
     ] {
         put(
             &mut s,

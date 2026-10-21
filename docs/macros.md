@@ -75,8 +75,8 @@ called Output, even when a token or input has that name.
 
 `macro.run {name, inputs?, onConflict?, overwrite?, approve?, timeLimit?}`:
 
-1. **Policy.** File, app, window, automate and macro commands, and Undo and Redo, never run in a
-   macro. Reading or writing a file (`data.getData`, `data.fromTextCsv`, `insert.picture` or
+1. **Policy.** File, app, window (including New Window, Hide and Unhide), automate and macro
+   commands, and Undo and Redo, never run in a macro. Reading or writing a file (`data.getData`, `data.fromTextCsv`, `insert.picture` or
    `pageLayout.background` with a `path`, or an export or print with a `path`) needs the command
    in the macro's `permissions`. Any `path` other than `null` counts, including a blank one and a
    token, and the policy is checked again on the parameters as they are when the step runs. A macro that touches files, or that came with a workbook opened
