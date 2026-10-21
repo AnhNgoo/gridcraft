@@ -4,8 +4,9 @@
 //! with the sheet and selection it ran in. When recording stops:
 //!
 //! - commands a macro may not run (saving, opening files…) and other macros' commands are left
-//!   out; a macro run while recording is replaced by its steps when it has no inputs, and an
-//!   Automate script run while recording by the script's steps;
+//!   out; a macro run while recording is replaced by its steps when it has no inputs, no output
+//!   and only plain commands (otherwise it is left out), and an Automate script run while
+//!   recording by the script's steps;
 //! - a `sheet.activate` or `selection.set` step is added where the sheet or selection changed
 //!   between commands without one, and runs of `selection.set` collapse to the last;
 //! - with relative references (the default), the selection when recording started is the example
@@ -14,7 +15,7 @@
 //!   shape, header and column types are inferred from it.
 
 use gridcraft_core::{CellRef, RangeRef, Value};
-use gridcraft_model::{ColType, InputKind, Macro, NamedInput, Step, Workbook};
+use gridcraft_model::{ColType, InputKind, Macro, NamedInput, Step, StepKind, Workbook};
 use serde_json::{Map, Value as Json, json};
 
 use super::policy::{Policy, macro_policy};
@@ -51,12 +52,15 @@ pub fn convert(name: &str, start: &RecordingStart, steps: &[RecordedStep], wb: &
     for st in steps.iter().filter(|st| st.doc == start.doc) {
         let id = st.id.as_str();
         if id == "macro.run" {
-            // Another macro's steps, when they stand on their own.
+            // Another macro's steps, when they stand on their own: no inputs, no output and only
+            // plain commands (a Repeat, If or Stop means nothing outside its macro).
             let inner = st.params.get("name").and_then(Json::as_str).and_then(|n| super::find(wb, n)).and_then(|i| wb.macros.get(i));
             match inner {
-                Some(m) if m.inputs.is_empty() => {
-                    for (_, cid, params) in super::command_steps(&m.steps) {
-                        cmds.push((cid.to_string(), params.clone(), st.sheet, st.sheet_name.clone(), st.selection.clone(), true));
+                Some(m) if m.inputs.is_empty() && m.output.anchor.is_none() && m.steps.iter().all(|x| matches!(x.kind, StepKind::Command { .. })) => {
+                    for x in m.steps.iter().filter(|x| x.enabled) {
+                        if let StepKind::Command { id: cid, params } = &x.kind {
+                            cmds.push((cid.clone(), params.clone(), st.sheet, st.sheet_name.clone(), st.selection.clone(), true));
+                        }
                     }
                 }
                 _ => skipped.push(id.to_string()),

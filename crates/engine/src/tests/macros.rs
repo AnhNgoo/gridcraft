@@ -1045,3 +1045,36 @@ fn a_relative_recording_keeps_references_on_another_sheet() {
     s.execute("sheet.activate", json!({"sheet": "Two"})).unwrap();
     assert_eq!((v(&s, "C4").display(), v(&s, "D2").display()), ("x".into(), "12".into()));
 }
+
+#[test]
+fn a_recorded_macro_run_is_inlined_only_when_its_steps_stand_alone() {
+    let mut s = s();
+    put(
+        &mut s,
+        json!({"name": "Branchy", "output": {"onConflict": "overwrite"}, "steps": [
+            {"type": "if", "cell": "A1", "op": "empty",
+             "then": [{"command": "cell.set", "params": {"cell": "B1", "input": "empty"}}],
+             "else": [{"command": "cell.set", "params": {"cell": "B1", "input": "full"}}]}
+        ]}),
+    );
+    put(
+        &mut s,
+        json!({"name": "Placed", "output": {"anchor": "D1", "onConflict": "overwrite"}, "steps": [
+            {"command": "cell.set", "params": {"cell": "Output", "input": "out"}}
+        ]}),
+    );
+    put(
+        &mut s,
+        json!({"name": "Plain", "output": {"onConflict": "overwrite"}, "steps": [
+            {"command": "cell.set", "params": {"cell": "C1", "input": "plain"}},
+            {"command": "cell.set", "params": {"cell": "C2", "input": "off"}, "enabled": false}
+        ]}),
+    );
+    s.execute("macro.record", json!({"relative": false})).unwrap();
+    for name in ["Branchy", "Placed", "Plain"] {
+        s.execute("macro.run", json!({"name": name})).unwrap();
+    }
+    let r = s.execute("macro.record", json!({"stop": true, "name": "Rec"})).unwrap();
+    assert_eq!(r["skipped"], json!(["macro.run", "macro.run"]));
+    assert_eq!(recorded(&mut s, "Rec"), ["cell.set {\"cell\":\"C1\",\"input\":\"plain\"}"]);
+}
