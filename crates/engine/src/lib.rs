@@ -415,7 +415,11 @@ impl Session {
         // touched wait, also when another command runs them (a script, or a recording that stops
         // and saves). Only the run's own steps go ahead. Other workbooks stay editable.
         let locked = self.active().is_some_and(|d| self.macro_debug.as_ref().is_some_and(|m| m.locks(d.uid) && !m.stepping()));
-        if spec.undoable && id != "macro.debug" && locked {
+        // Stopping Record Actions saves a script into the workbook; refuse it before it takes the
+        // recording, so stopping again after the run keeps what was recorded.
+        let stops_record_actions =
+            id == "automate.recordActions" && (params.get("stop").and_then(Json::as_bool) == Some(true) || self.recording.is_some());
+        if (spec.undoable || stops_record_actions) && id != "macro.debug" && locked {
             return Err(EngineError::Disabled(id.to_string(), macros::debug::BUSY.into()));
         }
         let before = self.active().map(|d| (d.uid, d.wb.clone(), d.selection.clone()));

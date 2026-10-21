@@ -468,5 +468,10 @@ mod tests {
         let r = s.execute("macro.debug", json!({"action": "step"})).unwrap();
         assert_eq!(r["executed"], 2, "{r}");
         assert!(s.macro_debug.is_none());
+        // The recording was kept: stopping now saves it.
+        let saved = s.execute("automate.recordActions", json!({"stop": true, "name": "S"})).unwrap();
+        assert_eq!(saved["saved"], "S", "{saved}");
+        let scripts = s.execute("automate.allScripts", json!({})).unwrap();
+        assert_eq!(scripts[0]["name"], "S", "{scripts}");
     }
 }
