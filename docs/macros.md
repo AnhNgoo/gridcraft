@@ -122,11 +122,11 @@ of the step that just ran, and the cells changed so far.
 `description` when stopping). When saving the recording fails (a name the check refuses, a workbook
 at its macro limit), recording goes on, so stopping again keeps what was recorded. With relative
 references the selection when recording starts is the example input: references in and near it
-become tokens, and the input's shape, header and column types are inferred. Toggles such as Bold
-are recorded with the state they set (`"on": true`), so playing them back sets them rather than
-flipping them. Commands a macro may not run are left out and listed in the result; a macro run
-while recording is replaced by its steps when it has no inputs, and an Automate script run by the
-script's steps.
+on its sheet become tokens (on another sheet `C4` stays that sheet's `C4`), and the input's shape,
+header and column types are inferred. Toggles such as Bold are recorded with the state they set
+(`"on": true`), so playing them back sets them rather than flipping them. Commands a macro may not
+run are left out and listed in the result; a macro run while recording is replaced by its steps
+when it has no inputs, and an Automate script run by the script's steps.
 
 ## Other commands and storage
 

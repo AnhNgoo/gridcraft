@@ -1010,3 +1010,38 @@ fn a_recording_is_kept_when_saving_it_fails() {
     s.execute("macro.record", json!({"stop": true, "name": "Late"})).unwrap();
     assert_eq!(recorded(&mut s, "Late"), ["cell.set {\"cell\":\"B1\",\"input\":\"full\"}"]);
 }
+
+#[test]
+fn a_relative_recording_keeps_references_on_another_sheet() {
+    let mut s = s();
+    s.execute("home.insertSheet", json!({"name": "Two"})).unwrap();
+    s.execute("sheet.activate", json!({"sheet": "Sheet1"})).unwrap();
+    data(&mut s);
+    s.execute("selection.set", json!({"range": "B2:C5"})).unwrap();
+    s.execute("macro.record", json!({})).unwrap();
+    s.execute("home.bold", json!({"range": "B2:C2"})).unwrap();
+    // On the other sheet, C4 and C3:C5 are that sheet's cells, not the input's.
+    s.execute("sheet.activate", json!({"sheet": "Two"})).unwrap();
+    set(&mut s, "C4", "x");
+    set(&mut s, "D2", "=SUM(C3:C5)");
+    s.execute("macro.record", json!({"stop": true, "name": "Both"})).unwrap();
+    let steps = recorded(&mut s, "Both");
+    assert!(steps.contains(&"cell.set {\"cell\":\"C4\",\"input\":\"x\"}".to_string()), "{steps:?}");
+    assert!(steps.contains(&"cell.set {\"cell\":\"D2\",\"input\":\"=SUM(C3:C5)\"}".to_string()), "{steps:?}");
+    // Played back on another block of Sheet1, it writes Two's cells.
+    set(&mut s, "C4", "");
+    set(&mut s, "D2", "");
+    set(&mut s, "C3", "5");
+    set(&mut s, "C5", "7");
+    s.execute("sheet.activate", json!({"sheet": "Sheet1"})).unwrap();
+    for (cell, input) in [("G10", "Who"), ("H10", "Paid"), ("G11", "A"), ("H11", "100"), ("G12", "B"), ("H12", "200"), ("G13", "C"), ("H13", "300")] {
+        set(&mut s, cell, input);
+    }
+    s.execute("macro.run", json!({"name": "Both", "inputs": "G10:H13", "onConflict": "overwrite"})).unwrap();
+    s.execute("sheet.activate", json!({"sheet": "Sheet1"})).unwrap();
+    assert!(bold(&s, "G10") && bold(&s, "H10"));
+    // Nothing was written into or beside the input.
+    assert_eq!((v(&s, "H12").display(), v(&s, "I10").display()), ("200".into(), String::new()));
+    s.execute("sheet.activate", json!({"sheet": "Two"})).unwrap();
+    assert_eq!((v(&s, "C4").display(), v(&s, "D2").display()), ("x".into(), "12".into()));
+}

@@ -9,9 +9,9 @@
 //! - a `sheet.activate` or `selection.set` step is added where the sheet or selection changed
 //!   between commands without one, and runs of `selection.set` collapse to the last;
 //! - with relative references (the default), the selection when recording started is the example
-//!   input: references in, next to or near it become tokens (`Input.col(2)`, `Input.below`,
-//!   `Input.cell(1,4)`), also inside formulas (`{{Input.col(2)}}`), and the input's shape,
-//!   header and column types are inferred from it.
+//!   input: references on its sheet in, next to or near it become tokens (`Input.col(2)`,
+//!   `Input.below`, `Input.cell(1,4)`), also inside formulas (`{{Input.col(2)}}`), and the input's
+//!   shape, header and column types are inferred from it.
 
 use gridcraft_core::{CellRef, RangeRef, Value};
 use gridcraft_model::{ColType, InputKind, Macro, NamedInput, Step, Workbook};
@@ -85,39 +85,42 @@ pub fn convert(name: &str, start: &RecordingStart, steps: &[RecordedStep], wb: &
     // Sheet and selection changes made without a command: where a command ran on another sheet,
     // or with another selection, than the one before it, say so (a command that moved the
     // selection itself does it again when played back, so the extra step is harmless).
-    let mut out: Vec<(String, Json, bool)> = Vec::new();
+    // Each step keeps the name of the sheet it runs on.
+    let mut out: Vec<(String, Json, String, bool)> = Vec::new();
     let (mut sheet, mut sel) = (start.sheet, start.selection.clone());
     for (id, params, at_sheet, sheet_name, at_sel, kept) in cmds {
         if at_sheet != sheet {
-            out.push(("sheet.activate".into(), json!({"sheet": sheet_name}), false));
+            out.push(("sheet.activate".into(), json!({"sheet": sheet_name}), sheet_name.clone(), false));
         }
         // A recorded selection.set just before already put the selection there.
         let selected = matches!(out.last(), Some((last, ..)) if last == "selection.set");
         if (at_sel != sel || at_sheet != sheet) && !selected {
-            out.push(("selection.set".into(), selection_params(&at_sel), false));
+            out.push(("selection.set".into(), selection_params(&at_sel), sheet_name.clone(), false));
         }
         (sheet, sel) = (at_sheet, at_sel);
-        out.push((id, params, kept));
+        out.push((id, params, sheet_name, kept));
     }
     // Runs of selection.set (or sheet.activate): the last one wins.
-    let mut collapsed: Vec<(String, Json, bool)> = Vec::new();
-    for (id, params, kept) in out {
+    let mut collapsed: Vec<(String, Json, String, bool)> = Vec::new();
+    for (id, params, on, kept) in out {
         if matches!(id.as_str(), "selection.set" | "sheet.activate")
             && let Some((last, ..)) = collapsed.last()
             && *last == id
         {
             collapsed.pop();
         }
-        collapsed.push((id, params, kept));
+        collapsed.push((id, params, on, kept));
     }
 
-    // Relative references.
+    // Relative references. Only references on the input's sheet become tokens: on another sheet
+    // `C4` is that sheet's C4.
     let example = start.selection.current();
     let mut used_input = false;
     let steps: Vec<Step> = collapsed
         .into_iter()
-        .map(|(id, params, kept)| {
-            let params = if start.relative && !kept { relative(&params, example, &start.sheet_name, &mut used_input, None) } else { params };
+        .map(|(id, params, on, kept)| {
+            let here = on.eq_ignore_ascii_case(&start.sheet_name);
+            let params = if start.relative && !kept { relative(&params, example, &start.sheet_name, here, &mut used_input, None) } else { params };
             Step::command(id, params)
         })
         .collect();
@@ -133,20 +136,21 @@ fn selection_params(sel: &Selection) -> Json {
     json!({"range": ranges.join(","), "active": sel.active.a1()})
 }
 
-/// `params` with references near `example` made into tokens.
-fn relative(v: &Json, example: RangeRef, sheet: &str, used: &mut bool, key: Option<&str>) -> Json {
+/// `params` with references near `example` (on `sheet`) made into tokens; `here` says whether the
+/// step runs on that sheet, so its unqualified references are on it.
+fn relative(v: &Json, example: RangeRef, sheet: &str, here: bool, used: &mut bool, key: Option<&str>) -> Json {
     match v {
         Json::Object(o) => {
             let mut out = Map::new();
             for (k, x) in o {
-                out.insert(k.clone(), relative(x, example, sheet, used, Some(k)));
+                out.insert(k.clone(), relative(x, example, sheet, here, used, Some(k)));
             }
             Json::Object(out)
         }
-        Json::Array(a) => Json::Array(a.iter().map(|x| relative(x, example, sheet, used, key)).collect()),
+        Json::Array(a) => Json::Array(a.iter().map(|x| relative(x, example, sheet, here, used, key)).collect()),
         Json::String(t) if key.is_some_and(super::resolve::is_ref_key) => {
             // A list of areas ("A1:B2,D4") stays as it is unless every part has a token.
-            let parts: Option<Vec<String>> = t.split(',').map(|part| ref_token(part, example, sheet)).collect();
+            let parts: Option<Vec<String>> = t.split(',').map(|part| ref_token(part, example, sheet, here)).collect();
             match parts {
                 Some(p) if p.len() == 1 => {
                     *used = true;
@@ -155,7 +159,7 @@ fn relative(v: &Json, example: RangeRef, sheet: &str, used: &mut bool, key: Opti
                 _ => v.clone(),
             }
         }
-        Json::String(t) if t.starts_with('=') && example.count() > 1 => {
+        Json::String(t) if here && t.starts_with('=') && example.count() > 1 => {
             let (f, changed) = formula_tokens(t, example);
             *used |= changed;
             json!(f)
@@ -164,11 +168,14 @@ fn relative(v: &Json, example: RangeRef, sheet: &str, used: &mut bool, key: Opti
     }
 }
 
-/// The token for an A1 reference (on the example's sheet) near the example input.
-fn ref_token(text: &str, example: RangeRef, sheet: &str) -> Option<String> {
+/// The token for an A1 reference on the example's sheet near the example input. `here` says whether
+/// an unqualified reference is on that sheet.
+fn ref_token(text: &str, example: RangeRef, sheet: &str, here: bool) -> Option<String> {
     let (on, body) = crate::cmd::split_sheet(text.trim());
-    if on.is_some_and(|s| !s.eq_ignore_ascii_case(sheet)) {
-        return None;
+    match on {
+        Some(on) if !on.eq_ignore_ascii_case(sheet) => return None,
+        None if !here => return None,
+        _ => {}
     }
     let t = RangeRef::parse(body)?;
     if t.is_full_cols() || t.is_full_rows() {
@@ -367,10 +374,13 @@ mod tests {
             ("Z500", None),
             ("A:A", None),
         ] {
-            assert_eq!(ref_token(t, ex, "Sheet1").as_deref(), want, "{t}");
+            assert_eq!(ref_token(t, ex, "Sheet1", true).as_deref(), want, "{t}");
         }
-        assert_eq!(ref_token("Sheet1!C4", ex, "Sheet1").as_deref(), Some("Input.cell(3,2)"));
-        assert_eq!(ref_token("Other!C4", ex, "Sheet1"), None);
+        assert_eq!(ref_token("Sheet1!C4", ex, "Sheet1", true).as_deref(), Some("Input.cell(3,2)"));
+        assert_eq!(ref_token("Other!C4", ex, "Sheet1", true), None);
+        // On another sheet only a reference qualified with the input's sheet is on it.
+        assert_eq!(ref_token("C4", ex, "Sheet1", false), None);
+        assert_eq!(ref_token("Sheet1!C4", ex, "Sheet1", false).as_deref(), Some("Input.cell(3,2)"));
     }
 
     #[test]
