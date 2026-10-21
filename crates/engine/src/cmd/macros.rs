@@ -21,7 +21,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "Check Macro",
             [],
             None,
-            "{name, inputs?} validates the inputs and dry-runs the macro on the workbook (then puts everything back) → {ok, errors?, needsApproval?, inputs, output?, conflicts, footprint}",
+            "{name, inputs?, timeLimit?: seconds} validates the inputs and dry-runs the macro on the workbook (then puts everything back) → {ok, errors?, needsApproval?, inputs, output?, conflicts, footprint}",
             has_doc,
             check
         ),

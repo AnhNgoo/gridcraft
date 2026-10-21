@@ -356,6 +356,17 @@ fn macros_are_bounded() {
     assert!(err.contains("ran more than 100000 steps"), "{err}");
     let err = s.execute("macro.run", json!({"name": "Spin", "timeLimit": 0.001})).unwrap_err().to_string();
     assert!(err.contains("ran longer than"), "{err}");
+    // The footprint's dry run keeps to the time limit too, and so does the check's.
+    put(
+        &mut s,
+        json!({"name": "Spin", "output": {"onConflict": "fail"}, "steps": [{"type": "repeat", "over": "A1:A400", "body": [
+            {"type": "repeat", "over": "A1:A400", "body": [{"type": "if", "cell": "A1", "op": "empty"}]}
+        ]}]}),
+    );
+    let err = s.execute("macro.run", json!({"name": "Spin", "timeLimit": 0.001})).unwrap_err().to_string();
+    assert!(err.contains("ran longer than"), "{err}");
+    let c = s.execute("macro.check", json!({"name": "Spin", "timeLimit": 0.001})).unwrap();
+    assert!(c["errors"][0].as_str().unwrap().contains("ran longer than"), "{c}");
 }
 
 #[test]

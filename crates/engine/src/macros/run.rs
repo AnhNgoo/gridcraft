@@ -346,13 +346,13 @@ fn holds(v: &Value, wanted: gridcraft_model::ColType) -> &'static str {
 
 /// A stopwatch for the time limit. `Instant::now` traps on wasm, so there it measures nothing.
 #[derive(Clone, Copy, Debug)]
-struct Stopwatch {
+pub struct Stopwatch {
     #[cfg(not(target_arch = "wasm32"))]
     start: std::time::Instant,
 }
 
 impl Stopwatch {
-    fn start() -> Stopwatch {
+    pub fn start() -> Stopwatch {
         #[cfg(not(target_arch = "wasm32"))]
         #[allow(clippy::disallowed_methods)] // never on wasm (see above)
         let w = Stopwatch { start: std::time::Instant::now() };
@@ -907,8 +907,8 @@ impl Saved {
 }
 
 /// Runs the macro in dry-run mode on its workbook, puts everything back, and says what it would
-/// change.
-pub fn footprint(s: &mut Session, p: &Prepared) -> Result<Footprint> {
+/// change. The dry run stops once `time_limit_ms` has passed on `clock`.
+pub fn footprint(s: &mut Session, p: &Prepared, clock: Stopwatch, time_limit_ms: f64) -> Result<Footprint> {
     let i = s.docs.iter().position(|d| d.uid == p.doc).ok_or(EngineError::NoDocument)?;
     s.set_active(i);
     let saved = Saved::take(s, p.doc);
@@ -918,6 +918,7 @@ pub fn footprint(s: &mut Session, p: &Prepared) -> Result<Footprint> {
         d.touched = Some(Vec::new());
     }
     let mut m = Machine::new(p, true);
+    (m.clock, m.time_limit_ms) = (clock, time_limit_ms);
     let outcome = m.run_to_end(s);
     let (after, touched) = match s.docs.iter_mut().find(|d| d.uid == p.doc) {
         Some(d) => (d.wb.clone(), d.touched.take().unwrap_or_default()),
@@ -1107,14 +1108,15 @@ pub fn begin(s: &mut Session, name: &str, p: &Json) -> Result<Begun> {
     approve(s, &m, doc, &asks, p.get("approve").and_then(Json::as_bool).unwrap_or(false))?;
     let prepared = prepare(s, &m, p.get("inputs"))?;
     let rule = conflict_rule(p, &m)?;
-    let time_limit_ms = p.get("timeLimit").and_then(Json::as_f64).map(|t| (t * 1000.0).clamp(1.0, 600_000.0)).unwrap_or(DEFAULT_TIME_LIMIT_MS);
+    let time_limit_ms = time_limit(p);
     let inputs = prepared.inputs_json(&s.doc()?.wb);
     Ok(Begun { mac: m, prepared, rule, time_limit_ms, inputs })
 }
 
 /// The footprint check and the output rule, inside the run's undo group: an error when the macro
 /// would fail or write over data it may not, after shifting the data if the rule says so. Returns
-/// the machine for the run and whether it shifted.
+/// the machine for the run and whether it shifted. The dry runs count towards the run's time
+/// limit.
 ///
 /// A partial footprint proves nothing about the steps it didn't reach, so then the machine
 /// checks each step as it runs and stops the run at one that writes over data.
@@ -1125,7 +1127,7 @@ pub fn make_way(s: &mut Session, b: &Begun) -> Result<(Machine, bool)> {
     if rule == OnConflict::Overwrite {
         return Ok((machine, false));
     }
-    let mut fp = footprint(s, &b.prepared)?;
+    let mut fp = footprint(s, &b.prepared, machine.clock, b.time_limit_ms)?;
     if let Some(e) = fp.error.take() {
         return Err(e.into_engine(&m.name));
     }
@@ -1144,7 +1146,7 @@ pub fn make_way(s: &mut Session, b: &Begun) -> Result<(Machine, bool)> {
             }
             OnConflict::ShiftDown | OnConflict::ShiftRight => {
                 make_room(s, &fp, rule == OnConflict::ShiftDown)?;
-                fp = footprint(s, &b.prepared)?;
+                fp = footprint(s, &b.prepared, machine.clock, b.time_limit_ms)?;
                 if let Some(e) = fp.error.take() {
                     return Err(e.into_engine(&m.name));
                 }
@@ -1189,6 +1191,11 @@ pub fn run(s: &mut Session, name: &str, p: &Json) -> Result<Json> {
             }
         }
     })
+}
+
+/// The run's `timeLimit` (seconds) in milliseconds, or the default.
+fn time_limit(p: &Json) -> f64 {
+    p.get("timeLimit").and_then(Json::as_f64).map(|t| (t * 1000.0).clamp(1.0, 600_000.0)).unwrap_or(DEFAULT_TIME_LIMIT_MS)
 }
 
 /// The conflict rule for this run: `onConflict`, or `overwrite: true` (the answer to the
@@ -1240,7 +1247,7 @@ pub fn check(s: &mut Session, name: &str, p: &Json) -> Result<Json> {
     if !asks.is_empty() && !approved {
         return Ok(out);
     }
-    let fp = footprint(s, &prepared)?;
+    let fp = footprint(s, &prepared, Stopwatch::start(), time_limit(p))?;
     out["ok"] = json!(fp.error.is_none());
     out["conflicts"] = json!(fp.conflict_count());
     if let Some(e) = &fp.error {

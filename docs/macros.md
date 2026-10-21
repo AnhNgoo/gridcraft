@@ -42,7 +42,9 @@ no macro debugger, recorder or management commands in this version, and no macro
   `nonEmpty` and `defaultRef`. A run binds each input to the range it is given, its default, or
   (for the first input) the selection, and refuses with messages that name the cells:
   "Input column 2 (Amount) must hold numbers; C4 holds text."
-- **Limits**: 1,000 macros a workbook, 10,000 steps a macro, and Repeat and If nested 4 deep.
+- **Limits**: 1,000 macros a workbook, 10,000 steps a macro, Repeat and If nested 4 deep,
+  100,000 steps executed per run, and 60 seconds a run, footprint checks included (`timeLimit`
+  to change; the web build has no clock, so there only the step limit applies).
 
 ## Tokens
 
@@ -94,8 +96,8 @@ called Output, even when a token or input has that name.
    step: `Step 3.1 (cell.set): …` (paths are 1-based; `2.1` is inside a Repeat, `4.then.1` inside
    an If).
 
-`macro.check {name, inputs?}` reports the bound inputs, the output anchor, any approval needed and
-the footprint, without changing anything.
+`macro.check {name, inputs?, timeLimit?}` reports the bound inputs, the output anchor, any
+approval needed and the footprint, without changing anything.
 
 ## Storage
 
