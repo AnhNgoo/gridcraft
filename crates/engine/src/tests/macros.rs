@@ -474,3 +474,63 @@ fn macros_from_a_file_ask_before_running() {
     // Approved once per macro content: the second run doesn't ask.
     s.execute("macro.run", json!({"name": "Theirs"})).unwrap();
 }
+
+#[test]
+fn a_partial_footprint_doesnt_clear_later_writes() {
+    let dir = std::env::temp_dir().join(format!("gc-macro-partial-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let csv = dir.join("out.csv").to_string_lossy().to_string();
+    let export = json!({"command": "file.exportCsv", "params": {"path": csv}});
+    let solver = json!({"command": "data.solver", "params": {"objective": "C1", "variables": "A1", "constraints": ["A1 <= 5"], "method": "simplex", "saveModel": false}});
+    let late = json!({"command": "cell.set", "params": {"cell": "B1", "input": "over"}});
+    // The dry run stops at an approved file step or at Solver; the step after it writes over B1.
+    for first in [&export, &solver] {
+        let mut s = super::s();
+        set(&mut s, "A1", "1");
+        set(&mut s, "C1", "=A1");
+        set(&mut s, "B1", "keep");
+        put(&mut s, json!({"name": "Late", "inputs": [{"name": "Input"}], "permissions": ["file.exportCsv"], "steps": [first, late]}));
+        let start = s.doc().unwrap().wb.clone();
+        let c = s.execute("macro.check", json!({"name": "Late", "inputs": "A1"})).unwrap();
+        if c.get("needsApproval").is_none() {
+            assert_eq!((c["conflicts"].as_u64(), &c["footprint"]["partial"]["step"]), (Some(0), &json!("1")), "{c}");
+        }
+        for rule in ["fail", "ask"] {
+            let r = s.execute("macro.run", json!({"name": "Late", "inputs": "A1", "onConflict": rule, "approve": true}));
+            let e = match (rule, r) {
+                ("fail", Err(EngineError::Other(e))) | ("ask", Err(EngineError::Confirm(e))) => e,
+                (_, r) => panic!("{first} {rule}: {r:?}"),
+            };
+            assert!(e.contains("Step 2 (cell.set): It would write over data (B1 on Sheet1)"), "{e}");
+            assert_eq!(v(&s, "B1").display(), "keep", "{first} {rule}");
+            assert!(Arc::ptr_eq(&s.doc().unwrap().wb, &start), "{first} {rule}: rolled back");
+        }
+        // The answer to the question overwrites.
+        s.execute("macro.run", json!({"name": "Late", "inputs": "A1", "overwrite": true})).unwrap();
+        assert_eq!(v(&s, "B1").display(), "over");
+    }
+    // A step that writes over what the macro itself wrote isn't a conflict.
+    let mut s = super::s();
+    let again = |input: &str| json!({"command": "cell.set", "params": {"cell": "E1", "input": input}});
+    put(
+        &mut s,
+        json!({"name": "Twice", "permissions": ["file.exportCsv"], "output": {"onConflict": "fail"}, "steps": [again("a"), export, again("b")]}),
+    );
+    s.execute("macro.run", json!({"name": "Twice", "approve": true})).unwrap();
+    assert_eq!(v(&s, "E1").display(), "b");
+    // After a shift, the steps past the file step are checked too.
+    let mut s = super::s();
+    set(&mut s, "C1", "old");
+    set(&mut s, "D1", "keep");
+    let step = |cell: &str| json!({"command": "cell.set", "params": {"cell": cell, "input": "new"}});
+    put(
+        &mut s,
+        json!({"name": "Shift", "permissions": ["file.exportCsv"], "output": {"onConflict": "shiftDown"}, "steps": [step("C1"), export, step("D1")]}),
+    );
+    let start = s.doc().unwrap().wb.clone();
+    let err = s.execute("macro.run", json!({"name": "Shift", "approve": true})).unwrap_err().to_string();
+    assert!(err.contains("Step 3 (cell.set): It would write over data (D1 on Sheet1)"), "{err}");
+    assert_eq!((v(&s, "C1").display(), v(&s, "D1").display()), ("old".into(), "keep".into()));
+    assert!(Arc::ptr_eq(&s.doc().unwrap().wb, &start), "the shift is rolled back too");
+    let _ = std::fs::remove_dir_all(&dir);
+}

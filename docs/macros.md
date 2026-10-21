@@ -85,7 +85,11 @@ called Output, even when a token or input has that name.
    delete, are conflicts, handled by `onConflict` (or the macro's `output.onConflict`): `ask` (the
    call fails with `confirm: …`; `overwrite: true` answers it), `fail`, `overwrite`, `shiftDown` or
    `shiftRight` (Insert Cells makes room, then the footprint is checked again). Steps that touch
-   files, and Solver, end the dry run early; the footprint then says it is partial.
+   files, and Solver, end the dry run early; the footprint then says it is partial, and unless
+   the rule is `overwrite`, the run checks every step as it goes. A step that writes over cells,
+   sheets or objects that held data when the run started stops the run and rolls the workbook
+   back (a file already written stays): it asks (`confirm: …`) under `ask` and fails otherwise,
+   since shifting can't make room that late.
 3. **Run.** One undo step, "Run Macro: Totals". Any error rolls the whole run back and names the
    step: `Step 3.1 (cell.set): …` (paths are 1-based; `2.1` is inside a Repeat, `4.then.1` inside
    an If).

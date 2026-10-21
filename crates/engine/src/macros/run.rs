@@ -9,7 +9,9 @@
 //! 3. **Footprint**: unless the macro may overwrite, it first runs on the real workbook in dry-run
 //!    mode, the changes are compared with `CellStore::diff`, and everything is put back. Cells it
 //!    would write outside its inputs that already hold data are conflicts, handled by the output
-//!    rule: ask, fail, overwrite, or shift the data down or right (and check again).
+//!    rule: ask, fail, overwrite, or shift the data down or right (and check again). A dry run
+//!    that stops early (a file step, Solver) proves nothing about later steps, so the run then
+//!    checks each step as it goes.
 //! 4. **Run**: one undo step (`Session::grouped`); an error at any step rolls everything back and
 //!    names the step.
 //!
@@ -52,11 +54,14 @@ pub struct StepError {
     /// The step ran past the edge of the sheet.
     #[serde(skip_serializing_if = "std::ops::Not::not")]
     pub edge: bool,
+    /// The step would write over data and the conflict rule is ask: overwriting answers it.
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub confirm: bool,
 }
 
 impl StepError {
     fn new(step: &str, command: Option<&str>, message: impl Into<String>) -> StepError {
-        StepError { step: step.to_string(), command: command.map(str::to_string), message: message.into(), edge: false }
+        StepError { step: step.to_string(), command: command.map(str::to_string), message: message.into(), edge: false, confirm: false }
     }
 
     fn resolve(step: &str, command: Option<&str>, e: ResolveError) -> StepError {
@@ -73,7 +78,8 @@ impl StepError {
     }
 
     pub fn into_engine(self, name: &str) -> EngineError {
-        EngineError::Other(format!("Macro '{name}' stopped. {} Nothing was changed.", self.describe()))
+        let text = format!("Macro '{name}' stopped. {} Nothing was changed.", self.describe());
+        if self.confirm { EngineError::Confirm(text) } else { EngineError::Other(text) }
     }
 }
 
@@ -424,6 +430,85 @@ pub struct Machine {
     pub partial: Option<(String, String)>,
     /// The last step's resolved parameters (for the debugger).
     pub last_params: Option<Json>,
+    /// Set when the footprint was partial: each step is checked for writes over data as it runs.
+    guard: Option<Guard>,
+}
+
+/// Checks each step of a real run for writes over data the footprint couldn't see.
+#[derive(Clone, Debug)]
+struct Guard {
+    /// The workbook when the run started, and for each sheet now, its index there (`None` for a
+    /// sheet the run added).
+    start: Arc<Workbook>,
+    origin: Vec<Option<usize>>,
+    /// Where the footprint stopped: "step 2 (file.exportCsv writes a file)".
+    partial: String,
+    /// The conflict rule is ask.
+    ask: bool,
+}
+
+impl Guard {
+    fn new(start: Arc<Workbook>, partial: &Json, ask: bool) -> Guard {
+        let text = |k: &str| partial.get(k).and_then(Json::as_str).unwrap_or_default().to_string();
+        let partial = format!("step {} ({})", text("step"), text("reason"));
+        Guard { origin: (0..start.sheets.len()).map(Some).collect(), start, partial, ask }
+    }
+
+    /// What one step wrote over that held data when the run started: cells outside the inputs,
+    /// sheets and objects it deleted ("B1 on Sheet1; 1 object"), or `""`.
+    fn check(&mut self, prev: &Workbook, after: &Workbook, inputs: &[Bound]) -> String {
+        let (pairs, _) = pair_sheets(prev, after);
+        let mut origin = vec![None; after.sheets.len()];
+        let mut parts = Vec::new();
+        let mut objects = 0usize;
+        for (pi, ai) in pairs {
+            // A sheet the run added holds nothing of the person's.
+            let Some(si) = self.origin.get(pi).copied().flatten() else { continue };
+            let Some(ss) = self.start.sheets.get(si) else { continue };
+            let Some(ai) = ai else {
+                parts.push(format!("the sheet {}", ss.name));
+                continue;
+            };
+            if let Some(o) = origin.get_mut(ai) {
+                *o = Some(si);
+            }
+            let (Some(ps), Some(sa)) = (prev.sheets.get(pi), after.sheets.get(ai)) else { continue };
+            if Arc::ptr_eq(ps, sa) {
+                continue;
+            }
+            let in_input = |c: CellRef| inputs.iter().any(|(_, p, _)| p.sheet == si && p.range.contains(c));
+            let mut hit: Vec<CellRef> = ps
+                .cells
+                .diff(&sa.cells)
+                .into_iter()
+                .filter(|&c| !in_input(c) && !recalculated_only(ps.cell(c), sa.cell(c)))
+                .filter(|&c| ss.cell(c).is_some_and(has_content) && content_differs(ss.cell(c), sa.cell(c)))
+                .collect();
+            if !hit.is_empty() {
+                let mut listed = ranges(&mut hit);
+                if listed.len() > 3 {
+                    listed.truncate(3);
+                    listed.push("…".into());
+                }
+                parts.push(format!("{} on {}", listed.join(", "), sa.name));
+            }
+            objects += deleted(&ss.charts, &ps.charts, &sa.charts, |o| o.id)
+                + deleted(&ss.images, &ps.images, &sa.images, |o| o.id)
+                + deleted(&ss.shapes, &ps.shapes, &sa.shapes, |o| o.id);
+        }
+        if objects > 0 {
+            parts.push(format!("{objects} object{}", if objects == 1 { "" } else { "s" }));
+        }
+        self.origin = origin;
+        parts.join("; ")
+    }
+}
+
+/// Objects of `prev` that `after` no longer has and that were there at the start.
+fn deleted<T>(start: &[T], prev: &[T], after: &[T], id: impl Fn(&T) -> u32) -> usize {
+    let kept: BTreeSet<u32> = after.iter().map(&id).collect();
+    let had: BTreeSet<u32> = start.iter().map(&id).collect();
+    prev.iter().map(&id).filter(|i| !kept.contains(i) && had.contains(i)).count()
 }
 
 impl Machine {
@@ -443,6 +528,7 @@ impl Machine {
             stopped: None,
             partial: None,
             last_params: None,
+            guard: None,
         };
         m.settle();
         m
@@ -605,6 +691,7 @@ impl Machine {
             return Ok(());
         }
         self.last_params = Some(resolved.clone());
+        let prev = self.guard.as_ref().and_then(|_| s.docs.iter().find(|d| d.uid == self.doc)).map(|d| d.wb.clone());
         let queued = s.ui_requests.len();
         let r = s.execute(id, resolved);
         // Macros never open dialogs or web pages; messages for the person stay queued.
@@ -621,6 +708,14 @@ impl Machine {
         r.map_err(|e| fail(e.to_string()))?;
         if let Some(b) = blocked {
             return Err(fail(b));
+        }
+        if let (Some(g), Some(prev)) = (self.guard.as_mut(), prev) {
+            let after = s.docs.iter().find(|d| d.uid == self.doc).map(|d| d.wb.clone()).ok_or_else(|| fail("The workbook was closed.".into()))?;
+            let what = g.check(&prev, &after, &self.inputs);
+            if !what.is_empty() {
+                let msg = format!("It would write over data ({what}); the check before the run stopped at {} and couldn't see this.", g.partial);
+                return Err(StepError { confirm: g.ask, ..fail(msg) });
+            }
         }
         Ok(())
     }
@@ -843,14 +938,8 @@ pub fn footprint(s: &mut Session, p: &Prepared) -> Result<Footprint> {
 /// without changing them (a formula written again), so a shift moves everything the macro writes.
 fn diff(before: &Workbook, after: &Workbook, inputs: &[Bound], touched: &[(String, CellRef)]) -> Footprint {
     let mut fp = Footprint::default();
-    // Sheets are matched by name; what's left is matched in order (a renamed sheet).
-    let mut pairs: Vec<(usize, Option<usize>)> = before.sheets.iter().enumerate().map(|(bi, sh)| (bi, after.sheet_index(&sh.name))).collect();
-    let matched: BTreeSet<usize> = pairs.iter().filter_map(|(_, a)| *a).collect();
-    let mut spare = (0..after.sheets.len()).filter(|a| !matched.contains(a));
-    for (_, a) in pairs.iter_mut().filter(|(_, a)| a.is_none()) {
-        *a = spare.next();
-    }
-    fp.sheets_added = spare.filter_map(|a| after.sheet(a).map(|s| s.name.clone())).collect();
+    let (pairs, added) = pair_sheets(before, after);
+    fp.sheets_added = added.into_iter().filter_map(|a| after.sheet(a).map(|s| s.name.clone())).collect();
     for (bi, ai) in pairs {
         let Some(bs) = before.sheets.get(bi) else { continue };
         let Some(ai) = ai else {
@@ -898,6 +987,19 @@ fn diff(before: &Workbook, after: &Workbook, inputs: &[Bound], touched: &[(Strin
         });
     }
     fp
+}
+
+/// Each sheet of `before` with its index in `after` (`None` when deleted), and the sheets of
+/// `after` that are new. Sheets are matched by name; what's left is matched in order (a renamed
+/// sheet).
+fn pair_sheets(before: &Workbook, after: &Workbook) -> (Vec<(usize, Option<usize>)>, Vec<usize>) {
+    let mut pairs: Vec<(usize, Option<usize>)> = before.sheets.iter().enumerate().map(|(bi, sh)| (bi, after.sheet_index(&sh.name))).collect();
+    let matched: BTreeSet<usize> = pairs.iter().filter_map(|(_, a)| *a).collect();
+    let mut spare = (0..after.sheets.len()).filter(|a| !matched.contains(a));
+    for (_, a) in pairs.iter_mut().filter(|(_, a)| a.is_none()) {
+        *a = spare.next();
+    }
+    (pairs, spare.collect())
 }
 
 /// Only a formula's cached value changed (a recalculation, not a write).
@@ -1012,44 +1114,56 @@ pub fn begin(s: &mut Session, name: &str, p: &Json) -> Result<Begun> {
 
 /// The footprint check and the output rule, inside the run's undo group: an error when the macro
 /// would fail or write over data it may not, after shifting the data if the rule says so. Returns
-/// whether it shifted.
-pub fn make_way(s: &mut Session, b: &Begun) -> Result<bool> {
+/// the machine for the run and whether it shifted.
+///
+/// A partial footprint proves nothing about the steps it didn't reach, so then the machine
+/// checks each step as it runs and stops the run at one that writes over data.
+pub fn make_way(s: &mut Session, b: &Begun) -> Result<(Machine, bool)> {
     let (m, rule) = (&b.mac, b.rule);
+    let mut machine = Machine::new(&b.prepared, false);
+    machine.time_limit_ms = b.time_limit_ms;
     if rule == OnConflict::Overwrite {
-        return Ok(false);
+        return Ok((machine, false));
     }
-    let fp = footprint(s, &b.prepared)?;
-    if let Some(e) = fp.error {
+    let mut fp = footprint(s, &b.prepared)?;
+    if let Some(e) = fp.error.take() {
         return Err(e.into_engine(&m.name));
     }
-    if fp.conflict_count() == 0 {
-        return Ok(false);
-    }
-    let what = fp.describe_conflicts();
-    match rule {
-        OnConflict::Ask => Err(EngineError::Confirm(format!(
-            "Macro '{}' would write over cells that hold data ({what}). Overwrite them, or run again with onConflict shiftDown, shiftRight or fail",
-            m.name
-        ))),
-        OnConflict::Fail | OnConflict::Overwrite => {
-            Err(EngineError::Other(format!("Macro '{}' would write over cells that hold data ({what}). Nothing was changed.", m.name)))
-        }
-        OnConflict::ShiftDown | OnConflict::ShiftRight => {
-            make_room(s, &fp, rule == OnConflict::ShiftDown)?;
-            let again = footprint(s, &b.prepared)?;
-            if let Some(e) = again.error {
-                return Err(e.into_engine(&m.name));
-            }
-            if again.conflict_count() > 0 {
-                return Err(EngineError::Other(format!(
-                    "Macro '{}': shifting the data didn't make room ({}). Nothing was changed.",
-                    m.name,
-                    again.describe_conflicts()
+    let mut shifted = false;
+    if fp.conflict_count() > 0 {
+        let what = fp.describe_conflicts();
+        match rule {
+            OnConflict::Ask => {
+                return Err(EngineError::Confirm(format!(
+                    "Macro '{}' would write over cells that hold data ({what}). Overwrite them, or run again with onConflict shiftDown, shiftRight or fail",
+                    m.name
                 )));
             }
-            Ok(true)
+            OnConflict::Fail | OnConflict::Overwrite => {
+                return Err(EngineError::Other(format!("Macro '{}' would write over cells that hold data ({what}). Nothing was changed.", m.name)));
+            }
+            OnConflict::ShiftDown | OnConflict::ShiftRight => {
+                make_room(s, &fp, rule == OnConflict::ShiftDown)?;
+                fp = footprint(s, &b.prepared)?;
+                if let Some(e) = fp.error.take() {
+                    return Err(e.into_engine(&m.name));
+                }
+                if fp.conflict_count() > 0 {
+                    return Err(EngineError::Other(format!(
+                        "Macro '{}': shifting the data didn't make room ({}). Nothing was changed.",
+                        m.name,
+                        fp.describe_conflicts()
+                    )));
+                }
+                shifted = true;
+            }
         }
     }
+    if let Some(p) = &fp.partial {
+        let start = s.docs.iter().find(|d| d.uid == b.prepared.doc).ok_or(EngineError::NoDocument)?.wb.clone();
+        machine.guard = Some(Guard::new(start, p, rule == OnConflict::Ask));
+    }
+    Ok((machine, shifted))
 }
 
 /// Runs macro `name` on the active workbook: `{inputs?, onConflict?, overwrite?, approve?,
@@ -1058,9 +1172,7 @@ pub fn run(s: &mut Session, name: &str, p: &Json) -> Result<Json> {
     let b = begin(s, name, p)?;
     let label = format!("Run Macro: {}", b.mac.name);
     s.grouped(&label, |s| {
-        let shifted = make_way(s, &b)?;
-        let mut machine = Machine::new(&b.prepared, false);
-        machine.time_limit_ms = b.time_limit_ms;
+        let (mut machine, shifted) = make_way(s, &b)?;
         let name = &b.mac.name;
         machine.run_to_end(s).map_err(|e| e.into_engine(name))?;
         match machine.stopped {
