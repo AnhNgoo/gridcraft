@@ -125,9 +125,10 @@ references the selection when recording starts is the example input: references 
 on its sheet become tokens (on another sheet `C4` stays that sheet's `C4`), and the input's shape,
 header and column types are inferred. Toggles such as Bold are recorded with the state they set
 (`"on": true`), so playing them back sets them rather than flipping them. Commands a macro may not
-run are left out and listed in the result; a macro run while recording is replaced by its steps
-when it has no inputs, no output and only plain commands (otherwise it is left out and listed), and
-an Automate script run by the script's steps.
+run are left out and listed in the result, also from the steps of a macro or script run while
+recording; a macro run while recording is replaced by its steps when it has no inputs, no output
+and only plain commands (otherwise it is left out and listed), and an Automate script run by the
+script's steps.
 
 ## Other commands and storage
 

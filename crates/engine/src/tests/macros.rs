@@ -1078,3 +1078,20 @@ fn a_recorded_macro_run_is_inlined_only_when_its_steps_stand_alone() {
     assert_eq!(r["skipped"], json!(["macro.run", "macro.run"]));
     assert_eq!(recorded(&mut s, "Rec"), ["cell.set {\"cell\":\"C1\",\"input\":\"plain\"}"]);
 }
+
+#[test]
+fn a_recorded_script_run_leaves_out_the_steps_a_macro_may_not_run() {
+    let mut s = s();
+    let steps = json!([
+        {"command": "cell.set", "params": {"cell": "B1", "input": "kept"}},
+        {"command": "window.activate", "params": {"index": 0}},
+        {"command": "macro.list", "params": {}}
+    ]);
+    s.execute("automate.newScript", json!({"name": "Mixed", "commands": steps})).unwrap();
+    s.execute("macro.record", json!({"relative": false})).unwrap();
+    s.execute("automate.runScript", json!({"name": "Mixed"})).unwrap();
+    let r = s.execute("macro.record", json!({"stop": true, "name": "Rec"})).unwrap();
+    assert_eq!(r["skipped"], json!(["window.activate", "macro.list"]));
+    assert_eq!(recorded(&mut s, "Rec"), ["cell.set {\"cell\":\"B1\",\"input\":\"kept\"}"]);
+    s.execute("macro.run", json!({"name": "Rec", "onConflict": "overwrite"})).unwrap();
+}

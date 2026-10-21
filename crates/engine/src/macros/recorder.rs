@@ -6,7 +6,7 @@
 //! - commands a macro may not run (saving, opening files…) and other macros' commands are left
 //!   out; a macro run while recording is replaced by its steps when it has no inputs, no output
 //!   and only plain commands (otherwise it is left out), and an Automate script run while
-//!   recording by the script's steps;
+//!   recording by the script's steps, leaving out the steps a macro may not run;
 //! - a `sheet.activate` or `selection.set` step is added where the sheet or selection changed
 //!   between commands without one, and runs of `selection.set` collapse to the last;
 //! - with relative references (the default), the selection when recording started is the example
@@ -49,6 +49,7 @@ pub fn convert(name: &str, start: &RecordingStart, steps: &[RecordedStep], wb: &
     // Commands as they'll be played back: (id, params, sheet before, selection before, whether
     // they came from another macro and stay as written).
     let mut cmds: Vec<(String, Json, usize, String, Selection, bool)> = Vec::new();
+    let refused = |id: &str, params: &Json| matches!(macro_policy(id, params, crate::Trust::Local), Policy::Deny(_) | Policy::NeedsPermission(_));
     for st in steps.iter().filter(|st| st.doc == start.doc) {
         let id = st.id.as_str();
         if id == "macro.run" {
@@ -58,9 +59,12 @@ pub fn convert(name: &str, start: &RecordingStart, steps: &[RecordedStep], wb: &
             match inner {
                 Some(m) if m.inputs.is_empty() && m.output.anchor.is_none() && m.steps.iter().all(|x| matches!(x.kind, StepKind::Command { .. })) => {
                     for x in m.steps.iter().filter(|x| x.enabled) {
-                        if let StepKind::Command { id: cid, params } = &x.kind {
-                            cmds.push((cid.clone(), params.clone(), st.sheet, st.sheet_name.clone(), st.selection.clone(), true));
+                        let StepKind::Command { id: cid, params } = &x.kind else { continue };
+                        if refused(cid, params) {
+                            skipped.push(cid.clone());
+                            continue;
                         }
+                        cmds.push((cid.clone(), params.clone(), st.sheet, st.sheet_name.clone(), st.selection.clone(), true));
                     }
                 }
                 _ => skipped.push(id.to_string()),
@@ -72,6 +76,10 @@ pub fn convert(name: &str, start: &RecordingStart, steps: &[RecordedStep], wb: &
             match st.params.get("name").and_then(Json::as_str).and_then(|n| crate::cmd::extra::script_steps(wb, n)) {
                 Some(steps) => {
                     for (cid, params) in steps {
+                        if refused(&cid, &params) {
+                            skipped.push(cid);
+                            continue;
+                        }
                         cmds.push((cid, params, st.sheet, st.sheet_name.clone(), st.selection.clone(), true));
                     }
                 }
@@ -79,7 +87,7 @@ pub fn convert(name: &str, start: &RecordingStart, steps: &[RecordedStep], wb: &
             }
             continue;
         }
-        if matches!(macro_policy(id, &st.params, crate::Trust::Local), Policy::Deny(_) | Policy::NeedsPermission(_)) {
+        if refused(id, &st.params) {
             skipped.push(id.to_string());
             continue;
         }
