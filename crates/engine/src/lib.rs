@@ -422,6 +422,9 @@ impl Session {
                     d.selection = sel.clone();
                     d.calc.rebuild(&d.wb);
                 }
+                if self.depth == 0 {
+                    self.trim_history();
+                }
                 return Err(EngineError::Internal(id.to_string(), msg));
             }
         };
@@ -463,12 +466,14 @@ impl Session {
                     d.undo.truncate(len);
                 }
                 d.undo.push(HistoryEntry { label, wb, selection: sel });
-                if d.undo.len() > UNDO_LIMIT {
-                    d.undo.remove(0);
-                }
             }
             d.redo.clear();
             d.revision += 1;
+        }
+        // The history limit applies once the outermost command has collapsed its steps, so the
+        // lengths it compared stay true.
+        if self.depth == 0 {
+            self.trim_history();
         }
         result
     }
@@ -526,14 +531,27 @@ impl Session {
         let changed = !Arc::ptr_eq(&d.wb, &g.wb);
         if changed && !outer {
             d.undo.push(HistoryEntry { label: g.label, wb: g.wb, selection: g.selection });
-            while d.undo.len() > UNDO_LIMIT {
-                d.undo.remove(0);
-            }
             self.group_step = Some((g.doc, d.undo.len(), self.group_epoch));
             d.redo.clear();
             d.revision += 1;
         }
+        // Inside a command, the outermost command applies the history limit when it finishes.
+        if self.depth == 0 {
+            self.trim_history();
+        }
         Ok(changed)
+    }
+
+    /// Drops the oldest undo steps past [`UNDO_LIMIT`]. A document with an open group waits for
+    /// the group to end, because the group remembers where its steps start.
+    fn trim_history(&mut self) {
+        let groups = &self.groups;
+        for d in self.docs.iter_mut().filter(|d| !groups.iter().any(|g| g.doc == d.uid)) {
+            let excess = d.undo.len().saturating_sub(UNDO_LIMIT);
+            if excess > 0 {
+                d.undo.drain(..excess);
+            }
+        }
     }
 
     /// Ends an undo group by putting back the workbook, selection, undo and redo history as they

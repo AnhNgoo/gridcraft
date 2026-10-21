@@ -206,8 +206,7 @@ fn put(s: &mut Session, cell: &str, text: &str) -> crate::Result<()> {
     s.execute("cell.set", json!({"cell": cell, "input": text})).map(|_| ())
 }
 
-#[test]
-fn a_command_that_runs_its_own_group_makes_one_step() {
+fn register_group_commands() {
     use crate::cmd::register_undoable_test_command as register;
     // Edits before its group are part of the step.
     register("test.editThenGroup", |s, _| {
@@ -227,6 +226,18 @@ fn a_command_that_runs_its_own_group_makes_one_step() {
     });
     // A command that is one group keeps the group's name.
     register("test.onlyGroup", |s, _| s.grouped("Named Step", |s| put(s, "D1", "x")).map(|_| json!({})));
+    // An edit, then the end of the innermost group that was open before the command.
+    register("test.endOpenGroup", |s, _| {
+        put(s, "E1", "end")?;
+        let token = s.groups.last().map(|g| crate::GroupToken { id: g.id, doc: g.doc });
+        s.group_end(token.ok_or_else(|| EngineError::Other("no group".into()))?)?;
+        Ok(json!({}))
+    });
+}
+
+#[test]
+fn a_command_that_runs_its_own_group_makes_one_step() {
+    register_group_commands();
     let mut s = s();
     s.execute("test.onlyGroup", json!({})).unwrap();
     assert_eq!(undo_labels(&s), ["Named Step"]);
@@ -244,6 +255,87 @@ fn a_command_that_runs_its_own_group_makes_one_step() {
     assert_eq!(undo_labels(&s), ["Enter Cell", "test.failThenEdit"]);
     s.execute("edit.undo", json!({})).unwrap();
     assert!(v(&s, "B2").is_empty());
+}
+
+/// Fills the undo history to the limit with edits of Z1 ("v0" to "v99"), and returns its snapshots.
+fn fill_history(s: &mut Session) -> Vec<std::sync::Arc<gridcraft_model::Workbook>> {
+    for i in 0..crate::UNDO_LIMIT {
+        set(s, "Z1", &format!("v{i}"));
+    }
+    let d = s.doc().unwrap();
+    assert_eq!(d.undo.len(), crate::UNDO_LIMIT);
+    d.undo.iter().map(|e| e.wb.clone()).collect()
+}
+
+/// The history is still full, ends with one step labelled `label`, and kept every older step but
+/// the oldest.
+fn assert_one_step_replaced_the_oldest(s: &Session, before: &[std::sync::Arc<gridcraft_model::Workbook>], label: &str) {
+    let d = s.doc().unwrap();
+    assert_eq!(d.undo.len(), crate::UNDO_LIMIT);
+    assert_eq!(d.undo.last().map(|e| e.label.as_str()), Some(label));
+    assert_eq!(d.undo.iter().filter(|e| e.label == label).count(), 1);
+    let kept = d.undo.iter().take(crate::UNDO_LIMIT - 1);
+    assert!(kept.zip(before.iter().skip(1)).all(|(e, wb)| std::sync::Arc::ptr_eq(&e.wb, wb)));
+}
+
+/// Undo goes back to the state before the step, then to the edit before it; Redo comes back.
+fn assert_undo_redo(s: &mut Session, cells: &[(&str, &str)]) {
+    let after = |s: &Session| cells.iter().all(|(c, t)| v(s, c).display() == *t);
+    let gone = |s: &Session| cells.iter().all(|(c, _)| v(s, c).is_empty());
+    assert!(after(s));
+    s.execute("edit.undo", json!({})).unwrap();
+    assert!(gone(s) && v(s, "Z1").display() == "v99", "the first Undo restores the state before the command");
+    s.execute("edit.undo", json!({})).unwrap();
+    assert!(gone(s) && v(s, "Z1").display() == "v98", "the second Undo restores the edit before it");
+    s.execute("edit.redo", json!({})).unwrap();
+    assert!(gone(s) && v(s, "Z1").display() == "v99");
+    s.execute("edit.redo", json!({})).unwrap();
+    assert!(after(s) && v(s, "Z1").display() == "v99");
+}
+
+#[test]
+fn a_group_only_command_makes_one_step_when_the_history_is_full() {
+    register_group_commands();
+    let mut s = s();
+    let before = fill_history(&mut s);
+    s.execute("test.onlyGroup", json!({})).unwrap();
+    assert_one_step_replaced_the_oldest(&s, &before, "Named Step");
+    assert_undo_redo(&mut s, &[("D1", "x")]);
+}
+
+#[test]
+fn an_edit_then_a_group_makes_one_step_when_the_history_is_full() {
+    register_group_commands();
+    let mut s = s();
+    let before = fill_history(&mut s);
+    s.execute("test.editThenGroup", json!({})).unwrap();
+    assert_one_step_replaced_the_oldest(&s, &before, "test.editThenGroup");
+    assert_undo_redo(&mut s, &[("A1", "outside"), ("A2", "inside")]);
+}
+
+#[test]
+fn a_group_ended_at_the_history_limit_replaces_only_the_oldest_step() {
+    register_group_commands();
+    // A command ends a group that was open before it.
+    let mut s = s();
+    let before = fill_history(&mut s);
+    let _open = s.group_begin("Debug Macro").unwrap();
+    set(&mut s, "E2", "step");
+    assert_eq!(s.doc().unwrap().undo.len(), crate::UNDO_LIMIT);
+    s.execute("test.endOpenGroup", json!({})).unwrap();
+    assert!(!s.in_group(s.doc().unwrap().uid));
+    assert_one_step_replaced_the_oldest(&s, &before, "Debug Macro");
+    assert_undo_redo(&mut s, &[("E1", "end"), ("E2", "step")]);
+
+    // A group ended directly, outside any command, across calls.
+    let mut s = super::s();
+    let before = fill_history(&mut s);
+    let token = s.group_begin("Spanning").unwrap();
+    set(&mut s, "F1", "one");
+    set(&mut s, "F2", "two");
+    assert!(s.group_end(token).unwrap());
+    assert_one_step_replaced_the_oldest(&s, &before, "Spanning");
+    assert_undo_redo(&mut s, &[("F1", "one"), ("F2", "two")]);
 }
 
 // ---------------------------------------------------------------- recording buffer
