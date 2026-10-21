@@ -20,6 +20,10 @@ const MACRO_KEY: &str = "macro_";
 /// Reads a macro from JSON, as `macro.save` and files give it. A command step may also use the
 /// short form `{"command": "cell.set", "params": {…}}`.
 pub fn parse_macro(v: &Json) -> Result<Macro, String> {
+    // A newer format is refused before its steps are read, so the message says why.
+    if let Some(found) = v.get("v").and_then(Json::as_u64) {
+        gridcraft_model::check_version(found)?;
+    }
     let mut v = v.clone();
     if let Some(steps) = v.get_mut("steps") {
         normalize_steps(steps, 1)?;
@@ -99,7 +103,7 @@ pub fn with_names(wb: &Workbook) -> crate::Result<Option<Workbook>> {
 }
 
 /// After a file is opened: moves macros out of hidden names into `Workbook::macros` and drops
-/// macros that are damaged or over the limits. Returns a warning for what was dropped.
+/// macros that are damaged, over the limits or in a newer format. Returns a warning for what was dropped.
 pub fn load(wb: &mut Workbook) -> Vec<String> {
     let mut warnings = Vec::new();
     let mut bad = 0usize;
@@ -156,7 +160,7 @@ pub fn load(wb: &mut Workbook) -> Vec<String> {
     }
     if bad > 0 {
         warnings.push(format!(
-            "{bad} macro{} in the workbook couldn't be opened: {} damaged or over the limits ({} macros, {} steps each, Repeat and If nested {} deep).",
+            "{bad} macro{} in the workbook couldn't be opened: {} damaged, made by a newer version of GridCraft, or over the limits ({} macros, {} steps each, Repeat and If nested {} deep).",
             if bad == 1 { "" } else { "s" },
             if bad == 1 { "it is" } else { "they are" },
             gridcraft_model::MAX_MACROS,

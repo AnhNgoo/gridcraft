@@ -49,6 +49,12 @@ Macros are saved in the workbook: as a field in GridCraft's JSON format, and in 
 defined names (`_gc_macro_<n>_<k>`, the macro's JSON split into string literals within Excel's
 limits), which other spreadsheet applications keep but do not run.
 
+Each macro carries its format version, `v` (1 in this version; a missing `v` reads as 1). When a
+file is opened, a macro that is damaged, over the limits or in a newer format (a `v` above 1) is
+left out with one warning, and the rest of the workbook and its other macros open. A newer
+macro is never read in part, so a save can't write it back with its newer fields missing; a
+macro that was left out is not in the saved file.
+
 ## Automate scripts and VBA
 
 Automate scripts (`automate.recordActions`, `newScript`, `allScripts`, `runScript`,

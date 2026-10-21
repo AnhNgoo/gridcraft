@@ -63,9 +63,10 @@ impl Macro {
         count(&self.steps)
     }
 
-    /// Checks the size limits ([`MAX_MACRO_STEPS`], [`MAX_MACRO_DEPTH`], name and text lengths) and
-    /// that the name has no control characters.
+    /// Checks the format version ([`check_version`]), the size limits ([`MAX_MACRO_STEPS`],
+    /// [`MAX_MACRO_DEPTH`], name and text lengths) and that the name has no control characters.
     pub fn check_limits(&self) -> Result<(), String> {
+        check_version(u64::from(self.v))?;
         let name = self.name.trim();
         if name.is_empty() {
             return Err("A macro needs a name.".into());
@@ -117,6 +118,15 @@ impl Macro {
         }
         Ok(())
     }
+}
+
+/// Refuses a format version newer than [`MACRO_VERSION`]: this build would drop the fields it
+/// doesn't know, and a save would then write the rest back as if it were the whole macro.
+pub fn check_version(v: u64) -> Result<(), String> {
+    if v > u64::from(MACRO_VERSION) {
+        return Err(format!("This macro was made by a newer version of GridCraft (macro format {v}); this version reads format {MACRO_VERSION}."));
+    }
+    Ok(())
 }
 
 /// Reads the `macros` field of a JSON workbook as raw entries, whatever they hold, so they can be

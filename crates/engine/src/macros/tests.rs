@@ -278,3 +278,42 @@ fn a_damaged_json_macro_drops_alone() {
     assert!(warnings.len() == 1 && warnings[0].starts_with("3 macros"), "{warnings:?}");
     assert_eq!(back.sheet(0).unwrap().value(gridcraft_core::CellRef::new(0, 0)), gridcraft_core::Value::text("kept"));
 }
+
+#[test]
+fn a_macro_in_a_newer_format_is_dropped_not_rewritten() {
+    // A newer build's macro (`v` 2, with a field this build doesn't know) would lose that field
+    // here and be saved back as if complete, so it is dropped with the usual warning instead.
+    // Version 1 and a missing version are read as before.
+    let future = json!({"name": "Future", "v": MACRO_VERSION + 1, "fromALaterBuild": {"x": 1}, "steps": [{"command": "cell.set"}]});
+    let current = json!({"name": "Current", "v": MACRO_VERSION, "steps": [{"command": "cell.set"}]});
+    let missing = json!({"name": "Missing"});
+    let err = parse_macro(&future).unwrap_err();
+    assert!(err.contains("newer version") && err.contains("format 2"), "{err}");
+    assert!(parse_macro(&json!({"name": "Huge", "v": u64::from(u32::MAX) + 1})).unwrap_err().contains("newer version"));
+    // A macro built in code goes through the same check on every path.
+    assert!(Macro { name: "Built".into(), v: MACRO_VERSION + 1, ..Macro::default() }.check_limits().is_err());
+    let check = |file: &str, back: &Workbook, warnings: &[String]| {
+        let names: Vec<&str> = back.macros.iter().map(|m| m.name.as_str()).collect();
+        assert_eq!(names, ["Current", "Missing"], "{file}");
+        assert!(back.macros.iter().all(|m| m.v == MACRO_VERSION), "{file}");
+        assert!(warnings.len() == 1 && warnings[0].starts_with("1 macro ") && warnings[0].contains("newer version"), "{file}: {warnings:?}");
+        // Saving and opening again leaves no reduced copy of it behind.
+        let (again, warnings) = crate::io::open_bytes(file, &crate::io::save_bytes(back, file).unwrap()).unwrap();
+        assert!(warnings.is_empty(), "{file}: {warnings:?}");
+        assert_eq!(again.macros, back.macros, "{file}");
+    };
+    // The JSON format's field.
+    let mut v: serde_json::Value = serde_json::from_slice(&crate::io::save_bytes(&Workbook::new(), "book.json").unwrap()).unwrap();
+    v["macros"] = json!([future, current, missing]);
+    let (back, warnings) = crate::io::open_bytes("book.json", v.to_string().as_bytes()).unwrap();
+    check("book.json", &back, &warnings);
+    // Hidden names in xlsx.
+    let mut wb = Workbook::new();
+    for (i, m) in [&future, &current, &missing].into_iter().enumerate() {
+        wb.names.push(hidden(&format!("_gc_macro_{i}_0"), &m.to_string()));
+    }
+    let bytes = gridcraft_xlsx::write_xlsx(&wb).unwrap();
+    let (back, warnings) = crate::io::open_bytes("book.xlsx", &bytes).unwrap();
+    assert!(back.names.is_empty(), "{:?}", names_of(&back));
+    check("book.xlsx", &back, &warnings);
+}
