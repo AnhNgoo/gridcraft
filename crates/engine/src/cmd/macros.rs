@@ -184,10 +184,20 @@ fn start_recording(s: &mut Session, relative: bool) -> Result<Json> {
     Ok(if relative { json!({"recording": true, "relative": true, "input": input}) } else { json!({"recording": true, "relative": false}) })
 }
 
-/// Stops recording and saves what was recorded as a macro.
+/// Stops recording and saves what was recorded as a macro. When saving fails (a bad name, a full
+/// workbook) the recording goes on, so stopping again keeps what was recorded.
 fn stop_recording(s: &mut Session, p: &Json) -> Result<Json> {
     let Some(rec) = s.stop_recording() else { return Ok(json!({"recording": false})) };
     let start = s.macro_recording.take();
+    let saved = save_recording(s, p, &rec, start.clone());
+    if saved.is_err() {
+        s.recorder = Some(rec);
+        s.macro_recording = start;
+    }
+    saved
+}
+
+fn save_recording(s: &mut Session, p: &Json, rec: &crate::record::Recorder, start: Option<RecordingStart>) -> Result<Json> {
     let d = s.doc()?;
     let start = start.unwrap_or_else(|| RecordingStart {
         doc: d.uid,

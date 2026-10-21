@@ -967,3 +967,46 @@ fn only_the_workbooks_a_debugged_run_touched_wait() {
     debug(&mut s, json!({"action": "stop"}));
     set(&mut s, "A1", "free");
 }
+
+/// The commands of saved macro `name`, as `id params`.
+fn recorded(s: &mut Session, name: &str) -> Vec<String> {
+    let m = crate::macros::parse_macro(&s.execute("macro.get", json!({"name": name})).unwrap()).unwrap();
+    crate::macros::command_steps(&m.steps).iter().map(|(_, id, p)| format!("{id} {p}")).collect()
+}
+
+#[test]
+fn a_recording_is_kept_when_saving_it_fails() {
+    let mut s = s();
+    s.execute("macro.record", json!({"relative": false})).unwrap();
+    set(&mut s, "A1", "typed");
+    // A name the macro check refuses: still recording, and a good name saves what was recorded.
+    assert!(s.execute("macro.record", json!({"stop": true, "name": "Bad\u{1}name"})).is_err());
+    assert!(s.is_recording());
+    set(&mut s, "A2", "more");
+    let r = s.execute("macro.record", json!({"stop": true, "name": "Good"})).unwrap();
+    assert_eq!(r["saved"], "Good");
+    assert!(!s.is_recording());
+    assert_eq!(recorded(&mut s, "Good"), ["cell.set {\"cell\":\"A1\",\"input\":\"typed\"}", "cell.set {\"cell\":\"A2\",\"input\":\"more\"}"]);
+
+    // A workbook at its macro limit: freeing a slot and stopping again saves it.
+    s.execute("macro.record", json!({"relative": false})).unwrap();
+    set(&mut s, "B1", "full");
+    let d = s.doc_mut().unwrap();
+    let mut wb = (*d.wb).clone();
+    let filler = wb.macros[0].clone();
+    while wb.macros.len() < gridcraft_model::MAX_MACROS {
+        let mut m = filler.clone();
+        m.name = format!("Filler{}", wb.macros.len());
+        wb.macros.push(m);
+    }
+    d.wb = Arc::new(wb);
+    let err = s.execute("macro.record", json!({"stop": true, "name": "Late"})).unwrap_err().to_string();
+    assert!(err.contains("at most"), "{err}");
+    assert!(s.is_recording());
+    let d = s.doc_mut().unwrap();
+    let mut wb = (*d.wb).clone();
+    wb.macros.pop();
+    d.wb = Arc::new(wb);
+    s.execute("macro.record", json!({"stop": true, "name": "Late"})).unwrap();
+    assert_eq!(recorded(&mut s, "Late"), ["cell.set {\"cell\":\"B1\",\"input\":\"full\"}"]);
+}
