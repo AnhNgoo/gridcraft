@@ -188,6 +188,7 @@ fn all_paths(steps: &[gridcraft_model::Step], prefix: &str) -> BTreeSet<String> 
 /// Runs one step (`Step`), or steps until a breakpoint, the target step or the end.
 fn advance(s: &mut Session, mode: Mode) -> Result<Json> {
     let d = s.macro_debug.as_mut().ok_or_else(not_debugging)?;
+    let name = d.name.clone();
     let breakpoints = d.breakpoints.clone();
     let only_listed = d.only_listed;
     let mut machine = d.machine.take().ok_or_else(not_debugging)?;
@@ -219,8 +220,16 @@ fn advance(s: &mut Session, mode: Mode) -> Result<Json> {
         }
     }
     let done = machine.is_done();
-    if let Some(d) = s.macro_debug.as_mut() {
-        d.machine = Some(machine);
+    let executed = machine.executed;
+    match s.macro_debug.as_mut() {
+        Some(d) => d.machine = Some(machine),
+        // A step panicked and `recover` has already rolled the run back.
+        None => {
+            return match outcome {
+                Err(e) => Ok(failed(&name, executed, &e)),
+                Ok(()) => Err(not_debugging()),
+            };
+        }
     }
     note_touched(s, &before);
     if let Err(e) = outcome {
@@ -247,24 +256,33 @@ fn finish(s: &mut Session, error: Option<StepError>) -> Result<Json> {
         // The group is gone only if its workbook was closed; then there is nothing to end.
         let _ = if rollback { s.group_rollback(token) } else { s.group_end(token).map(|_| ()) };
     }
+    if let Some(e) = &error {
+        return Ok(failed(&d.name, executed, e));
+    }
     let mut out = json!({"macro": d.name, "executed": executed});
-    match (&error, &stopped) {
-        (Some(e), _) => {
-            out["state"] = json!("failed");
-            out["error"] = serde_json::to_value(e).unwrap_or(Json::Null);
-            out["message"] = json!(format!("{} Nothing was changed.", e.describe()));
-        }
-        (None, Some((msg, rolled))) => {
+    match &stopped {
+        Some((msg, rolled)) => {
             out["state"] = json!("stopped");
             out["stopped"] = json!(msg);
             out["kept"] = json!(!rolled);
         }
-        (None, None) => out["state"] = json!("finished"),
+        None => out["state"] = json!("finished"),
     }
     if !rollback {
         out["changed"] = json!(changed);
     }
     Ok(out)
+}
+
+/// The result of a run that a failed step rolled back.
+fn failed(name: &str, executed: u64, e: &StepError) -> Json {
+    json!({
+        "macro": name,
+        "executed": executed,
+        "state": "failed",
+        "error": serde_json::to_value(e).unwrap_or(Json::Null),
+        "message": format!("{} Nothing was changed.", e.describe()),
+    })
 }
 
 /// Stops the run: keeps what it did as one undo step, or rolls it back.
@@ -358,6 +376,33 @@ mod tests {
         assert!(std::sync::Arc::ptr_eq(&s.doc().unwrap().wb, &start));
         assert!(!s.in_group(s.doc().unwrap().uid));
         s.execute("cell.set", json!({"cell": "B1", "input": "free"})).unwrap();
+    }
+
+    #[test]
+    fn a_step_that_panics_reports_the_step_failure() {
+        crate::register_test_command("test.debugStepPanics", |_, _| panic!("boom"));
+        let mut s = Session::new();
+        s.new_workbook();
+        let m = crate::macros::parse_macro(&json!({"name": "M", "output": {"onConflict": "overwrite"}, "steps": [
+            {"command": "cell.set", "params": {"cell": "A1", "input": "x"}},
+            {"command": "test.debugStepPanics", "params": {}}
+        ]}))
+        .unwrap();
+        let d = s.doc_mut().unwrap();
+        let mut wb = (*d.wb).clone();
+        wb.macros.push(m);
+        d.wb = std::sync::Arc::new(wb);
+        let start = s.doc().unwrap().wb.clone();
+        s.execute("macro.debug", json!({"name": "M"})).unwrap();
+        s.execute("macro.debug", json!({"action": "step"})).unwrap();
+        let r = s.execute("macro.debug", json!({"action": "step"})).unwrap();
+        assert_eq!(r["state"], "failed", "{r}");
+        assert_eq!(r["macro"], "M");
+        assert_eq!(r["error"]["step"], "2");
+        assert!(r["message"].as_str().unwrap().contains("boom"), "{r}");
+        assert!(s.macro_debug.is_none());
+        assert!(std::sync::Arc::ptr_eq(&s.doc().unwrap().wb, &start));
+        assert!(!s.in_group(s.doc().unwrap().uid));
     }
 
     #[test]
