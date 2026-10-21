@@ -184,12 +184,21 @@ fn start_recording(s: &mut Session, relative: bool) -> Result<Json> {
     Ok(if relative { json!({"recording": true, "relative": true, "input": input}) } else { json!({"recording": true, "relative": false}) })
 }
 
-/// Stops recording and saves what was recorded as a macro. When saving fails (a bad name, a full
-/// workbook) the recording goes on, so stopping again keeps what was recorded.
+/// Stops recording and saves what was recorded as a macro, in the workbook where recording
+/// started. When saving fails (a bad name, a full workbook) the recording goes on, so stopping
+/// again keeps what was recorded; when that workbook was closed, the recording ends unsaved.
 fn stop_recording(s: &mut Session, p: &Json) -> Result<Json> {
     let Some(rec) = s.stop_recording() else { return Ok(json!({"recording": false})) };
     let start = s.macro_recording.take();
-    let saved = save_recording(s, p, &rec, start.clone());
+    let at = match &start {
+        Some(st) => s
+            .docs
+            .iter()
+            .position(|d| d.uid == st.doc)
+            .ok_or_else(|| EngineError::Other("The workbook where recording started was closed, so the recording was not saved.".into()))?,
+        None => s.active_index(),
+    };
+    let saved = save_recording(s, p, &rec, start.clone(), at);
     if saved.is_err() {
         s.recorder = Some(rec);
         s.macro_recording = start;
@@ -197,8 +206,9 @@ fn stop_recording(s: &mut Session, p: &Json) -> Result<Json> {
     saved
 }
 
-fn save_recording(s: &mut Session, p: &Json, rec: &crate::record::Recorder, start: Option<RecordingStart>) -> Result<Json> {
-    let d = s.doc()?;
+/// Saves the recording into the workbook at index `at`.
+fn save_recording(s: &mut Session, p: &Json, rec: &crate::record::Recorder, start: Option<RecordingStart>, at: usize) -> Result<Json> {
+    let d = s.docs.get(at).ok_or(EngineError::NoDocument)?;
     let start = start.unwrap_or_else(|| RecordingStart {
         doc: d.uid,
         sheet: d.wb.active_sheet,
@@ -218,6 +228,11 @@ fn save_recording(s: &mut Session, p: &Json, rec: &crate::record::Recorder, star
     }
     let steps = converted.mac.steps.len();
     let inputs: Vec<String> = converted.mac.inputs.iter().map(|i| i.name.clone()).collect();
-    s.execute("macro.save", json!({"macro": crate::macros::macro_json(&converted.mac)}))?;
+    // Saved into that workbook even when another one is active now.
+    let active = s.active_index();
+    s.set_active(at);
+    let saved = s.execute("macro.save", json!({"macro": crate::macros::macro_json(&converted.mac)}));
+    s.set_active(active);
+    saved?;
     Ok(json!({"recording": false, "saved": name, "steps": steps, "dropped": rec.dropped, "skipped": converted.skipped, "inputs": inputs}))
 }

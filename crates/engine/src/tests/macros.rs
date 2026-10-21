@@ -1095,3 +1095,34 @@ fn a_recorded_script_run_leaves_out_the_steps_a_macro_may_not_run() {
     assert_eq!(recorded(&mut s, "Rec"), ["cell.set {\"cell\":\"B1\",\"input\":\"kept\"}"]);
     s.execute("macro.run", json!({"name": "Rec", "onConflict": "overwrite"})).unwrap();
 }
+
+#[test]
+fn a_recording_is_saved_in_the_workbook_where_it_started() {
+    let mut s = s();
+    data(&mut s);
+    let first = s.doc().unwrap().uid;
+    s.execute("selection.set", json!({"range": "B2:C5"})).unwrap();
+    s.execute("macro.record", json!({})).unwrap();
+    set(&mut s, "E2", "Total");
+    s.new_workbook();
+    let r = s.execute("macro.record", json!({"stop": true, "name": "Here"})).unwrap();
+    assert_eq!(r["saved"], "Here");
+    // The active workbook stays active and gets nothing.
+    assert_ne!(s.doc().unwrap().uid, first);
+    assert!(s.doc().unwrap().wb.macros.is_empty());
+    s.set_active(0);
+    let m = crate::macros::parse_macro(&s.execute("macro.get", json!({"name": "Here"})).unwrap()).unwrap();
+    // The input's shape comes from the workbook where recording started.
+    assert!(m.inputs[0].header);
+    assert_eq!(recorded(&mut s, "Here"), ["cell.set {\"cell\":\"Input.cell(1,4)\",\"input\":\"Total\"}"]);
+
+    // When that workbook was closed, stopping says so and ends the recording.
+    s.execute("macro.record", json!({})).unwrap();
+    set(&mut s, "E3", "x");
+    s.set_active(1);
+    s.close_document(0);
+    let err = s.execute("macro.record", json!({"stop": true, "name": "Gone"})).unwrap_err().to_string();
+    assert!(err.contains("was closed"), "{err}");
+    assert!(!s.is_recording());
+    assert!(s.doc().unwrap().wb.macros.is_empty());
+}

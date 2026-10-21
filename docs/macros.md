@@ -119,11 +119,13 @@ of the step that just ran, and the cells changed so far.
 ## Recording
 
 `macro.record` toggles recording (`relative: false` for absolute references; `name` and
-`description` when stopping). When saving the recording fails (a name the check refuses, a workbook
-at its macro limit), recording goes on, so stopping again keeps what was recorded. With relative
-references the selection when recording starts is the example input: references in and near it
-on its sheet become tokens (on another sheet `C4` stays that sheet's `C4`), and the input's shape,
-header and column types are inferred. Toggles such as Bold are recorded with the state they set
+`description` when stopping). The macro is saved in the workbook where recording started, even if
+another one is active; if that workbook was closed, stopping ends the recording without saving it.
+When saving the recording fails (a name the check refuses, a workbook at its macro limit),
+recording goes on, so stopping again keeps what was recorded. With relative references the
+selection when recording starts is the example input: references in and near it on its sheet become
+tokens (on another sheet `C4` stays that sheet's `C4`), and the input's shape, header and column
+types are inferred. Toggles such as Bold are recorded with the state they set
 (`"on": true`), so playing them back sets them rather than flipping them. Commands a macro may not
 run are left out and listed in the result, also from the steps of a macro or script run while
 recording; a macro run while recording is replaced by its steps when it has no inputs, no output
