@@ -103,6 +103,15 @@ pub fn with_names(wb: &Workbook) -> crate::Result<Option<Workbook>> {
 pub fn load(wb: &mut Workbook) -> Vec<String> {
     let mut warnings = Vec::new();
     let mut bad = 0usize;
+    // Entries of the JSON format's field, each read on its own so a damaged one drops alone.
+    let read = std::mem::take(&mut wb.macros_read);
+    bad = bad.saturating_add(read.len().saturating_sub(gridcraft_model::MAX_MACROS));
+    for v in read.iter().take(gridcraft_model::MAX_MACROS) {
+        match parse_macro(v) {
+            Ok(m) => wb.macros.push(m),
+            Err(_) => bad += 1,
+        }
+    }
     // One pass takes the hidden macro names out of the workbook, grouped by macro in saved order.
     let mut stored: BTreeMap<(u64, String), Vec<DefinedName>> = BTreeMap::new();
     let mut kept = Vec::new();
@@ -126,7 +135,7 @@ pub fn load(wb: &mut Workbook) -> Vec<String> {
             Err(_) => bad += 1,
         }
     }
-    // Macros that came as a field (the JSON format) go through the same checks.
+    // All of them go through the same limits, and a clashing name gets a suffix.
     let mut all = std::mem::take(&mut wb.macros);
     all.extend(found);
     for m in all {

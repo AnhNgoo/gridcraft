@@ -119,6 +119,16 @@ impl Macro {
     }
 }
 
+/// Reads the `macros` field of a JSON workbook as raw entries, whatever they hold, so they can be
+/// checked one at a time.
+pub(crate) fn entries<'de, D: serde::Deserializer<'de>>(d: D) -> Result<Vec<serde_json::Value>, D::Error> {
+    Ok(match serde_json::Value::deserialize(d)? {
+        serde_json::Value::Array(list) => list,
+        serde_json::Value::Null => vec![],
+        other => vec![other],
+    })
+}
+
 /// A range the macro works on, with the shape and content it expects.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(default, rename_all = "camelCase")]

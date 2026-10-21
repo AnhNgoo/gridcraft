@@ -168,9 +168,10 @@ fn damaged_or_oversized_macros_are_dropped_with_a_warning() {
     wb.macros[0].steps = vec![Step::command("x", json!({})); MAX_MACRO_STEPS + 1];
     let bytes = crate::io::save_bytes(&wb, "many.json").unwrap();
     let (back, warnings) = crate::io::open_bytes("many.json", &bytes).unwrap();
-    assert_eq!(back.macros.len(), MAX_MACROS);
+    // Only the first MAX_MACROS entries are read, as in xlsx.
+    assert_eq!(back.macros.len(), MAX_MACROS - 1);
     assert_eq!(back.macros[0].name, "M1");
-    assert!(warnings[0].starts_with("5 macros"), "{warnings:?}");
+    assert!(warnings[0].starts_with("6 macros"), "{warnings:?}");
 
     // A macro too large for the hidden names is refused, so a save never fails on it.
     let huge = "x".repeat(crate::cmd::stash::MAX_ITEM_CHARS);
@@ -253,4 +254,27 @@ fn many_hidden_macro_names_are_read_in_one_pass() {
     assert_eq!(names_of(&wb), ["_gc_other_0"]);
     assert!(warnings.len() == 1 && warnings[0].starts_with(&format!("{items} macros")), "{warnings:?}");
     assert!(took < std::time::Duration::from_secs(3), "{took:?}");
+}
+
+#[test]
+fn a_damaged_json_macro_drops_alone() {
+    // One macro this build can't read (a newer step type, an unknown value, the wrong shape) is
+    // dropped with the usual warning; the workbook and its other macros open.
+    let mut wb = Workbook::new();
+    wb.sheet_mut(0).unwrap().set_value(gridcraft_core::CellRef::new(0, 0), gridcraft_core::Value::text("kept"));
+    let mut v: serde_json::Value = serde_json::from_slice(&crate::io::save_bytes(&wb, "book.json").unwrap()).unwrap();
+    v["macros"] = json!([
+        {"name": "Good"},
+        {"name": "Newer", "steps": [{"type": "fromALaterBuild"}]},
+        {"name": "Odd", "output": {"onConflict": "explode"}},
+        {"name": "Short", "steps": [{"command": "cell.set", "params": {"cell": "A1", "input": "x"}}]},
+        "not a macro"
+    ]);
+    let (back, warnings) = crate::io::open_bytes("book.json", v.to_string().as_bytes()).unwrap();
+    let names: Vec<&str> = back.macros.iter().map(|m| m.name.as_str()).collect();
+    assert_eq!(names, ["Good", "Short"]);
+    assert!(matches!(&back.macros[1].steps[0].kind, StepKind::Command { id, .. } if id == "cell.set"));
+    assert!(back.macros_read.is_empty());
+    assert!(warnings.len() == 1 && warnings[0].starts_with("3 macros"), "{warnings:?}");
+    assert_eq!(back.sheet(0).unwrap().value(gridcraft_core::CellRef::new(0, 0)), gridcraft_core::Value::text("kept"));
 }
