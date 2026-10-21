@@ -7,7 +7,9 @@
 //! the open document. Scripts made with Automate › New Script or Record Actions are a separate,
 //! older feature with their own storage; macros neither read nor change them.
 
-use gridcraft_model::{Macro, Workbook};
+use std::collections::BTreeMap;
+
+use gridcraft_model::{DefinedName, Macro, Workbook};
 use serde_json::{Value as Json, json};
 
 use crate::cmd::stash;
@@ -101,24 +103,28 @@ pub fn with_names(wb: &Workbook) -> crate::Result<Option<Workbook>> {
 pub fn load(wb: &mut Workbook) -> Vec<String> {
     let mut warnings = Vec::new();
     let mut bad = 0usize;
-    // Stored macros, in their saved order.
-    let mut keyed: Vec<(u64, String)> =
-        stash::keys(wb, MACRO_KEY).into_iter().filter_map(|k| k.strip_prefix(MACRO_KEY).and_then(|n| n.parse().ok()).map(|n| (n, k))).collect();
-    keyed.sort();
-    let mut found = Vec::new();
-    for (_, key) in &keyed {
-        // Past the macro limit, the rest are counted without being read.
-        if found.len() >= gridcraft_model::MAX_MACROS {
-            bad += 1;
-            continue;
+    // One pass takes the hidden macro names out of the workbook, grouped by macro in saved order.
+    let mut stored: BTreeMap<(u64, String), Vec<DefinedName>> = BTreeMap::new();
+    let mut kept = Vec::new();
+    for n in std::mem::take(&mut wb.names) {
+        match macro_item(&n) {
+            None => kept.push(n),
+            Some((key, Some(i))) => stored.entry((i, key)).or_default().push(n),
+            // A `macro_` item that isn't numbered isn't one this build wrote; it goes unread.
+            Some((_, None)) => {}
         }
-        match stash::get_json(wb, key).ok_or_else(|| "unreadable".to_string()).and_then(|v| parse_macro(&v)) {
+    }
+    wb.names = kept;
+    // Past the macro limit, the rest are counted without being read.
+    bad = bad.saturating_add(stored.len().saturating_sub(gridcraft_model::MAX_MACROS));
+    let mut found = Vec::new();
+    let mut item = Workbook::new();
+    for ((_, key), names) in stored.into_iter().take(gridcraft_model::MAX_MACROS) {
+        item.names = names;
+        match stash::get_json(&item, &key).ok_or_else(|| "unreadable".to_string()).and_then(|v| parse_macro(&v)) {
             Ok(m) => found.push(m),
             Err(_) => bad += 1,
         }
-    }
-    for key in stash::keys(wb, MACRO_KEY) {
-        stash::remove(wb, &key);
     }
     // Macros that came as a field (the JSON format) go through the same checks.
     let mut all = std::mem::take(&mut wb.macros);
@@ -150,6 +156,13 @@ pub fn load(wb: &mut Workbook) -> Vec<String> {
         ));
     }
     warnings
+}
+
+/// The item key (`macro_<n>`, lower-cased) of a hidden macro name, and `n` when it is a number.
+fn macro_item(n: &DefinedName) -> Option<(String, Option<u64>)> {
+    let key = stash::item_key(&n.name).filter(|k| n.scope.is_none() && k.starts_with(MACRO_KEY))?;
+    let i = key.strip_prefix(MACRO_KEY).and_then(|i| i.parse().ok());
+    Some((key, i))
 }
 
 /// `name`, or `name (2)`, `name (3)`… if a macro already has it. A long name is shortened to make

@@ -234,3 +234,23 @@ fn duplicate_names_at_the_length_limit_survive_save_and_reopen() {
         assert_eq!(again.macros, first.macros, "{file}");
     }
 }
+
+#[test]
+#[allow(clippy::disallowed_methods)] // a native-only timing test: the clock is read off wasm
+fn many_hidden_macro_names_are_read_in_one_pass() {
+    // A hostile file with many damaged macro items: only the first MAX_MACROS are read, and the
+    // names are gathered and removed in one pass instead of one scan of every name per item.
+    let mut wb = Workbook::new();
+    let items = 20_000;
+    for i in 0..items {
+        wb.names.push(hidden(&format!("_gc_macro_{i}_0"), "{not json"));
+    }
+    wb.names.push(hidden("_gc_other_0", "kept"));
+    let start = std::time::Instant::now();
+    let warnings = load(&mut wb);
+    let took = start.elapsed();
+    assert!(wb.macros.is_empty());
+    assert_eq!(names_of(&wb), ["_gc_other_0"]);
+    assert!(warnings.len() == 1 && warnings[0].starts_with(&format!("{items} macros")), "{warnings:?}");
+    assert!(took < std::time::Duration::from_secs(3), "{took:?}");
+}
