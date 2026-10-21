@@ -1184,8 +1184,10 @@ fn paste_special(s: &mut Session, p: &Json) -> Result<Json> {
         Ok(())
     })?;
     // Formulas, formats (conditional formats hold formulas) and validation from an untrusted file
-    // leave the destination untrusted; plain values, column widths and notes carry nothing active.
-    if !same_doc && !matches!(what, What::Values | What::ValuesAndNumberFormats | What::ColumnWidths | What::Comments) {
+    // leave the destination untrusted; plain values, column widths and notes carry nothing active
+    // (a linked paste of values still writes formulas).
+    let passive = matches!(what, What::ColumnWidths | What::Comments) || (!link && matches!(what, What::Values | What::ValuesAndNumberFormats));
+    if !same_doc && !passive {
         let d = s.doc_mut()?;
         d.trust = d.trust.receive(clip.trust);
     }
