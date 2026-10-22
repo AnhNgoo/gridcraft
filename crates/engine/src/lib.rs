@@ -457,8 +457,11 @@ impl Session {
                 let mut label = spec.label.trim_end_matches('…').to_string();
                 if own_groups && let Some((_, len)) = start {
                     // A command whose only step is its group's keeps that name ("Run Macro: Totals").
+                    // The step must have been made by a group this command ended (its epoch is
+                    // past the one the command started with): an older record at the same length
+                    // belongs to an earlier command, undone since.
                     if d.undo.len() == len + 1
-                        && self.group_step.is_some_and(|(doc, n, epoch)| doc == uid && n == len + 1 && epoch != group_epoch)
+                        && self.group_step.is_some_and(|(doc, n, epoch)| doc == uid && n == len + 1 && epoch > group_epoch)
                         && let Some(last) = d.undo.last()
                     {
                         label = last.label.clone();
@@ -567,6 +570,10 @@ impl Session {
         d.undo.truncate(g.start);
         d.redo = g.redo;
         d.revision += 1;
+        // A step the rollback dropped is no longer anyone's to name.
+        if self.group_step.is_some_and(|(doc, n, _)| doc == g.doc && n > g.start) {
+            self.group_step = None;
+        }
         Ok(())
     }
 

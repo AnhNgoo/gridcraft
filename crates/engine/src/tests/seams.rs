@@ -257,6 +257,27 @@ fn a_command_that_runs_its_own_group_makes_one_step() {
     assert!(v(&s, "B2").is_empty());
 }
 
+#[test]
+fn a_stale_group_step_does_not_name_a_later_command() {
+    // The record of the last group step (document, length, epoch) survives the Undo of that step.
+    // A later command that ends a group of its own at the same history length, after rolling
+    // another back, must not take the name of the nested edit it made.
+    register_group_commands();
+    let mut s = s();
+    s.execute("test.onlyGroup", json!({})).unwrap();
+    assert_eq!(undo_labels(&s), ["Named Step"]);
+    s.execute("edit.undo", json!({})).unwrap();
+    s.execute("test.failThenEdit", json!({})).unwrap();
+    assert_eq!(undo_labels(&s), ["test.failThenEdit"]);
+    s.execute("edit.undo", json!({})).unwrap();
+    s.execute("test.failThenEdit", json!({})).unwrap();
+    assert_eq!(undo_labels(&s), ["test.failThenEdit"]);
+    assert!(v(&s, "B1").is_empty());
+    assert_eq!(v(&s, "B2").display(), "kept");
+    s.execute("edit.undo", json!({})).unwrap();
+    assert!(v(&s, "B2").is_empty() && v(&s, "D1").is_empty());
+}
+
 /// Fills the undo history to the limit with edits of Z1 ("v0" to "v99"), and returns its snapshots.
 fn fill_history(s: &mut Session) -> Vec<std::sync::Arc<gridcraft_model::Workbook>> {
     for i in 0..crate::UNDO_LIMIT {
