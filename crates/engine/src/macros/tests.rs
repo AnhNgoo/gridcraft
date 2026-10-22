@@ -146,7 +146,7 @@ fn scripts_and_vba_stay_as_they_are() {
     let mut wb = Workbook::new();
     let scripts = json!({"Fill": [{"command": "cell.set", "params": {"cell": "A1", "input": "x"}}]});
     wb.names.push(hidden("_sc_scripts", &scripts.to_string()));
-    wb.vba_project = Some(b"\xd0\xcf\x11\xe0 synthetic vbaProject".to_vec());
+    wb.vba_project = Some(std::sync::Arc::new(b"\xd0\xcf\x11\xe0 synthetic vbaProject".to_vec()));
     wb.macros.push(sample_macro("Totals"));
     let bytes = crate::io::save_bytes(&wb, "book.xlsm").unwrap();
     let (back, warnings) = crate::io::open_bytes("book.xlsm", &bytes).unwrap();
