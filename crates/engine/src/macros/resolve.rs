@@ -320,7 +320,9 @@ fn header_col(env: &Env, place: Place, row: u32, h: &str) -> Option<i64> {
     let sh = env.wb.sheet(place.sheet)?;
     let r = place.range;
     (r.start.col..=r.end.col)
-        .position(|c| crate::display::cell_text(env.wb, sh, CellRef::new(row, c)).trim().eq_ignore_ascii_case(h.trim()))
+        // The header's value, however the sheet shows it: with Show Formulas on, the cell's
+        // display text is its formula.
+        .position(|c| crate::display::value_text(env.wb, sh, CellRef::new(row, c)).trim().eq_ignore_ascii_case(h.trim()))
         .map(|i| i as i64 + 1)
 }
 
@@ -553,6 +555,20 @@ mod tests {
             Ok(p) => assert_eq!(a1(p, env), want, "{token}"),
             Err(e) => panic!("{token}: {e}"),
         }
+    }
+
+    #[test]
+    fn a_formula_header_matches_while_formulas_are_shown() {
+        // The header was read through the cell's display text, which is the formula while Show
+        // Formulas is on, so `col("Amount")` found no column headed by a formula.
+        let mut wb = wb();
+        let sh = wb.sheet_mut(0).unwrap();
+        let formula = Some(std::sync::Arc::new(gridcraft_model::Formula::new("\"Amo\"&\"unt\"")));
+        sh.set_cell(CellRef::new(1, 2), gridcraft_model::Cell { value: gridcraft_core::Value::text("Amount"), formula, style: Default::default() });
+        sh.show_formulas = true;
+        let inputs = vec![("Input".to_string(), place("B2:D11"), true)];
+        let env = Env { wb: &wb, active_sheet: 0, inputs: &inputs, output: None, item: None };
+        check(&env, "Input.col(\"Amount\")", "C2:C11");
     }
 
     #[test]
