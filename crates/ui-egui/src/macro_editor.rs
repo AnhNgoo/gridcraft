@@ -99,6 +99,9 @@ pub struct RefPick {
     pub home: Option<(usize, String, String)>,
     /// The reference box the window is collapsed to (only that box shows).
     pub collapsed: Option<String>,
+    /// Whether the picking box was drawn this frame: a pick ends with a box that left the screen
+    /// (another step or tab was chosen), or a later selection would land in it unseen.
+    pub drawn: bool,
 }
 
 // ---------------------------------------------------------------- step paths
@@ -752,6 +755,7 @@ pub fn window(app: &mut SheetApp, ctx: &egui::Context, d: &mut Dialog, open: &mu
     let dirty_mark = if ed.dirty { " •" } else { "" };
     let screen = ctx.content_rect();
     let mut win_open = true;
+    ed.refs.drawn = false;
     egui::Window::new(format!("Macro: {}{dirty_mark}", ed.draft.name))
         .id(Id::new("gridcraft.macro_editor"))
         .collapsible(false)
@@ -769,6 +773,9 @@ pub fn window(app: &mut SheetApp, ctx: &egui::Context, d: &mut Dialog, open: &mu
             }
             body(app, ui, d, &mut ed);
         });
+    if ed.refs.pick.is_some() && !ed.refs.drawn {
+        ed.refs.pick = None;
+    }
     if !win_open {
         if app.session.macro_debug.is_some() {
             ed.ask_stop = true;
@@ -840,6 +847,9 @@ fn ref_edit(app: &SheetApp, ui: &mut Ui, d: &mut Dialog, refs: &mut RefPick, key
     let mut s = d.values.get(key).and_then(Json::as_str).unwrap_or("").to_string();
     let sel = selection_ref(app, refs.home.as_ref().map(|h| h.0));
     let picking = refs.pick.as_deref() == Some(key);
+    if picking {
+        refs.drawn = true;
+    }
     ui.horizontal(|ui| {
         let r = ui.add(egui::TextEdit::singleline(&mut s).desired_width(width - 30.0).id_salt(("refedit", key)));
         if r.gained_focus() || (r.clicked() && !picking) {

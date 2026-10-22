@@ -162,6 +162,32 @@ fn run_to_here_then_stop_asks_whether_to_keep_the_changes() {
     }
 }
 
+/// Step 3's Cell box is picking from the grid, with the selection it last saw (A1).
+fn pick_step_3_cell(h: &mut Harness) {
+    let refs = &mut h.state_mut().macros.editor.as_mut().unwrap().refs;
+    refs.pick = Some("ref:3:cell".into());
+    refs.seen = "$A$1".into();
+}
+
+#[test]
+fn a_pick_ends_when_its_box_leaves_the_screen() {
+    // Choosing another step hides the picking box; a selection made meanwhile must not land in
+    // it when the step is shown again.
+    let mut h = harness();
+    three(&mut h);
+    click(&mut h, "Step 3: Set A3 to A3");
+    pick_step_3_cell(&mut h);
+    h.run_steps(2);
+    click(&mut h, "Step 1: Set A1 to A1");
+    assert!(h.state().macros.editor.as_ref().unwrap().refs.pick.is_none(), "the pick ends with its box");
+    h.state_mut().run("selection.set", json!({"range": "F9"})).unwrap();
+    h.run_steps(2);
+    click(&mut h, "Step 3: Set A3 to A3");
+    let ed = h.state().macros.editor.as_ref().unwrap();
+    assert!(!ed.dirty, "the draft stays clean");
+    assert_eq!(draft_cells(&h), ["A1", "A2", "A3"]);
+}
+
 #[test]
 fn debugging_never_writes_the_selection_into_a_reference_box() {
     // A reference box that was picking from the grid stays out of it once an action starts, and
@@ -169,13 +195,7 @@ fn debugging_never_writes_the_selection_into_a_reference_box() {
     let mut h = harness();
     three(&mut h);
     click(&mut h, "Step 3: Set A3 to A3");
-    // The step's Cell box is picking, with the selection it last saw (A1).
-    let pick = |h: &mut Harness| {
-        let refs = &mut h.state_mut().macros.editor.as_mut().unwrap().refs;
-        refs.pick = Some("ref:3:cell".into());
-        refs.seen = "$A$1".into();
-    };
-    pick(&mut h);
+    pick_step_3_cell(&mut h);
     h.run_steps(2);
     assert_eq!(draft_cells(&h), ["A1", "A2", "A3"]);
     click(&mut h, "Run to Here");
@@ -184,7 +204,7 @@ fn debugging_never_writes_the_selection_into_a_reference_box() {
     assert!(ed.refs.pick.is_none(), "the action ends the pick");
     assert!(!ed.dirty);
     // A box focused while debugging does not take the selection either.
-    pick(&mut h);
+    pick_step_3_cell(&mut h);
     h.state_mut().run("selection.set", json!({"range": "F9"})).unwrap();
     h.run_steps(3);
     let ed = h.state().macros.editor.as_ref().unwrap();
