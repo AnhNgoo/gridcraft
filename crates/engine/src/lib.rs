@@ -469,8 +469,10 @@ impl Session {
                     d.undo.truncate(len);
                 }
                 d.undo.push(HistoryEntry { label, wb, selection: sel });
+                d.redo.clear();
             }
-            d.redo.clear();
+            // Inside a group the redo history waits for the group: `group_end` clears it when the
+            // group becomes a step, and `group_rollback` puts it back as it was.
             d.revision += 1;
         }
         // The history limit applies once the outermost command has collapsed its steps, so the

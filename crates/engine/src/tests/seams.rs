@@ -226,6 +226,13 @@ fn register_group_commands() {
     });
     // A command that is one group keeps the group's name.
     register("test.onlyGroup", |s, _| s.grouped("Named Step", |s| put(s, "D1", "x")).map(|_| json!({})));
+    // An edit, then the rollback of the innermost group that was open before the command.
+    register("test.rollbackOpenGroup", |s, _| {
+        put(s, "E1", "gone")?;
+        let token = s.groups.last().map(|g| crate::GroupToken { id: g.id, doc: g.doc });
+        s.group_rollback(token.ok_or_else(|| EngineError::Other("no group".into()))?)?;
+        Ok(json!({}))
+    });
     // An edit, then the end of the innermost group that was open before the command.
     register("test.endOpenGroup", |s, _| {
         put(s, "E1", "end")?;
@@ -276,6 +283,25 @@ fn a_stale_group_step_does_not_name_a_later_command() {
     assert_eq!(v(&s, "B2").display(), "kept");
     s.execute("edit.undo", json!({})).unwrap();
     assert!(v(&s, "B2").is_empty() && v(&s, "D1").is_empty());
+}
+
+#[test]
+fn a_group_rolled_back_inside_a_command_keeps_the_redo_history() {
+    // The debugger's Stop with Undo Changes rolls its group back inside a command. The rollback
+    // put the redo history back, and the command's own bookkeeping then cleared it again.
+    register_group_commands();
+    let mut s = s();
+    set(&mut s, "A1", "first");
+    s.execute("edit.undo", json!({})).unwrap();
+    assert_eq!(s.doc().unwrap().redo.len(), 1);
+    let token = s.group_begin("Debug").unwrap();
+    set(&mut s, "B1", "inside");
+    s.execute("test.rollbackOpenGroup", json!({})).unwrap();
+    assert!(!s.in_group(token.doc));
+    assert!(v(&s, "B1").is_empty() && v(&s, "E1").is_empty());
+    assert_eq!(s.doc().unwrap().redo.len(), 1, "the redo history survives the rolled-back group");
+    s.execute("edit.redo", json!({})).unwrap();
+    assert_eq!(v(&s, "A1").display(), "first");
 }
 
 /// Fills the undo history to the limit with edits of Z1 ("v0" to "v99"), and returns its snapshots.
