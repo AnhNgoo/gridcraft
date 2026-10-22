@@ -163,6 +163,40 @@ fn run_to_here_then_stop_asks_whether_to_keep_the_changes() {
 }
 
 #[test]
+fn debugging_never_writes_the_selection_into_a_reference_box() {
+    // A reference box that was picking from the grid stays out of it once an action starts, and
+    // the selections the debugger makes while it runs never land in a box or dirty the draft.
+    let mut h = harness();
+    three(&mut h);
+    click(&mut h, "Step 3: Set A3 to A3");
+    // The step's Cell box is picking, with the selection it last saw (A1).
+    let pick = |h: &mut Harness| {
+        let refs = &mut h.state_mut().macros.editor.as_mut().unwrap().refs;
+        refs.pick = Some("ref:3:cell".into());
+        refs.seen = "$A$1".into();
+    };
+    pick(&mut h);
+    h.run_steps(2);
+    assert_eq!(draft_cells(&h), ["A1", "A2", "A3"]);
+    click(&mut h, "Run to Here");
+    assert!(h.state().session.macro_debug.is_some());
+    let ed = h.state().macros.editor.as_ref().unwrap();
+    assert!(ed.refs.pick.is_none(), "the action ends the pick");
+    assert!(!ed.dirty);
+    // A box focused while debugging does not take the selection either.
+    pick(&mut h);
+    h.state_mut().run("selection.set", json!({"range": "F9"})).unwrap();
+    h.run_steps(3);
+    let ed = h.state().macros.editor.as_ref().unwrap();
+    assert!(!ed.dirty, "the draft stays clean");
+    assert_eq!(draft_cells(&h), ["A1", "A2", "A3"]);
+    h.state_mut().macros.editor.as_mut().unwrap().refs.pick = None;
+    click(&mut h, "Stop");
+    click(&mut h, "Undo Changes");
+    assert!(h.state().session.macro_debug.is_none());
+}
+
+#[test]
 fn step_into_from_the_macros_dialog_pauses_before_the_first_step() {
     let mut h = harness();
     three(&mut h);

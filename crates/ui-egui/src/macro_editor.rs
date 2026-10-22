@@ -563,6 +563,8 @@ fn error_step(msg: &str) -> Option<(String, String)> {
 
 /// Check: validates the inputs and dry-runs the macro; the grid shows what it would touch.
 pub fn check(app: &mut SheetApp, ed: &mut Editor) {
+    // A reference box picking from the grid would take the selections the action makes.
+    ed.refs.pick = None;
     if !ensure_saved(app, ed) {
         return;
     }
@@ -613,6 +615,7 @@ fn check_text(v: &Json) -> String {
 
 /// Run: runs the saved macro as one undo step.
 pub fn run(app: &mut SheetApp, ed: &mut Editor) {
+    ed.refs.pick = None;
     if !ensure_saved(app, ed) {
         return;
     }
@@ -649,6 +652,7 @@ fn with(mut base: Json, extra: Json) -> Json {
 
 /// Step, Continue or Run to Here: starts debugging if needed (paused before step 1), then acts.
 pub fn debug_action(app: &mut SheetApp, ed: &mut Editor, action: &str) {
+    ed.refs.pick = None;
     let debugging = app.session.macro_debug.is_some();
     // Starting selects the first step: take Run to Here's target before that.
     let target = ed.selected.clone().filter(|s| split_path(s).is_some());
@@ -840,8 +844,9 @@ fn ref_edit(app: &SheetApp, ui: &mut Ui, d: &mut Dialog, refs: &mut RefPick, key
         let r = ui.add(egui::TextEdit::singleline(&mut s).desired_width(width - 30.0).id_salt(("refedit", key)));
         if r.gained_focus() || (r.clicked() && !picking) {
             begin_pick(app, refs, key);
-        } else if picking && !r.has_focus() && sel != refs.seen {
-            // A selection made on the grid becomes the reference.
+        } else if picking && !r.has_focus() && sel != refs.seen && app.session.macro_debug.is_none() {
+            // A selection made on the grid becomes the reference; while debugging, the selection
+            // follows the steps and is not a pick.
             s = sel.clone();
             refs.seen = sel;
         }
