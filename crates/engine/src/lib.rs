@@ -8,6 +8,7 @@
 
 pub mod catalog;
 pub mod cf;
+mod chart_svg;
 mod clip_html;
 pub mod cmd;
 pub mod display;
@@ -69,6 +70,8 @@ pub struct HistoryEntry {
     pub label: String,
     pub wb: Arc<Workbook>,
     pub selection: Selection,
+    /// Estimate of storage this snapshot retains beyond the next workbook version.
+    pub retained_bytes: usize,
 }
 
 /// An undo group opened with [`Session::group_begin`]. Hand it back to [`Session::group_end`]
@@ -186,6 +189,61 @@ pub struct DocState {
 
 static NEXT_UID: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
 const UNDO_LIMIT: usize = 100;
+/// Past this many entries the journal drops its oldest half.
+const JOURNAL_MAX_ENTRIES: usize = 10_000;
+/// Past this many bytes (entries serialized as JSON) the journal drops its oldest entries until
+/// it is under half. Entries keep their full params so they replay (recorded scripts,
+/// `engine.journal`), and a `file.open` holds the whole file as base64: without a size cap a
+/// few opens of a large workbook keep tens of MB alive.
+pub(crate) const JOURNAL_MAX_BYTES: usize = 64 * 1024 * 1024;
+const UNDO_BYTES_LIMIT: usize = 128 * 1024 * 1024;
+
+fn history_retained_bytes(older: &Workbook, newer: &Workbook) -> usize {
+    let mut bytes = std::mem::size_of::<Workbook>();
+    for (index, sheet) in older.sheets.iter().enumerate() {
+        // Moving or inserting sheets must not charge unchanged sheets at a new index.
+        if newer.sheets.iter().any(|next| Arc::ptr_eq(sheet, next)) {
+            continue;
+        }
+        bytes = bytes.saturating_add(std::mem::size_of::<gridcraft_model::Sheet>());
+        let empty = gridcraft_model::CellStore::new();
+        let next = newer.sheets.get(index).map_or(&empty, |next| &next.cells);
+        bytes = bytes.saturating_add(sheet.cells.retained_bytes_against(next));
+    }
+    bytes
+}
+
+fn push_history(history: &mut Vec<HistoryEntry>, label: String, wb: Arc<Workbook>, next: &Workbook, selection: Selection) {
+    push_history_with_budget(history, label, wb, next, selection, UNDO_BYTES_LIMIT);
+}
+
+fn push_history_with_budget(
+    history: &mut Vec<HistoryEntry>,
+    label: String,
+    wb: Arc<Workbook>,
+    next: &Workbook,
+    selection: Selection,
+    byte_budget: usize,
+) {
+    push_entry(history, label, wb, next, selection);
+    trim_to_budget(history, byte_budget);
+}
+
+/// Adds a step without applying the limits: inside a command they wait for the outermost
+/// command to collapse its steps (see [`Session::trim_history`]).
+fn push_entry(history: &mut Vec<HistoryEntry>, label: String, wb: Arc<Workbook>, next: &Workbook, selection: Selection) {
+    let retained_bytes = history_retained_bytes(&wb, next);
+    history.push(HistoryEntry { label, wb, selection, retained_bytes });
+}
+
+/// Drops the oldest steps past [`UNDO_LIMIT`] or `byte_budget`, always keeping the latest one
+/// (even if that one edit exceeds the budget).
+fn trim_to_budget(history: &mut Vec<HistoryEntry>, byte_budget: usize) {
+    let mut total = history.iter().fold(0usize, |sum, entry| sum.saturating_add(entry.retained_bytes));
+    while history.len() > 1 && (history.len() > UNDO_LIMIT || total > byte_budget) {
+        total = total.saturating_sub(history.remove(0).retained_bytes);
+    }
+}
 
 impl DocState {
     pub fn new(mut wb: Workbook, path: Option<String>, title: String) -> DocState {
@@ -299,6 +357,13 @@ pub enum UiRequest {
     OpenUrl(String),
 }
 
+/// Width in points of one line of text drawn in a cell font, measured by a front end that has
+/// the font the grid draws with. With `exact` false the front end may answer with a cheaper
+/// measure that is never narrower (AutoFit asks for it on columns with many distinct values).
+/// Commands call it while they run, so a front end must not run commands while holding a lock
+/// the measure takes (egui's: see `theme::cell_text_width` in the UI crate).
+pub type TextWidth = Arc<dyn Fn(&str, &model::Font, bool) -> f32 + Send + Sync>;
+
 #[derive(Default)]
 pub struct Session {
     docs: Vec<DocState>,
@@ -308,6 +373,9 @@ pub struct Session {
     pub mode: Mode,
     /// Commands run so far, without their passwords ([`cmd::journal_params`]).
     pub journal: Vec<(String, Json)>,
+    /// Serialized size of each journal entry, measured once when it is pushed, and their sum.
+    journal_sizes: Vec<usize>,
+    journal_bytes: usize,
     pub ui_requests: Vec<UiRequest>,
     /// Format painter source style (sticky when double-clicked).
     pub format_painter: Option<(Arc<Workbook>, usize, RangeRef, bool)>,
@@ -343,6 +411,9 @@ pub struct Session {
     group_epoch: u64,
     /// The step the last group made: document, its undo length after the step, and the epoch.
     group_step: Option<(u64, usize, u64)>,
+    /// Measures cell text for AutoFit Column Width. Without it (CLI, MCP) AutoFit uses
+    /// [`cmd::format::approx_text_width`].
+    pub text_width: Option<TextWidth>,
 }
 
 impl Session {
@@ -395,6 +466,38 @@ impl Session {
             wb.sheets.push(Arc::new(gridcraft_model::Sheet::new(name)));
         }
         self.add_document(DocState::new(wb, None, format!("Book{n}")))
+    }
+
+    /// Journals a command, then trims the oldest entries past either cap. A recording in progress
+    /// keeps pointing at the same entry (the steps the trim dropped are lost).
+    fn push_journal(&mut self, id: &str, params: Json) {
+        let size = |e: &(String, Json)| serde_json::to_vec(e).map_or(0, |v| v.len());
+        // `journal` is public: if it was changed from outside, measure it again.
+        if self.journal_sizes.len() != self.journal.len() {
+            self.journal_sizes = self.journal.iter().map(size).collect();
+            self.journal_bytes = self.journal_sizes.iter().sum();
+        }
+        let entry = (id.to_string(), params);
+        let entry_size = size(&entry);
+        self.journal.push(entry);
+        self.journal_sizes.push(entry_size);
+        self.journal_bytes = self.journal_bytes.saturating_add(entry_size);
+        let len = self.journal.len();
+        let mut n = if len > JOURNAL_MAX_ENTRIES { len - JOURNAL_MAX_ENTRIES / 2 } else { 0 };
+        let mut kept = self.journal_bytes.saturating_sub(self.journal_sizes.iter().take(n).sum());
+        if self.journal_bytes > JOURNAL_MAX_BYTES {
+            // The newest entry stays even when it is larger than the cap on its own.
+            while kept > JOURNAL_MAX_BYTES / 2 && n + 1 < len {
+                kept = kept.saturating_sub(self.journal_sizes.get(n).copied().unwrap_or(0));
+                n += 1;
+            }
+        }
+        if n > 0 {
+            self.journal.drain(..n);
+            self.journal_sizes.drain(..n);
+            self.journal_bytes = kept;
+            self.recording = self.recording.map(|r| r.saturating_sub(n));
+        }
     }
 
     pub fn commands(&self) -> Vec<CommandInfo> {
@@ -450,10 +553,7 @@ impl Session {
             {
                 rec.push(record::RecordedStep { doc, sheet, sheet_name, selection, id: id.to_string(), params: cmd::journal_params(&params) });
             }
-            self.journal.push((id.to_string(), cmd::journal_params(&params)));
-            if self.journal.len() > 10_000 {
-                self.journal.drain(..5_000);
-            }
+            self.push_journal(id, cmd::journal_params(&params));
         }
         // Inside an undo group, or when the command ended one that was open before it, the group
         // owns the step. A command that opened and closed its own groups makes one step of its
@@ -482,7 +582,7 @@ impl Session {
                     }
                     d.undo.truncate(len);
                 }
-                d.undo.push(HistoryEntry { label, wb, selection: sel });
+                push_entry(&mut d.undo, label, wb, &d.wb, sel);
                 d.redo.clear();
             }
             // Inside a group the redo history waits for the group: `group_end` clears it when the
@@ -549,7 +649,7 @@ impl Session {
         d.undo.truncate(g.start);
         let changed = !Arc::ptr_eq(&d.wb, &g.wb);
         if changed && !outer {
-            d.undo.push(HistoryEntry { label: g.label, wb: g.wb, selection: g.selection });
+            push_entry(&mut d.undo, g.label, g.wb, &d.wb, g.selection);
             self.group_step = Some((g.doc, d.undo.len(), self.group_epoch));
             d.redo.clear();
             d.revision += 1;
@@ -561,15 +661,12 @@ impl Session {
         Ok(changed)
     }
 
-    /// Drops the oldest undo steps past [`UNDO_LIMIT`]. A document with an open group waits for
-    /// the group to end, because the group remembers where its steps start.
+    /// Drops the oldest undo steps past [`UNDO_LIMIT`] or [`UNDO_BYTES_LIMIT`]. A document with
+    /// an open group waits for the group to end, because the group remembers where its steps start.
     fn trim_history(&mut self) {
         let groups = &self.groups;
         for d in self.docs.iter_mut().filter(|d| !groups.iter().any(|g| g.doc == d.uid)) {
-            let excess = d.undo.len().saturating_sub(UNDO_LIMIT);
-            if excess > 0 {
-                d.undo.drain(..excess);
-            }
+            trim_to_budget(&mut d.undo, UNDO_BYTES_LIMIT);
         }
     }
 
