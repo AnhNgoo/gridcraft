@@ -177,7 +177,9 @@ pub fn load(wb: &mut Workbook) -> Vec<String> {
 
 /// The item key (`macro_<n>`, lower-cased) of a hidden macro name, and `n` when it is a number.
 fn macro_item(n: &DefinedName) -> Option<(String, Option<u64>)> {
-    let key = stash::item_key(&n.name).filter(|k| n.scope.is_none() && k.starts_with(MACRO_KEY))?;
+    // Only a hidden workbook-scope name is macro storage: a person's own visible name that
+    // happens to look like one stays a name.
+    let key = stash::item_key(&n.name).filter(|k| n.hidden && n.scope.is_none() && k.starts_with(MACRO_KEY))?;
     let i = key.strip_prefix(MACRO_KEY).and_then(|i| i.parse().ok());
     Some((key, i))
 }

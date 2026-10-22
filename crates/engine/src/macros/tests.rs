@@ -128,6 +128,19 @@ fn hidden(name: &str, text: &str) -> DefinedName {
 }
 
 #[test]
+fn a_visible_name_that_looks_like_macro_storage_is_left_alone() {
+    // Macro storage is hidden workbook-scope names; a visible `_gc_macro_0_0` someone defined
+    // is neither read as a macro nor removed when the workbook opens.
+    let mut wb = Workbook::new();
+    let name = DefinedName { hidden: false, ..hidden("_gc_macro_0_0", "x") };
+    wb.names.push(name.clone());
+    let warnings = load(&mut wb);
+    assert!(warnings.is_empty(), "{warnings:?}");
+    assert!(wb.macros.is_empty());
+    assert_eq!(wb.names, vec![name]);
+}
+
+#[test]
 fn scripts_and_vba_stay_as_they_are() {
     // Automate scripts keep their own storage, and a VBA project is carried through unchanged.
     let mut wb = Workbook::new();
