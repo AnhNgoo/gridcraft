@@ -226,6 +226,27 @@ fn register_group_commands() {
     });
     // A command that is one group keeps the group's name.
     register("test.onlyGroup", |s, _| s.grouped("Named Step", |s| put(s, "D1", "x")).map(|_| json!({})));
+    // A group, then an edit the command makes itself (no nested command, so no undo entry).
+    register("test.groupThenEdit", |s, _| {
+        s.grouped("Named Step", |s| put(s, "D1", "x"))?;
+        crate::cmd::edit(s, |cx| {
+            let at = gridcraft_core::CellRef::parse("D2").ok_or_else(|| EngineError::Other("D2".into()))?;
+            cx.sheet_mut(0)?.set_value(at, gridcraft_core::Value::Text("y".into()));
+            cx.touch(0, at);
+            Ok(())
+        })?;
+        Ok(json!({}))
+    });
+    // A group with a change, then one that is rolled back: the step is still the first group's.
+    register("test.groupThenRolledBack", |s, _| {
+        s.grouped("Named Step", |s| put(s, "D1", "x"))?;
+        let failed: crate::Result<()> = s.grouped("Doomed", |s| {
+            put(s, "D3", "gone")?;
+            Err(EngineError::Other("no".into()))
+        });
+        assert!(failed.is_err());
+        Ok(json!({}))
+    });
     // An edit, then the rollback of the innermost group that was open before the command.
     register("test.rollbackOpenGroup", |s, _| {
         put(s, "E1", "gone")?;
@@ -266,9 +287,9 @@ fn a_command_that_runs_its_own_group_makes_one_step() {
 
 #[test]
 fn a_stale_group_step_does_not_name_a_later_command() {
-    // The record of the last group step (document, length, epoch) survives the Undo of that step.
-    // A later command that ends a group of its own at the same history length, after rolling
-    // another back, must not take the name of the nested edit it made.
+    // The record of the last group step survives the Undo of that step. A later command that
+    // ends a group of its own at the same history length, after rolling another back, must not
+    // take the name of the nested edit it made.
     register_group_commands();
     let mut s = s();
     s.execute("test.onlyGroup", json!({})).unwrap();
@@ -283,6 +304,27 @@ fn a_stale_group_step_does_not_name_a_later_command() {
     assert_eq!(v(&s, "B2").display(), "kept");
     s.execute("edit.undo", json!({})).unwrap();
     assert!(v(&s, "B2").is_empty() && v(&s, "D1").is_empty());
+}
+
+#[test]
+fn a_command_keeps_its_groups_name_only_for_exactly_that_step() {
+    // The name comes from the group only when the group's step is the command's whole step: an
+    // edit after the group (no nested command, so the history length matches) makes it the
+    // command's own, while a later group that rolled back changes nothing.
+    register_group_commands();
+    let mut s = s();
+    s.execute("test.groupThenEdit", json!({})).unwrap();
+    assert_eq!(undo_labels(&s), ["test.groupThenEdit"]);
+    assert_eq!((v(&s, "D1").display(), v(&s, "D2").display()), ("x".into(), "y".into()));
+    s.execute("edit.undo", json!({})).unwrap();
+    assert!(v(&s, "D1").is_empty() && v(&s, "D2").is_empty());
+    assert_eq!(undo_labels(&s), Vec::<String>::new());
+    s.execute("test.groupThenRolledBack", json!({})).unwrap();
+    assert_eq!(undo_labels(&s), ["Named Step"]);
+    assert_eq!(v(&s, "D1").display(), "x");
+    assert!(v(&s, "D3").is_empty());
+    s.execute("edit.undo", json!({})).unwrap();
+    assert!(v(&s, "D1").is_empty());
 }
 
 #[test]

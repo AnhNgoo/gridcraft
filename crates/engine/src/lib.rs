@@ -97,6 +97,17 @@ struct OpenGroup {
     redo: Vec<HistoryEntry>,
 }
 
+/// The undo step the last [`Session::group_end`] made: its document and the workbook it led to.
+/// The entry itself holds the workbook it started from, so a command can check that the step is
+/// exactly its own (the same start and end as the command's) and keep the group's name for it.
+/// A weak reference: the record keeps no workbook alive, and a workbook that is gone can't be
+/// a command's result.
+#[derive(Debug)]
+struct GroupStep {
+    doc: u64,
+    after: std::sync::Weak<Workbook>,
+}
+
 /// The clipboard: a block of cells (with formulas and styles) or marching-ants reference.
 #[derive(Clone, Debug)]
 pub struct Clipboard {
@@ -405,8 +416,9 @@ pub struct Session {
     next_group: u64,
     /// Counts group begins and ends, so `execute` can tell that a command opened or closed one.
     group_epoch: u64,
-    /// The step the last group made: document, its undo length after the step, and the epoch.
-    group_step: Option<(u64, usize, u64)>,
+    /// The step the last `group_end` made, so `execute` can tell that a command's step is exactly
+    /// its group's.
+    group_step: Option<GroupStep>,
     /// Measures cell text for AutoFit Column Width. Without it (CLI, MCP) AutoFit uses
     /// [`cmd::format::approx_text_width`].
     pub text_width: Option<TextWidth>,
@@ -567,12 +579,14 @@ impl Session {
                 let mut label = spec.label.trim_end_matches('…').to_string();
                 if own_groups && let Some((_, len)) = start {
                     // A command whose only step is its group's keeps that name ("Run Macro: Totals").
-                    // The step must have been made by a group this command ended (its epoch is
-                    // past the one the command started with): an older record at the same length
-                    // belongs to an earlier command, undone since.
+                    // That is so only when the one entry the command added is a group's step from
+                    // the command's own start to its own result: an entry a nested command made,
+                    // a group step of an earlier command (undone since), or a group's step that
+                    // the command edited past all name the step after the command instead.
                     if d.undo.len() == len + 1
-                        && self.group_step.is_some_and(|(doc, n, epoch)| doc == uid && n == len + 1 && epoch > group_epoch)
                         && let Some(last) = d.undo.last()
+                        && Arc::ptr_eq(&last.wb, &wb)
+                        && self.group_step.as_ref().is_some_and(|g| g.doc == uid && g.after.upgrade().is_some_and(|after| Arc::ptr_eq(&after, &d.wb)))
                     {
                         label = last.label.clone();
                     }
@@ -646,7 +660,7 @@ impl Session {
         let changed = !Arc::ptr_eq(&d.wb, &g.wb);
         if changed && !outer {
             push_entry(&mut d.undo, g.label, g.wb, &d.wb, g.selection);
-            self.group_step = Some((g.doc, d.undo.len(), self.group_epoch));
+            self.group_step = Some(GroupStep { doc: g.doc, after: Arc::downgrade(&d.wb) });
             d.redo.clear();
             d.revision += 1;
         }
@@ -679,10 +693,6 @@ impl Session {
         d.undo.truncate(g.start);
         d.redo = g.redo;
         d.revision += 1;
-        // A step the rollback dropped is no longer anyone's to name.
-        if self.group_step.is_some_and(|(doc, n, _)| doc == g.doc && n > g.start) {
-            self.group_step = None;
-        }
         Ok(())
     }
 
