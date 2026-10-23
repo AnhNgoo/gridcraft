@@ -56,7 +56,10 @@ Actions made of many commands (macros, a debugger that runs one step per call) u
   While a group is open on a document, its commands add no undo steps of their own and Undo and
   Redo are disabled there. Groups nest; the outermost one makes the step. A command that opens and
   closes its own groups still makes one undo step for itself, covering its edits inside and outside
-  the groups.
+  the groups. A command that ends a group open before it leaves the group its step and makes one
+  of its own for what it changes after the end; a group a command opens and leaves open starts
+  where the command did. The history limit is applied when the outermost command finishes; until
+  then the steps made inside it are bounded on their own.
 - **Recording buffer** (`record.rs`). `Session::start_recording` collects each successful
   top-level command with the document, sheet and selection it ran in, without secret parameters.
   Commands run by other commands are not recorded, and the buffer is independent of the journal
