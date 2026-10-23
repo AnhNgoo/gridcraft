@@ -268,6 +268,19 @@ fn register_group_commands() {
         put(s, "E1", "after")?;
         Ok(json!({}))
     });
+    // Many nested edits: the steps they make are bounded while the command runs. (Not undoable
+    // itself: like a script, its nested steps are the undo steps.)
+    crate::cmd::register_test_command("test.manyNestedEdits", |s, _| {
+        let start = s.doc()?.undo.len();
+        for i in 0..crate::UNDO_LIMIT + 50 {
+            put(s, "A1", &i.to_string())?;
+        }
+        let len = s.doc()?.undo.len();
+        if len > start + crate::UNDO_LIMIT {
+            return Err(EngineError::Other(format!("{} steps kept inside the command", len - start)));
+        }
+        Ok(json!({}))
+    });
     // An edit, then a group the command leaves open (a debugger's start).
     register("test.editThenOpenGroup", |s, _| {
         put(s, "A1", "first")?;
@@ -388,6 +401,25 @@ fn a_group_a_command_leaves_open_starts_where_the_command_did() {
     assert_eq!(v(&s, "C1").display(), "base");
     s.execute("edit.redo", json!({})).unwrap();
     assert_eq!((v(&s, "A1").display(), v(&s, "A2").display()), ("first".into(), "second".into()));
+}
+
+#[test]
+fn steps_made_inside_a_command_are_bounded_while_it_runs() {
+    // The history limit applies when the outermost command finishes, so a command's bookkeeping
+    // holds; but a command that runs thousands of nested commands (a script, a subtotal) must not
+    // keep thousands of steps alive until then. Each nested step bounds the steps made since the
+    // command began, and leaves the history from before it alone.
+    register_group_commands();
+    let mut s = s();
+    let before = fill_history(&mut s);
+    s.execute("test.manyNestedEdits", json!({})).unwrap();
+    let d = s.doc().unwrap();
+    assert_eq!(d.undo.len(), crate::UNDO_LIMIT);
+    assert!(d.undo.iter().all(|e| e.label == "Enter Cell"));
+    assert!(!d.undo.iter().any(|e| before.iter().any(|w| std::sync::Arc::ptr_eq(w, &e.wb))), "the older history gave way to the newest steps");
+    assert_eq!(v(&s, "A1").display(), "149");
+    s.execute("edit.undo", json!({})).unwrap();
+    assert_eq!(v(&s, "A1").display(), "148");
 }
 
 #[test]

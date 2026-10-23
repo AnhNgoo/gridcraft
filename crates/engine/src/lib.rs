@@ -422,6 +422,10 @@ pub struct Session {
     group_epoch: u64,
     /// Where the last group ended, so `execute` can tell a command's own changes from its group's.
     group_step: Option<GroupStep>,
+    /// For each running command, innermost last: its document and that document's undo length
+    /// when it began. Steps before that length are not touched while the command runs (see
+    /// [`Session::bound_tail`]).
+    marks: Vec<(u64, usize)>,
     /// Measures cell text for AutoFit Column Width. Without it (CLI, MCP) AutoFit uses
     /// [`cmd::format::approx_text_width`].
     pub text_width: Option<TextWidth>,
@@ -533,9 +537,15 @@ impl Session {
             Some(d) => (d.uid, d.wb.active_sheet, d.wb.active().map(|sh| sh.name.clone()).unwrap_or_default(), d.selection.clone()),
             None => (0, 0, String::new(), Selection::default()),
         });
+        let doc_uid = before.as_ref().map(|(uid, ..)| *uid);
+        let marked = doc_uid.zip(start).map(|(uid, (_, len))| (uid, len));
+        self.marks.extend(marked);
         self.depth = self.depth.saturating_add(1);
         let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| (spec.run)(self, &params)));
         self.depth = self.depth.saturating_sub(1);
+        if marked.is_some() {
+            self.marks.pop();
+        }
         let result = match result {
             Ok(r) => r,
             Err(p) => {
@@ -627,10 +637,12 @@ impl Session {
             d.revision += 1;
         }
         // The history limit applies once the outermost command has collapsed its steps, so the
-        // lengths it compared stay true.
+        // lengths it compared stay true. Meanwhile the steps made inside it are bounded on their own.
         if self.depth == 0 {
             self.trim_history();
             self.group_step = None;
+        } else if let Some(uid) = doc_uid {
+            self.bound_tail(uid);
         }
         result
     }
@@ -700,6 +712,23 @@ impl Session {
             self.trim_history();
         }
         Ok(changed)
+    }
+
+    /// Bounds the undo steps pushed while a command runs (a script of many steps, a subtotal per
+    /// group): at most [`UNDO_LIMIT`] of them within [`UNDO_BYTES_LIMIT`], dropping the oldest.
+    /// Only steps after the latest mark go: a running command's start, an open group's start and
+    /// the end of the last group are positions the command or group collapses its steps by when
+    /// it finishes, so what is before them stays as it is until [`Session::trim_history`].
+    fn bound_tail(&mut self, uid: u64) {
+        let Some(d) = self.docs.iter_mut().find(|d| d.uid == uid) else { return };
+        let marks = self.marks.iter().filter(|(doc, _)| *doc == uid).map(|(_, len)| *len);
+        let groups = self.groups.iter().filter(|g| g.doc == uid).map(|g| g.start);
+        let step = self.group_step.as_ref().filter(|g| g.doc == uid).map(|g| g.len);
+        let mark = marks.chain(groups).chain(step).max().unwrap_or(0).min(d.undo.len());
+        let mut bytes = d.undo.iter().skip(mark).fold(0usize, |sum, e| sum.saturating_add(e.retained_bytes));
+        while d.undo.len() > mark + 1 && (d.undo.len() - mark > UNDO_LIMIT || bytes > UNDO_BYTES_LIMIT) {
+            bytes = bytes.saturating_sub(d.undo.remove(mark).retained_bytes);
+        }
     }
 
     /// Drops the oldest undo steps past [`UNDO_LIMIT`] or [`UNDO_BYTES_LIMIT`]. A document with
