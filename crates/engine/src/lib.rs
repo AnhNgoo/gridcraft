@@ -97,15 +97,19 @@ struct OpenGroup {
     redo: Vec<HistoryEntry>,
 }
 
-/// The undo step the last [`Session::group_end`] made: its document and the workbook it led to.
-/// The entry itself holds the workbook it started from, so a command can check that the step is
-/// exactly its own (the same start and end as the command's) and keep the group's name for it.
-/// A weak reference: the record keeps no workbook alive, and a workbook that is gone can't be
-/// a command's result.
+/// Where the last [`Session::group_end`] or [`Session::group_rollback`] left its document: the
+/// workbook and selection it ended at, the undo length then, and whether it made a step. A
+/// command that ended the group tells its own later changes from the group's step by it, and
+/// keeps the group's name only when the group's step is exactly its own (the entry holds the
+/// workbook the step started from). Dropped when the outermost command finishes, so it keeps no
+/// workbook alive between commands.
 #[derive(Debug)]
 struct GroupStep {
     doc: u64,
-    after: std::sync::Weak<Workbook>,
+    after: Arc<Workbook>,
+    selection: Selection,
+    len: usize,
+    stepped: bool,
 }
 
 /// The clipboard: a block of cells (with formulas and styles) or marching-ants reference.
@@ -416,8 +420,7 @@ pub struct Session {
     next_group: u64,
     /// Counts group begins and ends, so `execute` can tell that a command opened or closed one.
     group_epoch: u64,
-    /// The step the last `group_end` made, so `execute` can tell that a command's step is exactly
-    /// its group's.
+    /// Where the last group ended, so `execute` can tell a command's own changes from its group's.
     group_step: Option<GroupStep>,
     /// Measures cell text for AutoFit Column Width. Without it (CLI, MCP) AutoFit uses
     /// [`cmd::format::approx_text_width`].
@@ -549,6 +552,7 @@ impl Session {
                 }
                 if self.depth == 0 {
                     self.trim_history();
+                    self.group_step = None;
                 }
                 return Err(EngineError::Internal(id.to_string(), msg));
             }
@@ -563,21 +567,44 @@ impl Session {
             }
             self.push_journal(id, cmd::journal_params(&params));
         }
-        // Inside an undo group, or when the command ended one that was open before it, the group
-        // owns the step. A command that opened and closed its own groups makes one step of its
-        // own, which replaces the steps those groups made.
+        // Inside an undo group the group owns the step. A command that ended a group open before
+        // it leaves the group its step and makes one of its own for what it changed after the end.
+        // A command that opened and closed its own groups makes one step of its own, which
+        // replaces the steps those groups made.
         let epoch_changed = self.group_epoch != group_epoch;
         let in_group_now = before.as_ref().is_some_and(|(uid, ..)| self.in_group(*uid));
-        let own_groups = epoch_changed && !in_group_now && start.is_some_and(|(was_open, _)| !was_open);
-        let grouped = !own_groups && (epoch_changed || in_group_now);
+        let was_open = start.is_some_and(|(was_open, _)| was_open);
         if spec.undoable
             && let Some((uid, wb, sel)) = before
             && let Some(d) = self.docs.iter_mut().find(|d| d.uid == uid)
             && !Arc::ptr_eq(&d.wb, &wb)
         {
-            if !grouped {
-                let mut label = spec.label.trim_end_matches('…').to_string();
-                if own_groups && let Some((_, len)) = start {
+            let label = spec.label.trim_end_matches('…').to_string();
+            if in_group_now {
+                // A group this command opened and left open (a debugger's start) takes the
+                // command's start as its own, so what the command changed before opening it is
+                // part of the group's step and not a step of its own.
+                if !was_open
+                    && let Some((_, len)) = start
+                    && let Some(g) = self.groups.iter_mut().filter(|g| g.doc == uid && g.id >= first_group).min_by_key(|g| g.id)
+                {
+                    g.start = len;
+                    g.wb = wb;
+                    g.selection = sel;
+                }
+            } else if epoch_changed && was_open {
+                // The group it ended made its step; changes after the end, whether direct or by
+                // nested commands, are the command's own step from where the group ended.
+                if let Some(step) = self.group_step.as_ref().filter(|g| g.doc == uid)
+                    && (d.undo.len() > step.len || !Arc::ptr_eq(&step.after, &d.wb))
+                {
+                    d.undo.truncate(step.len);
+                    push_entry(&mut d.undo, label, step.after.clone(), &d.wb, step.selection.clone());
+                    d.redo.clear();
+                }
+            } else {
+                let mut label = label;
+                if epoch_changed && let Some((_, len)) = start {
                     // A command whose only step is its group's keeps that name ("Run Macro: Totals").
                     // That is so only when the one entry the command added is a group's step from
                     // the command's own start to its own result: an entry a nested command made,
@@ -586,7 +613,7 @@ impl Session {
                     if d.undo.len() == len + 1
                         && let Some(last) = d.undo.last()
                         && Arc::ptr_eq(&last.wb, &wb)
-                        && self.group_step.as_ref().is_some_and(|g| g.doc == uid && g.after.upgrade().is_some_and(|after| Arc::ptr_eq(&after, &d.wb)))
+                        && self.group_step.as_ref().is_some_and(|g| g.doc == uid && g.stepped && Arc::ptr_eq(&g.after, &d.wb))
                     {
                         label = last.label.clone();
                     }
@@ -603,6 +630,7 @@ impl Session {
         // lengths it compared stay true.
         if self.depth == 0 {
             self.trim_history();
+            self.group_step = None;
         }
         result
     }
@@ -660,9 +688,12 @@ impl Session {
         let changed = !Arc::ptr_eq(&d.wb, &g.wb);
         if changed && !outer {
             push_entry(&mut d.undo, g.label, g.wb, &d.wb, g.selection);
-            self.group_step = Some(GroupStep { doc: g.doc, after: Arc::downgrade(&d.wb) });
             d.redo.clear();
             d.revision += 1;
+        }
+        if !outer {
+            self.group_step =
+                Some(GroupStep { doc: g.doc, after: d.wb.clone(), selection: d.selection.clone(), len: d.undo.len(), stepped: changed });
         }
         // Inside a command, the outermost command applies the history limit when it finishes.
         if self.depth == 0 {
@@ -693,6 +724,12 @@ impl Session {
         d.undo.truncate(g.start);
         d.redo = g.redo;
         d.revision += 1;
+        // The record of the last group step stays when the document is back exactly where that
+        // step left it (this group began there); otherwise the rollback is where the group ended.
+        let kept = self.group_step.as_ref().is_some_and(|st| st.doc == g.doc && st.len == g.start && Arc::ptr_eq(&st.after, &d.wb));
+        if !kept && !self.groups.iter().any(|o| o.doc == g.doc) {
+            self.group_step = Some(GroupStep { doc: g.doc, after: d.wb.clone(), selection: d.selection.clone(), len: g.start, stepped: false });
+        }
         Ok(())
     }
 

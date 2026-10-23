@@ -261,6 +261,20 @@ fn register_group_commands() {
         s.group_end(token.ok_or_else(|| EngineError::Other("no group".into()))?)?;
         Ok(json!({}))
     });
+    // The end of the innermost group that was open before the command, then an edit.
+    register("test.endOpenGroupThenEdit", |s, _| {
+        let token = s.groups.last().map(|g| crate::GroupToken { id: g.id, doc: g.doc });
+        s.group_end(token.ok_or_else(|| EngineError::Other("no group".into()))?)?;
+        put(s, "E1", "after")?;
+        Ok(json!({}))
+    });
+    // An edit, then a group the command leaves open (a debugger's start).
+    register("test.editThenOpenGroup", |s, _| {
+        put(s, "A1", "first")?;
+        let _open = s.group_begin("Debug")?;
+        put(s, "A2", "second")?;
+        Ok(json!({}))
+    });
 }
 
 #[test]
@@ -325,6 +339,55 @@ fn a_command_keeps_its_groups_name_only_for_exactly_that_step() {
     assert!(v(&s, "D3").is_empty());
     s.execute("edit.undo", json!({})).unwrap();
     assert!(v(&s, "D1").is_empty());
+}
+
+#[test]
+fn what_a_command_changes_after_ending_a_group_is_its_own_step() {
+    // Ending a group that was open before the command leaves the group its step (if it made one)
+    // and makes a step of the command's own for what it changed after the end.
+    register_group_commands();
+    let mut s = s();
+    // The group made no step: the command's edit must still be undoable, under its own name.
+    let _unchanged = s.group_begin("Debug").unwrap();
+    s.execute("test.endOpenGroupThenEdit", json!({})).unwrap();
+    assert_eq!(undo_labels(&s), ["test.endOpenGroupThenEdit"]);
+    assert_eq!(v(&s, "E1").display(), "after");
+    s.execute("edit.undo", json!({})).unwrap();
+    assert!(v(&s, "E1").is_empty());
+    s.execute("edit.redo", json!({})).unwrap();
+    assert_eq!(v(&s, "E1").display(), "after");
+    // The group made a step: two steps, the group's and the command's.
+    s.execute("edit.undo", json!({})).unwrap();
+    let _changed = s.group_begin("Debug").unwrap();
+    set(&mut s, "B1", "inside");
+    s.execute("test.endOpenGroupThenEdit", json!({})).unwrap();
+    assert_eq!(undo_labels(&s), ["Debug", "test.endOpenGroupThenEdit"]);
+    s.execute("edit.undo", json!({})).unwrap();
+    assert!(v(&s, "E1").is_empty());
+    assert_eq!(v(&s, "B1").display(), "inside");
+    s.execute("edit.undo", json!({})).unwrap();
+    assert!(v(&s, "B1").is_empty());
+}
+
+#[test]
+fn a_group_a_command_leaves_open_starts_where_the_command_did() {
+    // A command that edits and then opens a group it leaves open has no undo step of its own:
+    // the group's step, made when it ends, covers the command's edit too, so no state from
+    // inside the command can come back.
+    register_group_commands();
+    let mut s = s();
+    set(&mut s, "C1", "base");
+    s.execute("test.editThenOpenGroup", json!({})).unwrap();
+    let d = s.doc().unwrap();
+    assert!(s.in_group(d.uid));
+    let token = s.groups.last().map(|g| crate::GroupToken { id: g.id, doc: g.doc }).unwrap();
+    assert!(s.group_end(token).unwrap());
+    assert_eq!(undo_labels(&s), ["Enter Cell", "Debug"]);
+    s.execute("edit.undo", json!({})).unwrap();
+    assert!(v(&s, "A1").is_empty() && v(&s, "A2").is_empty());
+    assert_eq!(v(&s, "C1").display(), "base");
+    s.execute("edit.redo", json!({})).unwrap();
+    assert_eq!((v(&s, "A1").display(), v(&s, "A2").display()), ("first".into(), "second".into()));
 }
 
 #[test]
