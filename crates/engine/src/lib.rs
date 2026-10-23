@@ -173,7 +173,15 @@ pub struct DocState {
     /// The format `path`'s content was recognised as when its extension doesn't name one (an
     /// XLSX called `budget.dat`): Save writes it back in that format.
     pub content_kind: Option<io::FileKind>,
-    /// Whether the workbook's active content may run without asking.
+    /// Whether the scripts stored in this workbook may run (`automate.runScript`). A workbook
+    /// that arrives already carrying scripts (opened from a file) starts untrusted until the
+    /// user trusts it in this session (`automate.trustScripts`); one with no scripts starts
+    /// trusted, since any script it gains later was written here.
+    pub scripts_trusted: bool,
+    /// Where the workbook's content came from: whether its active content may run without
+    /// asking. Unlike `scripts_trusted`, this is provenance, not consent: it is set when the
+    /// workbook is opened from a file, carried by content pasted from such a workbook, and never
+    /// changed by a trust decision.
     pub trust: Trust,
 }
 
@@ -239,6 +247,7 @@ impl DocState {
     pub fn new(mut wb: Workbook, path: Option<String>, title: String) -> DocState {
         let mut calc = Calc::new();
         calc.recalc_all(&mut wb);
+        let scripts_trusted = !cmd::extra::has_scripts(&wb);
         let wb = Arc::new(wb);
         let sel = Selection::at(wb.active().map(|s| s.view_active).unwrap_or_default());
         DocState {
@@ -255,6 +264,7 @@ impl DocState {
             sheet_selections: vec![],
             unlocked_ranges: vec![],
             content_kind: None,
+            scripts_trusted,
             trust: Trust::Local,
         }
     }
