@@ -652,11 +652,15 @@ impl Session {
     /// is rolled back and its error is returned. Groups nest; the outermost one makes the step.
     pub fn grouped<R>(&mut self, label: &str, f: impl FnOnce(&mut Session) -> Result<R>) -> Result<R> {
         let token = self.group_begin(label)?;
+        let doc = token.doc();
         match f(self) {
-            Ok(r) => {
-                self.group_end(token)?;
-                Ok(r)
-            }
+            Ok(r) => match self.group_end(token) {
+                Ok(_) => Ok(r),
+                // `f` closed the group's document (`file.close`, or `file.open` taking the place of
+                // an untouched new workbook), and the group went with it: nothing is left to undo.
+                Err(_) if !self.docs.iter().any(|d| d.uid == doc) => Ok(r),
+                Err(e) => Err(e),
+            },
             Err(e) => {
                 // The error from `f` is the one to report. A rollback fails only when the group
                 // has already ended, and then there is nothing left to undo.

@@ -171,6 +171,27 @@ fn a_long_group_keeps_the_history_before_it() {
 }
 
 #[test]
+fn a_grouped_action_that_closes_its_document_succeeds() {
+    // The group goes with the document; the action did what it was asked.
+    let mut s = s();
+    let uid = s.doc().unwrap().uid;
+    s.grouped("Close", |s| s.execute("file.close", json!({}))).unwrap();
+    assert!(s.docs.iter().all(|d| d.uid != uid) && !s.in_group(uid));
+    // Opening a file into an untouched new workbook takes its place the same way.
+    s.new_workbook();
+    let uid = s.doc().unwrap().uid;
+    let bytes = serde_json::to_vec(&gridcraft_model::Workbook::new()).unwrap();
+    s.grouped("Open", |s| s.execute("file.open", json!({"name": "theirs.json", "base64": crate::io::base64_encode(&bytes)}))).unwrap();
+    assert!(s.docs.iter().all(|d| d.uid != uid) && !s.in_group(uid) && s.groups.is_empty());
+    // A group ended by someone else while its document is still open is still an error.
+    let err = s.grouped("Ended", |s| {
+        let token = s.groups.last().map(|g| crate::GroupToken { id: g.id, doc: g.doc });
+        s.group_end(token.ok_or_else(|| EngineError::Other("no group".into()))?).map(|_| ())
+    });
+    assert!(err.unwrap_err().to_string().contains("already ended"));
+}
+
+#[test]
 fn closing_a_document_drops_its_groups() {
     let mut s = s();
     let token = s.group_begin("Debug Macro").unwrap();
