@@ -1,6 +1,6 @@
 # Architecture
 
-> **Last reviewed:** 2026-10-10 · **Last updated:** 2026-10-11 · **Change:** minor (engine building blocks for multi-command actions) · **Target:** Microsoft Excel (Microsoft 365)
+> **Last reviewed:** 2026-10-10 · **Last updated:** 2026-10-23 · **Change:** minor (engine building blocks for multi-command actions) · **Target:** Microsoft Excel (Microsoft 365)
 
 How GridCraft is built today. Rules for contributors are in [`AGENTS.md`](../AGENTS.md).
 
@@ -63,7 +63,9 @@ Actions made of many commands (macros, a debugger that runs one step per call) u
   (Automate › Record Actions still records through the journal).
 - **Document trust.** `DocState::trust` is `Local` for workbooks made in the session and
   `FromFile` for workbooks opened from a file, and for workbooks that received formulas or
-  validation pasted from one. Active content in a `FromFile` workbook asks before it runs.
+  validation pasted from one. Active content in a `FromFile` workbook asks before it runs. This
+  is provenance, which no decision changes; `DocState::scripts_trusted` is the separate
+  per-session consent for stored `automate.*` scripts (`automate.trustScripts`).
 - **Workbook data in hidden names** (`cmd/stash.rs`). An item is split over hidden
   workbook-scope names `_gc_<key>_0`, `_gc_<key>_1`, … of string literals within Excel's 255- and
   8,192-character limits, so it survives an xlsx round trip. The older single-name `_sc_<key>`
@@ -94,6 +96,6 @@ rpm, tarball), FreeBSD, and web (WASM; WebGPU or WebGL2). Release workflows in
 
 | Date | Change | Summary |
 |---|---|---|
+| 2026-10-23 | minor | Engine building blocks for multi-command actions: undo groups, recording buffer, document trust, chunked hidden-name storage |
 | 2026-10-14 | minor | Document Undo's retained-cell-storage budget and latest-step guarantee |
-| 2026-10-11 | minor | Engine building blocks for multi-command actions: undo groups, recording buffer, document trust, chunked hidden-name storage |
 | 2026-10-10 | major | Created from the code on main: crates, layers, data flow, agent control, known gaps |
