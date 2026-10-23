@@ -65,14 +65,17 @@ pub fn set(wb: &mut Workbook, key: &str, text: &str) -> Result<()> {
     }
     let formulas = chunk_formulas(text);
     // A visible name of the item's shape is someone's own (see `item_of`); a hidden name beside
-    // it with the same name would be the one an xlsx file drops. Refuse before changing anything.
-    for i in 0..formulas.len() {
-        let name = format!("{PREFIX}{key}_{i}");
-        if wb.names.iter().any(|n| n.scope.is_none() && !n.hidden && n.name.eq_ignore_ascii_case(&name)) {
-            return Err(EngineError::Other(format!(
-                "The workbook has a defined name '{name}', which GridCraft needs for its own data. Rename it first."
-            )));
-        }
+    // it with the same name would be the one an xlsx file drops. Refuse before changing anything,
+    // in one pass over the names (a file can carry many thousands).
+    let chunks = formulas.len() as u64;
+    let taken = |n: &&DefinedName| {
+        n.scope.is_none() && !n.hidden && parse_name(&n.name).is_some_and(|(k, i)| k.eq_ignore_ascii_case(key) && i.is_some_and(|i| i < chunks))
+    };
+    if let Some(n) = wb.names.iter().find(taken) {
+        return Err(EngineError::Other(format!(
+            "The workbook has a defined name '{}', which GridCraft needs for its own data. Rename it first.",
+            n.name
+        )));
     }
     remove(wb, key);
     for (i, formula) in formulas.into_iter().enumerate() {
