@@ -495,6 +495,31 @@ fn the_recorder_has_a_cap() {
 }
 
 #[test]
+fn the_recorder_has_a_byte_cap_and_keeps_a_prefix() {
+    // A `file.open` step holds the whole file as base64: the buffer is bounded in bytes too, and
+    // once a step is dropped every later one is, so what is kept is always how the recording began.
+    let mut rec = crate::record::Recorder::default();
+    let step = |n: usize| crate::record::RecordedStep {
+        doc: 1,
+        sheet: 0,
+        sheet_name: "Sheet1".into(),
+        selection: crate::Selection::default(),
+        id: "file.open".into(),
+        params: json!({"base64": "A".repeat(n)}),
+    };
+    let big = crate::record::RECORD_MAX_BYTES / 2;
+    rec.push(step(big));
+    assert_eq!((rec.steps.len(), rec.dropped), (1, 0));
+    rec.push(step(big));
+    assert_eq!((rec.steps.len(), rec.dropped), (1, 1), "the second does not fit beside the first");
+    rec.push(step(1));
+    assert_eq!((rec.steps.len(), rec.dropped), (1, 2), "a small step after a dropped one is dropped too");
+    let mut rec = crate::record::Recorder::default();
+    rec.push(step(crate::record::RECORD_MAX_BYTES + 1));
+    assert_eq!((rec.steps.len(), rec.dropped), (0, 1), "a step larger than the whole budget is not kept");
+}
+
+#[test]
 fn passwords_stay_out_of_the_recording_buffer() {
     const PW: &str = "synthetic-pw-5521";
     let mut s = s();

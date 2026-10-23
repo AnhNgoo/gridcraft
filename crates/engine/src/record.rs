@@ -13,6 +13,10 @@ use crate::Selection;
 
 /// The most steps one recording keeps; later ones are counted in [`Recorder::dropped`].
 pub const RECORD_LIMIT: usize = 100_000;
+/// The most bytes (steps serialized as JSON) one recording keeps. A step keeps its full
+/// parameters so it can be played back, and a `file.open` holds the whole file as base64, so
+/// without a size cap a recording of a few opens of a large workbook keeps tens of MB alive.
+pub const RECORD_MAX_BYTES: usize = 64 * 1024 * 1024;
 
 /// One recorded command and where it ran.
 #[derive(Clone, Debug, PartialEq, Serialize)]
@@ -34,14 +38,21 @@ pub struct RecordedStep {
 #[derive(Clone, Debug, Default)]
 pub struct Recorder {
     pub steps: Vec<RecordedStep>,
-    /// Steps not kept because the recording reached [`RECORD_LIMIT`].
+    /// Steps not kept because the recording reached [`RECORD_LIMIT`] or [`RECORD_MAX_BYTES`].
+    /// Once a step is dropped, every later one is too, so `steps` is always the beginning of
+    /// what ran, never a sequence with gaps.
     pub dropped: usize,
+    /// The size of `steps` serialized as JSON.
+    bytes: usize,
 }
 
 impl Recorder {
     /// Adds a step, or counts it as dropped once the buffer is full.
     pub fn push(&mut self, step: RecordedStep) {
-        if self.steps.len() < RECORD_LIMIT {
+        let size = serde_json::to_vec(&step).map_or(0, |v| v.len());
+        let fits = self.steps.len() < RECORD_LIMIT && self.bytes.saturating_add(size) <= RECORD_MAX_BYTES;
+        if fits && self.dropped == 0 {
+            self.bytes = self.bytes.saturating_add(size);
             self.steps.push(step);
         } else {
             self.dropped = self.dropped.saturating_add(1);
