@@ -46,7 +46,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "Record Macro",
             ["View", "Macros"],
             None,
-            "{stop?: bool, cancel?: bool (ends a recording without saving it), relative?: bool (default true; when starting), name?, shortcut?: \"Ctrl+Shift+K\" | \"K\", description?} toggles recording; when starting, the name (new and valid) and the shortcut (free) are checked and kept for the save, and without a name the macro gets the next MacroN; when stopping, a name or description given then wins (a taken name gets a suffix); with relative references the selection when it starts is the example input → {recording, name?, relative?, input?} or {recording: false, saved, steps, dropped, skipped, inputs}",
+            "{stop?: bool, cancel?: bool (ends a recording without saving it), relative?: bool (default true; when starting), name?, shortcut?: \"Ctrl+Shift+K\" | \"K\", description?} toggles recording; when starting, the name (new and valid) and the shortcut (free) are checked and kept for the save, and without a name the macro gets the next MacroN; when stopping, a name or description given then wins (a taken name gets a suffix); with relative references the selection when it starts is the example input → {recording, name?, relative?, input?} or {recording: false, saved, steps, dropped, skipped, inputs, shortcutDropped? (the shortcut another macro took while recording)}",
             has_doc,
             record
         ),
@@ -338,11 +338,15 @@ fn save_recording(s: &mut Session, p: &Json, rec: &crate::record::Recorder, star
         converted.mac.description = desc.chars().take(gridcraft_model::MAX_MACRO_TEXT).collect();
     }
     cut = cut.saturating_add(crate::macros::fit_size(&mut converted.mac));
-    // The shortcut, unless another macro took it while recording.
-    if let Some(k) = &start.shortcut
-        && crate::macros::parse_shortcut(k).is_some_and(|c| crate::macros::shortcut_conflict(&wb, &name, c).is_none())
-    {
-        converted.mac.shortcut = Some(k.clone());
+    // The shortcut, unless another macro took it while recording; then it is left off and the
+    // result says so.
+    let mut shortcut_dropped = None;
+    if let Some(k) = &start.shortcut {
+        if crate::macros::parse_shortcut(k).is_some_and(|c| crate::macros::shortcut_conflict(&wb, &name, c).is_none()) {
+            converted.mac.shortcut = Some(k.clone());
+        } else {
+            shortcut_dropped = Some(k.clone());
+        }
     }
     let steps = converted.mac.steps.len();
     let inputs: Vec<String> = converted.mac.inputs.iter().map(|i| i.name.clone()).collect();
@@ -360,7 +364,9 @@ fn save_recording(s: &mut Session, p: &Json, rec: &crate::record::Recorder, star
         let key = (doc, crate::macros::fingerprint(m));
         s.macro_approvals.insert(key);
     }
-    Ok(
-        json!({"recording": false, "saved": name, "steps": steps, "dropped": rec.dropped.saturating_add(cut), "skipped": converted.skipped, "inputs": inputs}),
-    )
+    let mut out = json!({"recording": false, "saved": name, "steps": steps, "dropped": rec.dropped.saturating_add(cut), "skipped": converted.skipped, "inputs": inputs});
+    if let Some(k) = shortcut_dropped {
+        out["shortcutDropped"] = json!(k);
+    }
+    Ok(out)
 }

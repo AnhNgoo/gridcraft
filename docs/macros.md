@@ -198,19 +198,19 @@ on its own, never as a step of a script or macro, and is never recorded.
 references) and, from the Record Macro dialog, `name`, `shortcut` and `description`: the macro's
 name, its Ctrl+Shift shortcut letter (`"Ctrl+Shift+K"` or `"K"`) and its description. They are
 checked at once, so a name that is taken (a kept one included), too long or holds line breaks, or a
-letter that GridCraft or another macro uses, is refused before anything is recorded. Without a
-name the macro is called `Macro1`, `Macro2` and so on. A `name` or `description` given when
-stopping wins over the one given when starting; a name that another macro has by then gets a
-suffix, such as `Tidy (2)`, so stopping never replaces a macro, and a shortcut another macro took
-meanwhile is left off, which the result says in `shortcutDropped`. `cancel: true` ends a recording
-without saving it, the way out of one whose macro can't be saved. A parameter the call would ignore is refused: `relative` or `shortcut` when
-stopping, `stop: false` while recording, anything beside `cancel: true`, and one of the wrong kind.
-The macro is saved in the workbook where recording started, even if another one is active;
-if that workbook was closed, stopping ends the recording without saving it. When saving the
-recording fails (a name the check refuses, a workbook at its macro limit, a macro being debugged
-in that workbook), recording goes on, so stopping again keeps what was recorded. The person
-recorded the macro, so in a workbook opened from a file it runs without the approval a macro that
-came with the file needs, until it changes.
+letter that GridCraft or another macro uses, is refused before anything is recorded. Without a name
+the macro is called `Macro1`, `Macro2` and so on. A `name` or `description` given when stopping wins
+over the one given when starting; a name that another macro has by then gets a suffix, such as `Tidy
+(2)`, so stopping never replaces a macro, and a shortcut another macro took meanwhile is left off,
+which the result says in `shortcutDropped`. `cancel: true` ends a recording without saving it, the
+way out of one whose macro can't be saved. A parameter the call would ignore is refused: `relative`
+or `shortcut` when stopping, `stop: false` while recording, anything beside `cancel: true`, and one
+of the wrong kind. The macro is saved in the workbook where recording started, even if another one
+is active; if that workbook was closed, stopping ends the recording without saving it. When saving
+the recording fails (a name the check refuses, a workbook at its macro limit, a macro being debugged
+in that workbook), recording goes on, so stopping again keeps what was recorded. The person recorded
+the macro, so in a workbook opened from a file it runs without the approval a macro that came with
+the file needs, until it changes.
 
 A recording keeps up to 100,000 commands and 64 MB of them as JSON, and a macro holds up to
 10,000 steps and 4,194,304 characters of JSON. The steps past any of these limits, and steps

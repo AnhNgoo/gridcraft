@@ -89,7 +89,11 @@ pub fn stop_recording(app: &mut SheetApp) {
             Some(name) => {
                 let steps = v["steps"].as_u64().unwrap_or(0);
                 app.macros.note_recent(name);
-                app.toast = Some((format!("Saved macro “{name}” ({steps} step{})", if steps == 1 { "" } else { "s" }), crate::now_ms()));
+                let mut text = format!("Saved macro “{name}” ({steps} step{})", if steps == 1 { "" } else { "s" });
+                if let Some(k) = v["shortcutDropped"].as_str() {
+                    text.push_str(&format!(" without {k}: another macro took it while recording"));
+                }
+                app.toast = Some((text, crate::now_ms()));
             }
             None => app.toast = Some(("Recording stopped".into(), crate::now_ms())),
         },

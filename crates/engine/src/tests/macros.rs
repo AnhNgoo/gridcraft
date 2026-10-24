@@ -2413,3 +2413,22 @@ fn shortcuts_parse_to_one_letter_and_avoid_reserved_and_taken_ones() {
     assert_eq!(shortcut_conflict(&wb, "a", 'M'), None);
     assert_eq!(shortcut_conflict(&wb, "B", 'Q'), None);
 }
+
+#[test]
+fn a_shortcut_taken_while_recording_is_reported_when_it_is_left_off() {
+    let mut s = s();
+    s.execute("macro.record", json!({"name": "Tidy", "shortcut": "m"})).unwrap();
+    set(&mut s, "A1", "1");
+    // Another macro takes Ctrl+Shift+M before recording stops.
+    s.execute("macro.save", json!({"name": "Other", "shortcut": "Ctrl+Shift+M", "steps": []})).unwrap();
+    let r = s.execute("macro.record", json!({"stop": true})).unwrap();
+    assert_eq!(r["saved"], "Tidy");
+    assert_eq!(r["shortcutDropped"], "Ctrl+Shift+M", "{r}");
+    assert!(s.execute("macro.get", json!({"name": "Tidy"})).unwrap()["shortcut"].is_null());
+    // A free one is kept and not reported.
+    s.execute("macro.record", json!({"name": "Keep", "shortcut": "q"})).unwrap();
+    set(&mut s, "A2", "2");
+    let r = s.execute("macro.record", json!({"stop": true})).unwrap();
+    assert!(r.get("shortcutDropped").is_none(), "{r}");
+    assert_eq!(s.execute("macro.get", json!({"name": "Keep"})).unwrap()["shortcut"], "Ctrl+Shift+Q");
+}
