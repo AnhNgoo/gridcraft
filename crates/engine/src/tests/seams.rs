@@ -643,6 +643,95 @@ fn a_group_ended_by_a_command_that_then_panics_keeps_its_step() {
     }
 }
 
+#[test]
+fn a_command_that_fails_rolls_back_the_groups_it_opened() {
+    // A `?` between `group_begin` and `group_end` used to leave the group open for good: Undo
+    // and Redo refused, and later edits made no steps.
+    crate::cmd::register_undoable_test_command("test.groupThenFail", |s, _| {
+        let _token = s.group_begin("Half")?;
+        put(s, "A1", "half done")?;
+        Err(EngineError::Other("stopped halfway".into()))
+    });
+    crate::cmd::register_undoable_test_command("test.editGroupThenFail", |s, _| {
+        put(s, "B1", "outside")?;
+        let _token = s.group_begin("Half")?;
+        put(s, "B2", "inside")?;
+        Err(EngineError::Other("stopped halfway".into()))
+    });
+    let mut s = s();
+    set(&mut s, "A1", "before");
+    set(&mut s, "A2", "undone");
+    s.execute("edit.undo", json!({})).unwrap();
+    s.execute("selection.set", json!({"range": "C3"})).unwrap();
+    let uid = s.doc().unwrap().uid;
+    let err = s.execute("test.groupThenFail", json!({})).unwrap_err().to_string();
+    assert!(err.contains("stopped halfway"), "{err}");
+    assert!(!s.in_group(uid), "no group is left open");
+    assert_eq!(v(&s, "A1").display(), "before");
+    assert_eq!(s.doc().unwrap().selection.a1(), "C3");
+    assert_eq!(undo_labels(&s), ["Enter Cell"]);
+    assert_eq!(s.doc().unwrap().redo.len(), 1, "the redo history comes back");
+    assert_eq!(s.execute("history.list", json!({})).unwrap()["grouping"], json!(false));
+    set(&mut s, "A3", "next");
+    assert_eq!(undo_labels(&s), ["Enter Cell", "Enter Cell"], "later edits make steps again");
+    s.execute("edit.undo", json!({})).unwrap();
+    assert!(v(&s, "A3").is_empty());
+
+    // What the command changed before opening the group stays, as for any failed command, and is
+    // a step of its own; what it changed inside the group goes.
+    assert!(s.execute("test.editGroupThenFail", json!({})).is_err());
+    assert!(!s.in_group(uid));
+    assert_eq!((v(&s, "B1").display(), v(&s, "B2").display()), ("outside".into(), String::new()));
+    assert_eq!(undo_labels(&s), ["Enter Cell", "test.editGroupThenFail"]);
+    s.execute("edit.undo", json!({})).unwrap();
+    assert!(v(&s, "B1").is_empty());
+
+    // A group open before the command stays open: only the command's own group goes.
+    let token = s.group_begin("Outer").unwrap();
+    set(&mut s, "D1", "outer");
+    assert!(s.execute("test.groupThenFail", json!({})).is_err());
+    assert!(s.in_group(uid), "the outer group is still running");
+    assert_eq!((v(&s, "A1").display(), v(&s, "D1").display()), ("before".into(), "outer".into()));
+    assert!(s.group_end(token).unwrap());
+    assert_eq!(undo_labels(&s), ["Enter Cell", "Outer"]);
+    s.execute("edit.undo", json!({})).unwrap();
+    assert!(v(&s, "D1").is_empty());
+}
+
+#[test]
+fn stop_action_rolls_back_a_group_left_open() {
+    // A host that dropped its token, or a debugger the person wants to abandon: the message on
+    // Undo names the command that stops it, and the command puts the start back.
+    let mut s = s();
+    set(&mut s, "A1", "start");
+    set(&mut s, "A2", "undone");
+    s.execute("edit.undo", json!({})).unwrap();
+    let uid = s.doc().unwrap().uid;
+    let token = s.group_begin("Debug").unwrap();
+    set(&mut s, "A1", "step 1");
+    drop(s.group_begin("Inner").unwrap());
+    set(&mut s, "A3", "step 2");
+    let err = s.execute("edit.undo", json!({})).unwrap_err().to_string();
+    assert!(err.contains("automate.stopAction"), "{err}");
+    assert_eq!(s.execute("automate.stopAction", json!({})).unwrap(), json!({"stopped": true}));
+    assert!(!s.in_group(uid));
+    assert_eq!(v(&s, "A1").display(), "start");
+    assert!(v(&s, "A3").is_empty());
+    assert_eq!(undo_labels(&s), ["Enter Cell"], "stopping is not a step of its own");
+    assert_eq!(s.doc().unwrap().redo.len(), 1, "the redo history comes back");
+    assert!(s.group_end(token).is_err(), "the token is spent");
+    assert_eq!(s.execute("automate.stopAction", json!({})).unwrap(), json!({"stopped": false}));
+    s.execute("edit.redo", json!({})).unwrap();
+    assert_eq!(v(&s, "A2").display(), "undone");
+    // Other documents keep their groups.
+    let other = s.new_workbook();
+    let other_uid = s.documents()[other].uid;
+    let _kept = s.group_begin("Theirs").unwrap();
+    s.set_active(0);
+    assert_eq!(s.execute("automate.stopAction", json!({})).unwrap(), json!({"stopped": false}));
+    assert!(s.in_group(other_uid));
+}
+
 // ---------------------------------------------------------------- recording buffer
 
 fn recorded_ids(s: &Session) -> Vec<String> {

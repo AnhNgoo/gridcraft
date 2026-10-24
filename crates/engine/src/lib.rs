@@ -594,6 +594,12 @@ impl Session {
                 return Err(EngineError::Internal(id.to_string(), msg));
             }
         };
+        // A command that fails leaves none of its own undo groups open (a `?` between
+        // `group_begin` and `group_end`): each is rolled back as `group_rollback` does. Only a
+        // command that succeeds keeps a group it opened (a debugger's start).
+        if result.is_err() {
+            self.rollback_groups_from(first_group);
+        }
         if spec.journal && result.is_ok() {
             // A command that started recording is not part of the recording; one that stopped it
             // finds no recorder.
@@ -749,6 +755,29 @@ impl Session {
             self.trim_history();
         }
         Ok(changed)
+    }
+
+    /// Stops the running action on the document with uid `doc`: every undo group open on it is
+    /// rolled back as [`Session::group_rollback`] does, putting back the workbook, selection, undo
+    /// and redo history as they were when the outermost one began. Their tokens are then spent
+    /// (ending or rolling one back reports that it has already ended). Returns whether a group
+    /// was open. `automate.stopAction` runs it on the active document.
+    pub fn abort_groups(&mut self, doc: u64) -> bool {
+        let Some(id) = self.groups.iter().filter(|g| g.doc == doc).map(|g| g.id).min() else { return false };
+        // Rolling back the outermost group ends the ones opened inside it.
+        self.group_rollback(GroupToken { id, doc }).is_ok()
+    }
+
+    /// Rolls back every open undo group numbered `first` or later (the groups a failed command
+    /// opened), outermost first on each document.
+    fn rollback_groups_from(&mut self, first: u64) {
+        let opened: Vec<(u64, u64)> = self.groups.iter().filter(|g| g.id >= first).map(|g| (g.id, g.doc)).collect();
+        for (id, doc) in opened {
+            // A group inside one rolled back before it is already gone.
+            if self.groups.iter().any(|g| g.id == id) {
+                let _ = self.group_rollback(GroupToken { id, doc });
+            }
+        }
     }
 
     /// Bounds the undo steps pushed while a command runs (a script of many steps, a subtotal per

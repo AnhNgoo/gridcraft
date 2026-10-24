@@ -1,6 +1,6 @@
 # Architecture
 
-> **Last reviewed:** 2026-10-10 · **Last updated:** 2026-10-23 · **Change:** minor (engine building blocks for multi-command actions) · **Target:** Microsoft Excel (Microsoft 365)
+> **Last reviewed:** 2026-10-10 · **Last updated:** 2026-10-24 · **Change:** minor (engine building blocks for multi-command actions) · **Target:** Microsoft Excel (Microsoft 365)
 
 How GridCraft is built today. Rules for contributors are in [`AGENTS.md`](../AGENTS.md).
 
@@ -59,8 +59,12 @@ Actions made of many commands (macros, a debugger that runs one step per call) u
   closes its own groups still makes one undo step for itself, covering its edits inside and outside
   the groups. A command that ends a group open before it leaves the group its step and makes one
   of its own for what it changes after the end; a group a command opens and leaves open starts
-  where the command did. The history limit is applied when the outermost command finishes; until
-  then the steps made inside it are bounded on their own.
+  where the command did, but only when the command succeeds: a command that fails rolls back
+  every group it opened, as `group_rollback` does. `Session::abort_groups(doc)`, and the command
+  `automate.stopAction` on the active workbook, roll back the groups left open on a document (a
+  debugger the person abandons, a caller that dropped its token), so Undo works there again. The
+  history limit is applied when the outermost command finishes; until then the steps made inside
+  it are bounded on their own.
 - **Recording buffer** (`record.rs`). `Session::start_recording` collects each successful
   top-level command with the document, sheet and selection it ran in, without secret parameters.
   Commands run by other commands are not recorded, and the buffer is independent of the journal
@@ -103,6 +107,6 @@ rpm, tarball), FreeBSD, and web (WASM; WebGPU or WebGL2). Release workflows in
 
 | Date | Change | Summary |
 |---|---|---|
-| 2026-10-23 | minor | Engine building blocks for multi-command actions: undo groups, recording buffer, document trust, chunked hidden-name storage |
+| 2026-10-24 | minor | Engine building blocks for multi-command actions: undo groups, recording buffer, document trust, chunked hidden-name storage |
 | 2026-10-14 | minor | Document Undo's retained-cell-storage budget and latest-step guarantee |
 | 2026-10-10 | major | Created from the code on main: crates, layers, data flow, agent control, known gaps |
