@@ -851,7 +851,10 @@ struct Saved {
     clipboard: Option<crate::Clipboard>,
     prefs: crate::Prefs,
     mode: crate::Mode,
+    /// The journal's length and how many entries it had dropped from its front; a dry run that
+    /// pushes past the journal's limits drops more, which a length alone cannot see.
     journal: usize,
+    journal_dropped: u64,
     recording: Option<usize>,
     ui_requests: usize,
     format_painter: Option<(Arc<Workbook>, usize, RangeRef, bool)>,
@@ -877,6 +880,7 @@ impl Saved {
             prefs: s.prefs.clone(),
             mode: s.mode,
             journal: s.journal.len(),
+            journal_dropped: s.journal_dropped(),
             recording: s.recording,
             ui_requests: s.ui_requests.len(),
             format_painter: s.format_painter.clone(),
@@ -903,8 +907,11 @@ impl Saved {
         s.clipboard = self.clipboard;
         s.prefs = self.prefs;
         s.mode = self.mode;
-        s.journal.truncate(self.journal);
-        s.recording = self.recording;
+        // Entries the dry run pushed go; entries the journal dropped meanwhile are gone for good,
+        // and the recording's start moves back with them.
+        let dropped = usize::try_from(s.journal_dropped().saturating_sub(self.journal_dropped)).unwrap_or(usize::MAX);
+        s.truncate_journal(self.journal.saturating_sub(dropped));
+        s.recording = self.recording.map(|r| r.saturating_sub(dropped));
         s.ui_requests.truncate(self.ui_requests);
         s.format_painter = self.format_painter;
         s.last_find = self.last_find;
