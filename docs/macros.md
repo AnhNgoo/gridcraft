@@ -63,9 +63,14 @@ exists is used and methods follow it.
 
 Write a token as the whole value of a reference parameter (`cell`, `range`, `target`, keys ending
 in `Cell` or `Range`…), as `{"$ref": "Input.col(2)"}` anywhere, or as `{{Input.col(2)}}` inside
-any string, such as a formula. Plain A1 references stay absolute; a `Name:` anchor follows
-inserted rows. A reference with a sheet name is never a token, so `Output!A1` is a cell on a sheet
-called Output, even when a token or input has that name.
+any string, such as a formula; `{{{{` in a string is a literal `{{`. Under the general keys that
+other commands use for plain words (`to`, `from`, `at`, `area`, `source`, `target`,
+`destination`, `location`), a bare `Row` or `Column` stays text (a replacement word, a pivot
+area); write `Row.col(2)`, `{{Row}}` or `{"$ref": "Row"}` there. Plain A1 references stay
+absolute; a `Name:` anchor follows inserted rows. A reference with a sheet name is never a token,
+so `Output!A1` is a cell on a sheet called Output, even when a token or input has that name.
+`Input.data` on a range that is only a header row, and `Name:` of a table with no data rows, are
+refused rather than read as the header.
 
 ## Storage
 
