@@ -234,7 +234,7 @@ fn save_recording(s: &mut Session, p: &Json, rec: &crate::record::Recorder, star
         Some(n) => crate::macros::unique_name(&wb, n),
         None => crate::macros::next_name(&wb),
     };
-    let mut converted = crate::macros::recorder::convert(&name, &start, &rec.steps, &wb);
+    let mut converted = crate::macros::recorder::convert(&name, &start, &rec.steps, &rec.ran, &wb);
     // Steps past the macro limit, and ones recorded in another workbook, are left out and counted
     // with the ones the recorder dropped.
     let cut = converted.cut.saturating_add(converted.mac.steps.len().saturating_sub(gridcraft_model::MAX_MACRO_STEPS));

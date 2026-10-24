@@ -426,6 +426,9 @@ pub struct Session {
     pub recorder: Option<record::Recorder>,
     /// How many `execute` calls are running (0 between top-level commands).
     depth: u32,
+    /// The steps the last successful `automate.runScript` ran while a recorder was on, for the
+    /// recorder to keep with that step (see [`record::Recorder::ran`]); taken by the recording hook.
+    pub(crate) script_ran: Option<Vec<(String, Json)>>,
     /// Macros the person allowed to run in this session: (document uid, the macro's content as
     /// canonical JSON, from [`macros::fingerprint`]).
     pub macro_approvals: std::collections::HashSet<(u64, String)>,
@@ -691,7 +694,15 @@ impl Session {
                 {
                     p.insert("on".into(), on.clone());
                 }
-                rec.push(record::RecordedStep { doc, sheet, sheet_name, selection, id: id.to_string(), params });
+                let kept = rec.push(record::RecordedStep { doc, sheet, sheet_name, selection, id: id.to_string(), params });
+                // A script run is kept with the steps it ran, so editing or deleting the script
+                // before the recording stops does not change what was recorded.
+                if let Some(ran) = self.script_ran.take()
+                    && kept
+                    && id == "automate.runScript"
+                {
+                    rec.attach_ran(ran);
+                }
             }
             self.push_journal(id, cmd::journal_params(&params));
         }

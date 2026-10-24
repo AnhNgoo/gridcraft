@@ -17,6 +17,7 @@
 use gridcraft_core::{CellRef, RangeRef, Value};
 use gridcraft_model::{ColType, InputKind, MAX_MACRO_STEPS, Macro, NamedInput, Step, StepKind, Workbook};
 use serde_json::{Map, Value as Json, json};
+use std::collections::BTreeMap;
 
 use super::policy::{Policy, macro_policy};
 use crate::Selection;
@@ -47,7 +48,9 @@ pub struct Converted {
 }
 
 /// Builds a macro called `name` from the recorded steps.
-pub fn convert(name: &str, start: &RecordingStart, steps: &[RecordedStep], wb: &Workbook) -> Converted {
+/// `ran` is what a script step ran, by step index ([`crate::record::Recorder::ran`]); a script step
+/// without an entry is read from `wb`.
+pub fn convert(name: &str, start: &RecordingStart, steps: &[RecordedStep], ran: &BTreeMap<usize, Vec<(String, Json)>>, wb: &Workbook) -> Converted {
     let mut skipped = Vec::new();
     // Commands as they'll be played back: (id, params, sheet before, selection before, whether
     // they came from another macro and stay as written). At most the macro's step limit are
@@ -63,7 +66,7 @@ pub fn convert(name: &str, start: &RecordingStart, steps: &[RecordedStep], wb: &
             cut = cut.saturating_add(1);
         }
     };
-    for st in steps.iter().filter(|st| st.doc == start.doc) {
+    for (index, st) in steps.iter().enumerate().filter(|(_, st)| st.doc == start.doc) {
         let id = st.id.as_str();
         if id == "macro.run" {
             // Another macro's steps, when they stand on their own: no inputs, no output and only
@@ -85,8 +88,10 @@ pub fn convert(name: &str, start: &RecordingStart, steps: &[RecordedStep], wb: &
             continue;
         }
         if id == "automate.runScript" {
-            // An Automate script's steps, as the script runs them.
-            match st.params.get("name").and_then(Json::as_str).and_then(|n| crate::cmd::extra::script_steps(wb, n)) {
+            // An Automate script's steps as they ran, or as the script stands now when the recorder
+            // could not keep them.
+            let now = || st.params.get("name").and_then(Json::as_str).and_then(|n| crate::cmd::extra::script_steps(wb, n));
+            match ran.get(&index).cloned().or_else(now) {
                 Some(steps) => {
                     for (cid, params) in steps {
                         if refused(&cid, &params) {

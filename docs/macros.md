@@ -155,7 +155,8 @@ inferred. Toggles such as Bold are recorded with the state they set (`"on": true
 them back sets them rather than flipping them. Commands a macro may not run are left out and
 listed in the result, also from the steps of a macro or script run while recording; a macro run
 while recording is replaced by its steps when it has no inputs, no output and only plain commands
-(otherwise it is left out and listed), and an Automate script run by the script's steps.
+(otherwise it is left out and listed), and an Automate script run by the steps it ran, kept when
+it ran: editing or deleting the script before the recording stops changes nothing.
 
 ## Other commands and storage
 

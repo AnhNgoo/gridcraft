@@ -1373,6 +1373,29 @@ fn a_recorded_script_run_leaves_out_the_steps_a_macro_may_not_run() {
 }
 
 #[test]
+fn a_recorded_script_run_keeps_the_steps_that_ran() {
+    // One script is edited and another deleted before the recording stops: the macro holds the
+    // steps as they ran, not the scripts as they stand when the recording is saved.
+    let mut s = s();
+    let step = |input: &str| json!([{"command": "cell.set", "params": {"cell": "B1", "input": input}}]);
+    s.execute("automate.newScript", json!({"name": "Edited", "commands": step("first")})).unwrap();
+    s.execute("automate.newScript", json!({"name": "Gone", "commands": step("kept")})).unwrap();
+    s.execute("macro.record", json!({"relative": false})).unwrap();
+    s.execute("automate.runScript", json!({"name": "Edited"})).unwrap();
+    s.execute("automate.runScript", json!({"name": "Gone"})).unwrap();
+    s.execute("automate.newScript", json!({"name": "Edited", "commands": step("changed")})).unwrap();
+    s.execute("automate.deleteScript", json!({"name": "Gone"})).unwrap();
+    let r = s.execute("macro.record", json!({"stop": true, "name": "Rec"})).unwrap();
+    let steps = recorded(&mut s, "Rec");
+    assert_eq!(
+        steps.get(..2),
+        Some(&["cell.set {\"cell\":\"B1\",\"input\":\"first\"}".to_string(), "cell.set {\"cell\":\"B1\",\"input\":\"kept\"}".to_string()][..]),
+        "{steps:?}"
+    );
+    assert!(!r["skipped"].as_array().unwrap().contains(&json!("automate.runScript")), "{r}");
+}
+
+#[test]
 fn a_recording_is_saved_in_the_workbook_where_it_started() {
     let mut s = s();
     data(&mut s);

@@ -1074,6 +1074,9 @@ fn run_script(s: &mut Session, p: &Json) -> Result<Json> {
     }
     let _sandbox = crate::io::ScriptSandbox::enter();
     let mut n = 0;
+    // What ran, for a recorder in progress: the recording keeps these steps with the run, so
+    // editing or deleting the script before the recording stops does not change what it saved.
+    let mut ran_steps: Vec<(String, Json)> = Vec::new();
     for st in &steps {
         let id = st["command"].as_str().unwrap_or("");
         if id.starts_with("automate.") {
@@ -1092,6 +1095,12 @@ fn run_script(s: &mut Session, p: &Json) -> Result<Json> {
         }
         ran?;
         n += 1;
+        if s.recorder.is_some() {
+            ran_steps.push((id.to_string(), st["params"].clone()));
+        }
+    }
+    if s.recorder.is_some() {
+        s.script_ran = Some(ran_steps);
     }
     Ok(json!({"ran": n}))
 }

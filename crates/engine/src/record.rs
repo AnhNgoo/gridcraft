@@ -8,6 +8,7 @@
 
 use serde::Serialize;
 use serde_json::Value as Json;
+use std::collections::BTreeMap;
 
 use crate::Selection;
 
@@ -46,25 +47,43 @@ pub struct Recorder {
     /// Once a step is dropped, every later one is too, so `steps` is always the beginning of
     /// what ran, never a sequence with gaps.
     pub dropped: usize,
-    /// The size of `steps` serialized as JSON.
+    /// The size of `steps` and `ran` serialized as JSON.
     bytes: usize,
+    /// What a step ran, by its index in `steps`, for a command that runs steps stored in the
+    /// workbook (`automate.runScript`): the commands as they ran, so a recording keeps them even
+    /// when the script is edited or deleted before the recording stops. A step without an entry
+    /// is read from the workbook when the recording is used.
+    pub ran: BTreeMap<usize, Vec<(String, Json)>>,
 }
 
 impl Recorder {
-    /// Adds a step, or counts it as dropped once the buffer is full.
-    pub fn push(&mut self, step: RecordedStep) {
+    /// Adds a step, or counts it as dropped once the buffer is full; `true` when it was kept.
+    pub fn push(&mut self, step: RecordedStep) -> bool {
         // Once a step has been dropped, or the step count is full, the rest are counted without
         // being serialized (a `file.open` step holds a whole file).
         if self.dropped > 0 || self.steps.len() >= RECORD_LIMIT {
             self.dropped = self.dropped.saturating_add(1);
-            return;
+            return false;
         }
         let size = serde_json::to_vec(&step).map_or(0, |v| v.len());
         if self.bytes.saturating_add(size) <= RECORD_MAX_BYTES {
             self.bytes = self.bytes.saturating_add(size);
             self.steps.push(step);
+            true
         } else {
             self.dropped = self.dropped.saturating_add(1);
+            false
+        }
+    }
+
+    /// Attaches what the last kept step ran ([`Recorder::ran`]), within the byte budget: past it,
+    /// the step stays and its script is read from the workbook when the recording is used.
+    pub fn attach_ran(&mut self, steps: Vec<(String, Json)>) {
+        let Some(index) = self.steps.len().checked_sub(1) else { return };
+        let size = serde_json::to_vec(&steps).map_or(0, |v| v.len());
+        if self.bytes.saturating_add(size) <= RECORD_MAX_BYTES {
+            self.bytes = self.bytes.saturating_add(size);
+            self.ran.insert(index, steps);
         }
     }
 }
