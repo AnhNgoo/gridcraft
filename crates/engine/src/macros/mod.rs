@@ -108,7 +108,8 @@ pub fn with_names(wb: &Workbook) -> crate::Result<Option<Workbook>> {
     out.names.retain(|n| !stored(n));
     let items: Vec<(String, String)> = wb.macros.iter().enumerate().map(|(i, m)| (format!("{MACRO_KEY}{i}"), macro_json(m).to_string())).collect();
     stash::set_many(&mut out, &items)?;
-    out.macros.clear();
+    // An empty list of its own, not a copy of the shared one cleared.
+    out.macros = gridcraft_model::Macros::default();
     Ok(Some(out))
 }
 
