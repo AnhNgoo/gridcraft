@@ -154,9 +154,38 @@ pub fn step_mut<'a>(steps: &'a mut Vec<Step>, path: &str) -> Option<&'a mut Step
     list_mut(steps, parent)?.get_mut(i)
 }
 
+/// The step list a parent key names, read-only (see [`list_mut`]).
+pub fn list_at<'a>(mut cur: &'a [Step], parent: &str) -> Option<&'a [Step]> {
+    let toks: Vec<&str> = parent.split('.').filter(|t| !t.is_empty()).collect();
+    let mut i = 0;
+    while let Some(tok) = toks.get(i) {
+        let idx = tok.parse::<usize>().ok()?.checked_sub(1)?;
+        let branch = toks.get(i + 1).copied();
+        let st = cur.get(idx)?;
+        cur = match (&st.kind, branch) {
+            (StepKind::If { then, .. }, Some("then")) => {
+                i += 2;
+                then
+            }
+            (StepKind::If { otherwise, .. }, Some("else")) => {
+                i += 2;
+                otherwise
+            }
+            (StepKind::Repeat { body, .. }, _) => {
+                i += 1;
+                body
+            }
+            _ => return None,
+        };
+    }
+    Some(cur)
+}
+
+/// A copy of the step at `path`. Reads the path in place: copying the whole list for every row
+/// made a large macro's step list quadratic.
 pub fn step_at(steps: &[Step], path: &str) -> Option<Step> {
-    let mut copy = steps.to_vec();
-    step_mut(&mut copy, path).map(|s| s.clone())
+    let (parent, i) = split_path(path)?;
+    list_at(steps, parent)?.get(i).cloned()
 }
 
 /// The paths of the steps with a breakpoint.

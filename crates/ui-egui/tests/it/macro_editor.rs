@@ -530,3 +530,20 @@ fn the_editor_fits_a_narrow_window() {
         }
     }
 }
+
+#[test]
+fn a_macro_at_the_step_limit_opens_without_freezing_the_editor() {
+    let mut h = harness();
+    let steps: Vec<_> = (0..gridcraft_engine::model::MAX_MACRO_STEPS)
+        .map(|i| json!({"command": "cell.set", "params": {"cell": format!("A{}", i + 1), "input": "x"}}))
+        .collect();
+    h.state_mut().run("macro.save", json!({"macro": {"name": "Big", "steps": steps}})).unwrap();
+    h.state_mut().open_dialog("macroEditor", json!({"macro": "Big"}));
+    h.run_steps(2);
+    // Each row used to copy the whole list: five frames took about a minute. Now well under a
+    // second; the bound leaves room for a slow machine.
+    let t = std::time::Instant::now();
+    h.run_steps(5);
+    assert!(t.elapsed() < std::time::Duration::from_secs(10), "five frames took {:?}", t.elapsed());
+    assert!(h.query_by_label_contains("Step 1: ").is_some());
+}
