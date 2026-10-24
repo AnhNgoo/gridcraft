@@ -622,8 +622,12 @@ impl Session {
             // finds no recorder. A menu-style call that only opened a dialog (`file.open` with no
             // file, `home.formatCells` with no style) is not recorded either: the dialog's own
             // call is, so playing the recording back runs the command once, with its parameters.
+            // A call that opened a dialog and changed the workbook too (a script with an edit before
+            // a menu-style step) is recorded: the edit happened, and the dialog's confirming call
+            // is a step of its own.
             let opened_dialog = self.ui_requests.get(requests_before..).is_some_and(|new| new.iter().any(|q| matches!(q, UiRequest::Dialog(..))));
-            if let Some((doc, sheet, sheet_name, selection)) = place.filter(|_| !opened_dialog && !record::NOT_RECORDED.contains(&id))
+            let changed = before.as_ref().is_some_and(|(uid, wb, _)| self.docs.iter().any(|d| d.uid == *uid && !Arc::ptr_eq(&d.wb, wb)));
+            if let Some((doc, sheet, sheet_name, selection)) = place.filter(|_| (!opened_dialog || changed) && !record::NOT_RECORDED.contains(&id))
                 && let Some(rec) = self.recorder.as_mut()
             {
                 rec.push(record::RecordedStep { doc, sheet, sheet_name, selection, id: id.to_string(), params: cmd::journal_params(&params) });

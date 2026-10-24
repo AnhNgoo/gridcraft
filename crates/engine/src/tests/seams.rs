@@ -847,6 +847,26 @@ fn stop_action_runs_only_on_its_own_and_is_not_recorded() {
 }
 
 #[test]
+fn a_run_that_edits_and_opens_a_dialog_is_recorded() {
+    // A script with an edit before a menu-style step: the edit happened, so the run is a step of
+    // the recording (the person's confirming call is another). Only a call that opened a dialog
+    // and changed nothing is left out.
+    let mut s = s();
+    let edit_then_dialog = json!([{"command": "cell.set", "params": {"cell": "B1", "input": "1"}}, {"command": "home.formatCells", "params": {}}]);
+    let dialog_only = json!([{"command": "home.formatCells", "params": {}}]);
+    s.execute("automate.newScript", json!({"name": "Edit", "commands": edit_then_dialog})).unwrap();
+    s.execute("automate.newScript", json!({"name": "Ask", "commands": dialog_only})).unwrap();
+    s.start_recording();
+    s.execute("automate.runScript", json!({"name": "Ask"})).unwrap();
+    assert!(s.take_ui_requests().iter().any(|q| matches!(q, crate::UiRequest::Dialog(..))));
+    assert!(recorded_ids(&s).is_empty(), "{:?}", recorded_ids(&s));
+    s.execute("automate.runScript", json!({"name": "Edit"})).unwrap();
+    assert!(s.take_ui_requests().iter().any(|q| matches!(q, crate::UiRequest::Dialog(..))));
+    assert_eq!(recorded_ids(&s), ["automate.runScript"], "the edit happened, so the run is a step");
+    assert_eq!(s.stop_recording().unwrap().dropped, 0);
+}
+
+#[test]
 fn the_recorder_keeps_top_level_calls_with_where_they_ran() {
     let mut s = s();
     s.execute("home.insertSheet", json!({})).unwrap();

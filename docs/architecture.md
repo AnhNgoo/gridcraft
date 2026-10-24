@@ -72,7 +72,8 @@ Actions made of many commands (macros, a debugger that runs one step per call) u
 - **Recording buffer** (`record.rs`). `Session::start_recording` collects each successful
   top-level command with the document, sheet and selection it ran in, without secret parameters.
   Commands run by other commands are not recorded, nor is a menu-style call that only opened a
-  dialog (the dialog's confirming call is the step), and the buffer is independent of the journal
+  dialog (the dialog's confirming call is the step; a run that changed the workbook before a step
+  of it opened a dialog is recorded), and the buffer is independent of the journal
   (Automate › Record Actions still records through the journal).
 - **Document trust.** `DocState::trust` is `Local` for workbooks made in the session and
   `FromFile` for workbooks opened from a file. `Trust` has no default: `DocState::new` takes it,
