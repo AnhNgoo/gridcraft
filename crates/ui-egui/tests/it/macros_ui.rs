@@ -314,3 +314,33 @@ fn the_macros_and_record_macro_dialogs_fit_a_narrow_window() {
         }
     }
 }
+
+#[test]
+fn a_question_is_answered_in_the_workbook_that_asked_it() {
+    let mut h = harness("Automate");
+    save(&mut h, json!({"name": "Tidy", "steps": []}));
+    h.state_mut().open_dialog("macros", json!({"name": "Tidy"}));
+    h.run_steps(2);
+    h.get_by_label("Delete").click();
+    h.run_steps(2);
+    assert!(h.state().macros.question.is_some());
+    // Another workbook with a macro of that name becomes active before the answer (an agent).
+    h.state_mut().dialog = None;
+    h.state_mut().session.new_workbook();
+    save(&mut h, json!({"name": "Tidy", "steps": []}));
+    h.get_by_label("Delete").click();
+    h.run_steps(3);
+    assert_eq!(h.state().session.active().unwrap().wb.macros.len(), 1, "the other workbook's macro is kept");
+    assert!(h.state().macros.question.is_none());
+    assert!(h.state().message.as_ref().is_some_and(|(_, m)| m.contains("Book1")), "{:?}", h.state().message);
+    // Asked and answered in the same workbook, it deletes there.
+    h.state_mut().message = None;
+    h.run_steps(2);
+    h.state_mut().open_dialog("macros", json!({"name": "Tidy"}));
+    h.run_steps(2);
+    h.get_by_label("Delete").click();
+    h.run_steps(2);
+    h.get_all_by_label("Delete").last().unwrap().click();
+    h.run_steps(3);
+    assert!(h.state().session.active().unwrap().wb.macros.is_empty());
+}

@@ -50,6 +50,8 @@ impl MacroUi {
 /// runs the command again with its parameters added; Cancel drops it.
 #[derive(Clone, Debug)]
 pub struct Question {
+    /// The workbook (`DocState::uid`) the question is about: the answer runs only there.
+    pub doc: u64,
     pub title: String,
     pub text: String,
     pub command: String,
@@ -147,7 +149,8 @@ pub fn ask(app: &mut SheetApp, title: &str, id: &str, params: &Json, e: &str) ->
     } else {
         return false;
     };
-    app.macros.question = Some(Question { title: title.into(), text, command: id.into(), params: params.clone(), choices });
+    let doc = app.session.active().map_or(0, |d| d.uid);
+    app.macros.question = Some(Question { doc, title: title.into(), text, command: id.into(), params: params.clone(), choices });
     true
 }
 
@@ -202,6 +205,13 @@ pub fn question_box(app: &mut SheetApp, ctx: &egui::Context) {
         });
     });
     match answer {
+        // Another workbook became active meanwhile (an agent): the answer would run there.
+        Some(Some(_)) if app.session.active().is_none_or(|d| d.uid != q.doc) => {
+            app.macros.question = None;
+            let book = app.session.documents().iter().find(|d| d.uid == q.doc).map(|d| d.display_title()).unwrap_or_default();
+            app.message =
+                Some((q.title.clone(), format!("The question was about “{book}”, which is no longer the active workbook, so nothing was done.")));
+        }
         Some(Some(extra)) => {
             app.macros.question = None;
             let mut params = q.params.clone();
@@ -441,6 +451,7 @@ pub fn macros_dialog(app: &mut SheetApp, ui: &mut Ui, d: &mut Dialog, open: &mut
                     Kind::Script => ("Delete Script", "automate.deleteScript", "script"),
                 };
                 app.macros.question = Some(Question {
+                    doc: app.session.active().map_or(0, |d| d.uid),
                     title: title.into(),
                     text: format!("Do you want to delete {what} “{}”?", e.name),
                     command: command.into(),
