@@ -81,10 +81,8 @@ impl Macro {
             return Err(format!("A macro description can be at most {MAX_MACRO_TEXT} characters long."));
         }
         // Count without recursing past the depth limit (a hostile file can nest deeper).
+        // A Repeat or If at the top is nested 1 deep; one inside it, 2 deep.
         fn walk(steps: &[Step], level: usize, count: &mut usize) -> Result<(), String> {
-            if level > MAX_MACRO_DEPTH {
-                return Err(format!("Repeat and If steps can nest at most {MAX_MACRO_DEPTH} deep."));
-            }
             for s in steps {
                 *count = count.saturating_add(1);
                 if *count > MAX_MACRO_STEPS {
@@ -92,6 +90,9 @@ impl Macro {
                 }
                 if s.note.chars().count() > MAX_MACRO_TEXT {
                     return Err(format!("A step note can be at most {MAX_MACRO_TEXT} characters long."));
+                }
+                if s.kind.children().next().is_some() && level > MAX_MACRO_DEPTH {
+                    return Err(format!("Repeat and If steps can nest at most {MAX_MACRO_DEPTH} deep."));
                 }
                 for body in s.kind.children() {
                     walk(body, level + 1, count)?;
@@ -112,11 +113,84 @@ impl Macro {
             if ["Output", "Row", "Column", "Name"].iter().any(|r| r.eq_ignore_ascii_case(n)) {
                 return Err(format!("'{n}' is a token of its own and can't name an input."));
             }
+            // A step written with plain A1 text (a recorded one) must keep meaning the cell.
+            if gridcraft_core::RangeRef::parse(n).is_some() {
+                return Err(format!("'{n}' reads as a cell reference and can't name an input."));
+            }
             if self.inputs.iter().take(k).any(|o| o.name.eq_ignore_ascii_case(n)) {
                 return Err(format!("Two inputs are called '{n}'."));
             }
         }
         Ok(())
+    }
+}
+
+/// The macros of a workbook. Workbook snapshots share the list until one of them changes it, so
+/// an undo entry or a copy made for a cell edit holds the same list rather than a copy of every
+/// step. Reads go through `Deref` to the list; a write through `DerefMut` first copies the list
+/// when another snapshot shares it.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[serde(transparent)]
+pub struct Macros(std::sync::Arc<Vec<Macro>>);
+
+impl Macros {
+    pub fn is_empty(&self) -> bool {
+        self.0.is_empty()
+    }
+
+    /// Whether both hold the one list, with no copy made between them.
+    pub fn shares(&self, other: &Macros) -> bool {
+        std::sync::Arc::ptr_eq(&self.0, &other.0)
+    }
+
+    /// A rough size of the list in memory, for the undo budget.
+    pub fn estimated_bytes(&self) -> usize {
+        self.0.iter().fold(0usize, |bytes, m| {
+            let text = m.name.len().saturating_add(m.description.len());
+            let steps = m.step_count().saturating_mul(std::mem::size_of::<Step>().saturating_add(64));
+            bytes.saturating_add(std::mem::size_of::<Macro>()).saturating_add(text).saturating_add(steps)
+        })
+    }
+}
+
+impl From<Vec<Macro>> for Macros {
+    fn from(list: Vec<Macro>) -> Macros {
+        Macros(std::sync::Arc::new(list))
+    }
+}
+
+impl std::ops::Deref for Macros {
+    type Target = Vec<Macro>;
+    fn deref(&self) -> &Vec<Macro> {
+        &self.0
+    }
+}
+
+impl std::ops::DerefMut for Macros {
+    fn deref_mut(&mut self) -> &mut Vec<Macro> {
+        std::sync::Arc::make_mut(&mut self.0)
+    }
+}
+
+impl IntoIterator for Macros {
+    type Item = Macro;
+    type IntoIter = std::vec::IntoIter<Macro>;
+    fn into_iter(self) -> Self::IntoIter {
+        std::sync::Arc::unwrap_or_clone(self.0).into_iter()
+    }
+}
+
+impl<'a> IntoIterator for &'a Macros {
+    type Item = &'a Macro;
+    type IntoIter = std::slice::Iter<'a, Macro>;
+    fn into_iter(self) -> Self::IntoIter {
+        self.0.iter()
+    }
+}
+
+impl FromIterator<Macro> for Macros {
+    fn from_iter<I: IntoIterator<Item = Macro>>(iter: I) -> Macros {
+        Macros(std::sync::Arc::new(iter.into_iter().collect()))
     }
 }
 

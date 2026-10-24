@@ -37,9 +37,16 @@ pub fn parse_macro(v: &Json) -> Result<Macro, String> {
     }
     let mut m: Macro = serde_json::from_value(v).map_err(|e| format!("This isn't a valid macro: {e}"))?;
     m.name = m.name.trim().to_string();
-    m.check_limits()?;
-    check_size(&m)?;
+    check(&m)?;
     Ok(m)
+}
+
+/// Every check a macro must pass before it is kept in a workbook: the model's limits
+/// ([`Macro::check_limits`]) and the size an xlsx file can hold. Every path that adds a macro,
+/// from JSON, from a file or built in code, goes through this one check.
+pub fn check(m: &Macro) -> Result<(), String> {
+    m.check_limits()?;
+    check_size(m)
 }
 
 /// Refuses a macro too large to keep in an xlsx file ([`stash::MAX_ITEM_CHARS`] characters of
@@ -55,9 +62,6 @@ fn check_size(m: &Macro) -> Result<(), String> {
 /// before the steps are deserialized.
 fn normalize_steps(steps: &mut Json, level: usize) -> Result<(), String> {
     let Some(list) = steps.as_array_mut() else { return Err("`steps` must be a list.".into()) };
-    if level > gridcraft_model::MAX_MACRO_DEPTH {
-        return Err(format!("Repeat and If steps can nest at most {} deep.", gridcraft_model::MAX_MACRO_DEPTH));
-    }
     for st in list {
         let Some(o) = st.as_object_mut() else { return Err("Every step must be an object.".into()) };
         if !o.contains_key("type")
@@ -65,6 +69,11 @@ fn normalize_steps(steps: &mut Json, level: usize) -> Result<(), String> {
         {
             o.insert("type".into(), json!("command"));
             o.insert("id".into(), id);
+        }
+        // A step with a body is a Repeat or an If: one at the top is nested 1 deep.
+        let nested = ["body", "then", "else"].iter().any(|key| o.contains_key(*key));
+        if nested && level > gridcraft_model::MAX_MACRO_DEPTH {
+            return Err(format!("Repeat and If steps can nest at most {} deep.", gridcraft_model::MAX_MACRO_DEPTH));
         }
         for key in ["body", "then", "else"] {
             if let Some(body) = o.get_mut(key) {
@@ -89,17 +98,18 @@ pub fn find(wb: &Workbook, name: &str) -> Option<usize> {
 /// A copy of `wb` for xlsx with each macro in hidden names (`_gc_macro_<n>_<k>`) instead of the
 /// field, or `None` when there is nothing to change.
 pub fn with_names(wb: &Workbook) -> crate::Result<Option<Workbook>> {
-    let stale = !stash::keys(wb, MACRO_KEY).is_empty();
-    if wb.macros.is_empty() && !stale {
+    // Only the numbered items are this build's: a hidden `_gc_macro_<x>_<k>` name with some
+    // other key stays, as `load` leaves it.
+    let stored = |n: &DefinedName| macro_item(n).is_some_and(|(_, i)| i.is_some());
+    if wb.macros.is_empty() && !wb.names.iter().any(stored) {
         return Ok(None);
     }
     let mut out = wb.clone();
-    for key in stash::keys(&out, MACRO_KEY) {
-        stash::remove(&mut out, &key);
-    }
-    for (i, m) in wb.macros.iter().enumerate() {
-        stash::set(&mut out, &format!("{MACRO_KEY}{i}"), &macro_json(m).to_string())?;
-    }
+    // One pass drops the items of the last save, and one writes the macros (a file can hold a
+    // thousand macros and many thousands of names).
+    out.names.retain(|n| !stored(n));
+    let items: Vec<(String, String)> = wb.macros.iter().enumerate().map(|(i, m)| (format!("{MACRO_KEY}{i}"), macro_json(m).to_string())).collect();
+    stash::set_many(&mut out, &items)?;
     out.macros.clear();
     Ok(Some(out))
 }
@@ -125,8 +135,9 @@ pub fn load(wb: &mut Workbook) -> Vec<String> {
         match macro_item(&n) {
             None => kept.push(n),
             Some((key, Some(i))) => stored.entry((i, key)).or_default().push(n),
-            // A `macro_` item that isn't numbered isn't one this build wrote; it goes unread.
-            Some((_, None)) => {}
+            // A `macro_` item that isn't numbered isn't one this build wrote: it stays as it is,
+            // unread, and a save keeps it.
+            Some((_, None)) => kept.push(n),
         }
     }
     wb.names = kept;
@@ -154,7 +165,7 @@ pub fn load(wb: &mut Workbook) -> Vec<String> {
         let checked = m.check_limits().and_then(|()| {
             m.name = taken.unique(m.name.trim());
             // The macro as it is kept, renamed, must still pass, or the next save would lose it.
-            m.check_limits().and_then(|()| check_size(&m))
+            check(&m)
         });
         match checked {
             Ok(()) => {
@@ -186,8 +197,9 @@ fn macro_item(n: &DefinedName) -> Option<(String, Option<u64>)> {
     Some((key, i))
 }
 
-/// `name`, or `name (2)`, `name (3)`… if a macro already has it. A long name is shortened to make
-/// room for the suffix, so the result stays within [`gridcraft_model::MAX_MACRO_NAME`] characters.
+/// `name`, or `name (2)`, `name (3)`… if a macro already has it. A free name comes back as it is;
+/// a renamed one is shortened to make room for the suffix, so it stays within
+/// [`gridcraft_model::MAX_MACRO_NAME`] characters. The result still goes through [`check`].
 pub fn unique_name(wb: &Workbook, name: &str) -> String {
     let mut taken = Taken::default();
     for m in &wb.macros {
