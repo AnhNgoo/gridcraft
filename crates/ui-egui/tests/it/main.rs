@@ -85,6 +85,7 @@ mod touch_pan;
 mod trace_navigation;
 mod translated_form_fields;
 mod ui_clock;
+mod undo_while_grouping;
 mod validation_alert;
 mod validation_input_message;
 mod wheel_zoom;
