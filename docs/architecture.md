@@ -67,7 +67,8 @@ Actions made of many commands (macros, a debugger that runs one step per call) u
   it are bounded on their own.
 - **Recording buffer** (`record.rs`). `Session::start_recording` collects each successful
   top-level command with the document, sheet and selection it ran in, without secret parameters.
-  Commands run by other commands are not recorded, and the buffer is independent of the journal
+  Commands run by other commands are not recorded, nor is a menu-style call that only opened a
+  dialog (the dialog's confirming call is the step), and the buffer is independent of the journal
   (Automate › Record Actions still records through the journal).
 - **Document trust.** `DocState::trust` is `Local` for workbooks made in the session and
   `FromFile` for workbooks opened from a file, and for workbooks that received a paste from one

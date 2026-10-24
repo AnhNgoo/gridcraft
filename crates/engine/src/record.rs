@@ -63,13 +63,4 @@ impl Recorder {
             self.dropped = self.dropped.saturating_add(1);
         }
     }
-
-    /// Forgets the steps after the first `steps` and puts the dropped count back to `dropped`,
-    /// for a command the caller received as failed after it was recorded.
-    pub fn truncate(&mut self, steps: usize, dropped: usize) {
-        for step in self.steps.drain(steps.min(self.steps.len())..) {
-            self.bytes = self.bytes.saturating_sub(serde_json::to_vec(&step).map_or(0, |v| v.len()));
-        }
-        self.dropped = dropped;
-    }
 }

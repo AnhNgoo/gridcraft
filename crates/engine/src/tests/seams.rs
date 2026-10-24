@@ -752,6 +752,28 @@ fn a_headless_call_that_fails_for_want_of_a_file_is_not_recorded() {
 }
 
 #[test]
+fn a_call_that_only_opens_a_dialog_is_not_recorded() {
+    // Menu-style calls with no parameters only queue their dialog; the dialog's confirming call
+    // is the step, so playing the recording back runs each command once, with its parameters.
+    let mut s = s();
+    s.start_recording();
+    for id in ["file.open", "data.fromTextCsv", "home.formatCells"] {
+        s.execute(id, json!({})).unwrap_or_else(|e| panic!("{id}: {e}"));
+        let dialogs = s.take_ui_requests();
+        assert!(dialogs.iter().any(|q| matches!(q, crate::UiRequest::Dialog(..))), "{id} opens a dialog: {dialogs:?}");
+    }
+    assert!(recorded_ids(&s).is_empty(), "{:?}", recorded_ids(&s));
+    set(&mut s, "A1", "1");
+    s.execute("home.formatCells", json!({"range": "A1", "style": {"bold": true}})).unwrap();
+    assert_eq!(recorded_ids(&s), ["cell.set", "home.formatCells"]);
+    // A dialog queued before the call, and not taken yet, does not hide the call.
+    s.execute("file.open", json!({})).unwrap();
+    set(&mut s, "A2", "2");
+    assert_eq!(recorded_ids(&s), ["cell.set", "home.formatCells", "cell.set"]);
+    assert_eq!(s.stop_recording().unwrap().dropped, 0);
+}
+
+#[test]
 fn the_recorder_keeps_top_level_calls_with_where_they_ran() {
     let mut s = s();
     s.execute("home.insertSheet", json!({})).unwrap();

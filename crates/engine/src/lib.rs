@@ -549,6 +549,7 @@ impl Session {
             None => (0, 0, String::new(), Selection::default()),
         });
         let doc_uid = before.as_ref().map(|(uid, ..)| *uid);
+        let requests_before = self.ui_requests.len();
         let marked = doc_uid.zip(start).map(|(uid, (_, len))| (uid, len));
         self.marks.extend(marked);
         self.depth = self.depth.saturating_add(1);
@@ -602,8 +603,11 @@ impl Session {
         }
         if spec.journal && result.is_ok() {
             // A command that started recording is not part of the recording; one that stopped it
-            // finds no recorder.
-            if let Some((doc, sheet, sheet_name, selection)) = place
+            // finds no recorder. A menu-style call that only opened a dialog (`file.open` with no
+            // file, `home.formatCells` with no style) is not recorded either: the dialog's own
+            // call is, so playing the recording back runs the command once, with its parameters.
+            let opened_dialog = self.ui_requests.get(requests_before..).is_some_and(|new| new.iter().any(|q| matches!(q, UiRequest::Dialog(..))));
+            if let Some((doc, sheet, sheet_name, selection)) = place.filter(|_| !opened_dialog)
                 && let Some(rec) = self.recorder.as_mut()
             {
                 rec.push(record::RecordedStep { doc, sheet, sheet_name, selection, id: id.to_string(), params: cmd::journal_params(&params) });
@@ -878,17 +882,12 @@ impl Session {
     /// queued a file dialog because it got no file (`file.open`, `file.saveAs`, `file.save` on a workbook with no
     /// file yet, `data.getData`) is an error instead of a silent success.
     pub fn execute_headless(&mut self, id: &str, params: Json) -> Result<Json> {
-        let recorded = self.recorder.as_ref().map(|r| (r.steps.len(), r.dropped));
         let r = self.execute(id, params);
         let requests = self.take_ui_requests();
         let asked_for_file = requests.iter().any(|q| matches!(q, UiRequest::Dialog(name, _) if name == "open" || name == "saveAs"));
+        // A call that only opened a dialog is not recorded (see `execute`), so the recording
+        // has no step to take back here.
         if r.is_ok() && asked_for_file {
-            // The caller gets an error, so the recording keeps no step for the command.
-            if let Some((steps, dropped)) = recorded
-                && let Some(rec) = self.recorder.as_mut()
-            {
-                rec.truncate(steps, dropped);
-            }
             let what = match id {
                 "file.open" => "`path` or `base64`",
                 "data.getData" | "data.fromTextCsv" => "`path` or `text`",
