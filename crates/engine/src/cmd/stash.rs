@@ -38,23 +38,87 @@ pub const MAX_ITEM_CHARS: usize = 4 * 1024 * 1024;
 const MAX_STORED_BYTES: usize = MAX_ITEM_CHARS * 7;
 /// Starts an escaped character in a `_gc_` item: U+FDD0, a noncharacter.
 pub const ESCAPE: char = '\u{FDD0}';
+/// The most items [`items`] and [`keys`] return: the first this many keys in sorted order. A
+/// file can carry any number of hidden names; the rest are not listed.
+pub const MAX_ITEMS: usize = 10_000;
+
+/// The names that hold one item: its `_gc_` chunks by number (the first of each number) and its
+/// legacy `_sc_` name.
+#[derive(Default)]
+struct Parts<'a> {
+    chunks: BTreeMap<u64, &'a str>,
+    legacy: Option<&'a str>,
+}
+
+impl<'a> Parts<'a> {
+    fn add(&mut self, chunk: Option<u64>, formula: &'a str) {
+        match chunk {
+            Some(i) => {
+                self.chunks.entry(i).or_insert(formula);
+            }
+            None => self.legacy = self.legacy.or(Some(formula)),
+        }
+    }
+
+    /// Whether the names make an item: a later chunk on its own does not.
+    fn is_item(&self) -> bool {
+        self.chunks.contains_key(&0) || self.legacy.is_some()
+    }
+}
+
+#[cfg(test)]
+thread_local! {
+    /// Names [`group`] has looked at on this thread, so a test can bound the work of a listing.
+    static NAME_VISITS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
+/// The workbook's items whose lower-cased key starts with `prefix` (lower-cased), with the names
+/// that hold them, in one pass over the names.
+fn group<'a>(wb: &'a Workbook, prefix: &str) -> BTreeMap<String, Parts<'a>> {
+    let prefix = prefix.to_ascii_lowercase();
+    let mut items: BTreeMap<String, Parts<'a>> = BTreeMap::new();
+    for n in wb.names.iter() {
+        #[cfg(test)]
+        NAME_VISITS.with(|v| v.set(v.get().saturating_add(1)));
+        let Some((k, chunk)) = item_of(n) else { continue };
+        let k = k.to_ascii_lowercase();
+        if k.starts_with(&prefix) {
+            items.entry(k).or_default().add(chunk, &n.formula);
+        }
+    }
+    items
+}
 
 /// The item text stored under `key`, or `None` when there is none (or it is over the size limit).
 pub fn get(wb: &Workbook, key: &str) -> Option<String> {
-    let mut chunks: BTreeMap<u64, &str> = BTreeMap::new();
-    let mut legacy = None;
+    let mut parts = Parts::default();
     for n in wb.names.iter() {
-        match item_of(n) {
-            Some((k, Some(i))) if k.eq_ignore_ascii_case(key) => {
-                chunks.entry(i).or_insert(&n.formula);
-            }
-            Some((k, None)) if k.eq_ignore_ascii_case(key) => legacy = legacy.or(Some(&n.formula)),
-            _ => {}
+        if let Some((k, chunk)) = item_of(n)
+            && k.eq_ignore_ascii_case(key)
+        {
+            parts.add(chunk, &n.formula);
         }
     }
+    assemble(&parts)
+}
+
+/// The items whose key starts with `prefix` (`"macro_"`), by lower-cased key, read in one pass
+/// over the names: the first [`MAX_ITEMS`] of [`keys`], without those over the size limit.
+pub fn items(wb: &Workbook, prefix: &str) -> BTreeMap<String, String> {
+    group(wb, prefix)
+        .into_iter()
+        .filter(|(_, parts)| parts.is_item())
+        .take(MAX_ITEMS)
+        .filter_map(|(k, parts)| assemble(&parts).map(|text| (k, text)))
+        .collect()
+}
+
+/// The text of the item held by `parts`, as [`get`] reads it.
+fn assemble(parts: &Parts) -> Option<String> {
+    let chunks = &parts.chunks;
     let mut out = String::new();
     if !chunks.contains_key(&0) {
-        out = string_literals(legacy?);
+        out = string_literals(parts.legacy?);
     } else {
         // Chunks run 0, 1, 2, …; anything after a gap isn't part of the item.
         for (want, (i, f)) in chunks.iter().enumerate() {
@@ -144,18 +208,11 @@ pub fn set_json(wb: &mut Workbook, key: &str, v: &Json) -> Result<()> {
     set(wb, key, &v.to_string())
 }
 
-/// The keys of the items stored in the workbook that start with `prefix` (`"macro_"`), sorted.
+/// The keys of the items stored in the workbook that start with `prefix` (`"macro_"`), sorted
+/// and lower-cased: the first [`MAX_ITEMS`] of them. To read them all, [`items`] takes one pass
+/// where a [`get`] per key would take one each.
 pub fn keys(wb: &Workbook, prefix: &str) -> Vec<String> {
-    let mut keys: Vec<String> = wb
-        .names
-        .iter()
-        // A later chunk on its own is no item, as `get` reads it.
-        .filter_map(|n| item_of(n).filter(|(_, chunk)| chunk.is_none_or(|i| i == 0)).map(|(k, _)| k.to_ascii_lowercase()))
-        .filter(|k| k.starts_with(&prefix.to_ascii_lowercase()))
-        .collect();
-    keys.sort();
-    keys.dedup();
-    keys
+    group(wb, prefix).into_iter().filter(|(_, parts)| parts.is_item()).map(|(k, _)| k).take(MAX_ITEMS).collect()
 }
 
 /// The item a hidden name belongs to, lower-cased: `_gc_<key>_<k>` and `_sc_<key>` give `<key>`.
@@ -445,6 +502,45 @@ mod tests {
         assert_eq!(item_key("_gc_macro_1_3").as_deref(), Some("macro_1"));
         assert_eq!(item_key("_SC_Scripts").as_deref(), Some("scripts"));
         assert_eq!(item_key("Total"), None);
+    }
+
+    #[test]
+    fn listing_many_items_takes_one_pass_and_is_capped() {
+        // 20,000 hidden items, as a file can carry: a `get` per key looked at every name for each
+        // key (400 million visits); `items` looks at each name once, and lists at most MAX_ITEMS.
+        let mut wb = Workbook::new();
+        let total = 20_000;
+        for i in 0..total {
+            wb.names.push(name(&format!("_gc_macro_{i:05}_0"), &format!("\"m{i}\"")));
+        }
+        set(&mut wb, "macro_big", &"b".repeat(9_000)).unwrap();
+        wb.names.push(name("_sc_macro_legacy", "\"old\""));
+        wb.names.push(name("_gc_macro_orphan_1", "\"no chunk 0\""));
+        wb.names.push(name("_gc_other_0", "\"not a macro\""));
+        NAME_VISITS.with(|v| v.set(0));
+        let all = items(&wb, "MACRO_");
+        assert_eq!(NAME_VISITS.with(|v| v.get()), wb.names.len(), "one pass over the names");
+        assert_eq!(all.len(), MAX_ITEMS);
+        let first: Vec<&String> = all.keys().take(2).collect();
+        assert_eq!(first, ["macro_00000", "macro_00001"]);
+        assert_eq!(all.get("macro_09999").map(String::as_str), Some("m9999"));
+        assert!(!all.contains_key("macro_10000"), "past the cap");
+        NAME_VISITS.with(|v| v.set(0));
+        let listed = keys(&wb, "macro_");
+        assert_eq!(NAME_VISITS.with(|v| v.get()), wb.names.len());
+        assert_eq!(listed, all.keys().cloned().collect::<Vec<_>>(), "keys and items agree");
+
+        // Under the cap every item is there, read as `get` reads it.
+        wb.names.retain(|n| !n.name.starts_with("_gc_macro_0") && !n.name.starts_with("_gc_macro_1"));
+        let few = items(&wb, "macro_");
+        let want: BTreeMap<String, String> =
+            [("macro_big", "b".repeat(9_000)), ("macro_legacy", "old".into())].into_iter().map(|(k, t)| (k.to_string(), t)).collect();
+        assert_eq!(few, want);
+        for (k, text) in &few {
+            assert_eq!(get(&wb, k).as_ref(), Some(text));
+        }
+        assert_eq!(keys(&wb, "macro_"), ["macro_big", "macro_legacy"]);
+        assert_eq!(items(&wb, "").len(), 3, "the other item too");
     }
 
     #[test]
