@@ -344,3 +344,19 @@ fn a_question_is_answered_in_the_workbook_that_asked_it() {
     h.run_steps(3);
     assert!(h.state().session.active().unwrap().wb.macros.is_empty());
 }
+
+#[test]
+fn the_macros_dialog_closes_when_another_workbook_becomes_active() {
+    let mut h = harness("Automate");
+    save(&mut h, json!({"name": "Tidy", "steps": []}));
+    h.state_mut().open_dialog("macros", json!({"name": "Tidy"}));
+    h.run_steps(2);
+    h.get_by_label("Options…").click();
+    h.run_steps(2);
+    // Its rows and the Options pane hold the first workbook's macros; an agent switches workbooks.
+    h.state_mut().session.new_workbook();
+    save(&mut h, json!({"name": "Tidy", "steps": []}));
+    h.run_steps(3);
+    assert!(h.state().dialog.is_none(), "the dialog closed instead of acting on the other workbook");
+    assert!(h.state().session.active().unwrap().wb.macros[0].shortcut.is_none());
+}

@@ -343,7 +343,8 @@ pub fn open_dialog(app: &mut SheetApp, params: &Json) -> Dialog {
     let names = macro_list(app);
     let first = app.macros.recent.iter().find(|r| names.iter().any(|(n, ..)| n.eq_ignore_ascii_case(r))).cloned();
     let name = params["name"].as_str().map(str::to_string).or(first).or_else(|| names.first().map(|m| m.0.clone())).unwrap_or_default();
-    let mut d = Dialog::custom("macros", "Macros", json!({"name": name, "kind": "macro"}));
+    let doc = app.session.active().map_or(0, |d| d.uid);
+    let mut d = Dialog::custom("macros", "Macros", json!({"name": name, "kind": "macro", "doc": doc}));
     d.result = app.session.run("view.macros", json!({})).ok();
     d
 }
@@ -351,6 +352,13 @@ pub fn open_dialog(app: &mut SheetApp, params: &Json) -> Dialog {
 /// The Macros dialog's body: the name box and the list on the left, the buttons on the right, the
 /// description under them; Options… switches to the shortcut and description of one macro.
 pub fn macros_dialog(app: &mut SheetApp, ui: &mut Ui, d: &mut Dialog, open: &mut bool) {
+    // Its rows and the Options pane are the workbook's it opened on: another workbook becoming
+    // active (an agent) closes it rather than run, delete or change a macro of the same name there.
+    let active = app.session.active().map(|doc| doc.uid);
+    if d.values.get("doc").and_then(Json::as_u64).is_some_and(|doc| Some(doc) != active) {
+        *open = false;
+        return;
+    }
     // Scripts can change while the dialog is open (Delete): read them again when the workbook does.
     let rev = app.session.active().map(|doc| doc.revision).unwrap_or(0);
     if d.values.get("revision").and_then(Json::as_u64) != Some(rev) {
