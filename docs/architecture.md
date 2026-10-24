@@ -71,13 +71,14 @@ Actions made of many commands (macros, a debugger that runs one step per call) u
   dialog (the dialog's confirming call is the step), and the buffer is independent of the journal
   (Automate › Record Actions still records through the journal).
 - **Document trust.** `DocState::trust` is `Local` for workbooks made in the session and
-  `FromFile` for workbooks opened from a file, and for workbooks that received a paste from one
-  that writes formulas or validation: Paste, Paste Special › All, All Except Borders, Formulas,
-  Formulas and Number Formats or Validation, and any linked paste other than column widths or
-  notes. Values, formats, column widths and notes carry nothing active. Active content in a
-  `FromFile` workbook asks before it runs. This
-  is provenance, which no decision changes; `DocState::scripts_trusted` is the separate
-  per-session consent for stored `automate.*` scripts (`automate.trustScripts`).
+  `FromFile` for workbooks opened from a file. `Trust` has no default: `DocState::new` takes it,
+  so every way of making a document says where its content came from. It is also `FromFile` for
+  workbooks that received a paste from one that writes formulas or validation: Paste, Paste
+  Special › All, All Except Borders, Formulas, Formulas and Number Formats or Validation, and any
+  linked paste other than column widths or notes. Values, formats, column widths and notes carry
+  nothing active. Active content in a `FromFile` workbook asks before it runs. This is provenance,
+  which no decision changes; `DocState::scripts_trusted` is the separate per-session consent for
+  stored `automate.*` scripts (`automate.trustScripts`).
 - **Workbook data in hidden names** (`cmd/stash.rs`). An item is split over hidden
   workbook-scope names `_gc_<key>_0`, `_gc_<key>_1`, … of string literals within Excel's 255- and
   8,192-character limits, so it survives an xlsx round trip. Characters XML can't carry (controls

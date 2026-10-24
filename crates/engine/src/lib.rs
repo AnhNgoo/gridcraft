@@ -134,12 +134,13 @@ pub struct Clipboard {
     pub trust: Trust,
 }
 
-/// Whether a document's active content (macros) may run without asking the person first.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize)]
+/// Whether a document's active content (macros) may run without asking the person first. There
+/// is no default: whoever makes a document says where it came from ([`DocState::new`]), so a new
+/// way of building one from bytes can't come out trusted by omission.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub enum Trust {
     /// Made in this session: a new workbook or a sample.
-    #[default]
     Local,
     /// Opened from a file, or holding content pasted from one: active content asks before it
     /// runs.
@@ -259,7 +260,10 @@ fn trim_to_budget(history: &mut Vec<HistoryEntry>, byte_budget: usize) {
 }
 
 impl DocState {
-    pub fn new(mut wb: Workbook, path: Option<String>, title: String) -> DocState {
+    /// A document for `wb`, which came from where `trust` says: [`Trust::FromFile`] for anything
+    /// read from bytes (a file, a download, a recovery copy), [`Trust::Local`] only for a workbook
+    /// made in this session.
+    pub fn new(mut wb: Workbook, path: Option<String>, title: String, trust: Trust) -> DocState {
         let mut calc = Calc::new();
         calc.recalc_all(&mut wb);
         let scripts_trusted = !cmd::extra::has_scripts(&wb);
@@ -280,7 +284,7 @@ impl DocState {
             unlocked_ranges: vec![],
             content_kind: None,
             scripts_trusted,
-            trust: Trust::Local,
+            trust,
         }
     }
     pub fn is_dirty(&self) -> bool {
@@ -480,7 +484,7 @@ impl Session {
             let name = wb.next_sheet_name();
             wb.sheets.push(Arc::new(gridcraft_model::Sheet::new(name)));
         }
-        self.add_document(DocState::new(wb, None, format!("Book{n}")))
+        self.add_document(DocState::new(wb, None, format!("Book{n}"), Trust::Local))
     }
 
     /// Journals a command, then trims the oldest entries past either cap. A recording in progress

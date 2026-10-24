@@ -962,6 +962,22 @@ fn documents_know_where_they_came_from() {
 }
 
 #[test]
+fn whoever_makes_a_document_says_where_it_came_from() {
+    // No default trust: a document built from bytes outside `file.open` (a recovery copy, a
+    // template) is untrusted because its maker says so, not trusted because it forgot to.
+    let mut s = Session::new();
+    let bytes = gridcraft_xlsx::write_xlsx(&gridcraft_model::Workbook::new()).unwrap();
+    let (wb, _) = crate::io::open_bytes("recovered.xlsx", &bytes).unwrap();
+    s.add_document(crate::DocState::new(wb, None, "Recovered".into(), Trust::FromFile));
+    assert_eq!(trust(&s), Trust::FromFile);
+    assert_eq!(s.execute("document.inspect", json!({})).unwrap()["trust"], "fromFile");
+    s.add_document(crate::DocState::new(gridcraft_model::Workbook::new(), None, "Made here".into(), Trust::Local));
+    assert_eq!(trust(&s), Trust::Local);
+    s.new_workbook();
+    assert_eq!(trust(&s), Trust::Local);
+}
+
+#[test]
 fn pasting_from_a_file_carries_its_trust() {
     let mut s = s(); // document 0: Local
     open_json(&mut s, &gridcraft_model::Workbook::new()); // document 1: FromFile
