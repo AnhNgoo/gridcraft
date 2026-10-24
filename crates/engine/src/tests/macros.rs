@@ -233,6 +233,26 @@ fn shifting_makes_room_and_is_checked_again() {
 }
 
 #[test]
+fn closing_the_debugged_workbook_ends_the_debugger() {
+    // `file.close` is not an edit, so the debugger's lock lets it through; the group went with
+    // the document, and so must the debugger, or the next workbook could not debug anything and
+    // the state would report that no document is open.
+    let mut s = s();
+    data(&mut s);
+    put(&mut s, totals());
+    s.execute("macro.debug", json!({"action": "start", "name": "Totals", "inputs": "B2:C5", "breakpoints": ["1"]})).unwrap();
+    assert!(s.macro_debug.is_some());
+    s.execute("file.close", json!({"force": true})).unwrap();
+    assert!(s.macro_debug.is_none(), "the debugger ended with its workbook");
+    s.new_workbook();
+    data(&mut s);
+    put(&mut s, totals());
+    s.execute("macro.debug", json!({"action": "start", "name": "Totals", "inputs": "B2:C5", "breakpoints": ["1"]})).unwrap();
+    assert!(s.execute("macro.debug", json!({})).is_ok(), "the new workbook can be debugged");
+    s.execute("macro.debug", json!({"action": "stop"})).unwrap();
+}
+
+#[test]
 fn the_footprint_covers_other_sheets_objects_and_edges() {
     let mut s = s();
     data(&mut s);

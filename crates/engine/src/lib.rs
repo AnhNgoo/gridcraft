@@ -454,6 +454,10 @@ impl Session {
         if i < self.docs.len() {
             let d = self.docs.remove(i);
             self.groups.retain(|g| g.doc != d.uid);
+            // A macro being debugged in this workbook ends with it; its group just went.
+            if self.macro_debug.as_ref().is_some_and(|m| m.doc == d.uid) {
+                self.macro_debug = None;
+            }
             if self.active >= self.docs.len() {
                 self.active = self.docs.len().saturating_sub(1);
             }
