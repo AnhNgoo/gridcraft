@@ -981,7 +981,7 @@ fn macros_and_automate_scripts_live_side_by_side() {
     assert_eq!(ids, ["cell.set {\"cell\":\"A1\",\"input\":\"typed\"}", "cell.set {\"cell\":\"B1\",\"input\":\"from script\"}"]);
     // Both lists keep their own entries, under the same name if need be.
     let scripts = s.execute("automate.allScripts", json!({})).unwrap();
-    assert_eq!(scripts, json!([{"name": "Empty", "steps": 0}, {"name": "Inner", "steps": 1}]));
+    assert_eq!(scripts, json!([{"name": "Empty", "steps": 0, "trusted": true}, {"name": "Inner", "steps": 1, "trusted": true}]));
     let macros: Vec<Json> = s.execute("macro.list", json!({})).unwrap().as_array().unwrap().iter().map(|m| m["name"].clone()).collect();
     assert_eq!(macros, [json!("Inner"), json!("Recorded")]);
     s.execute("home.insertSheet", json!({})).unwrap();
@@ -991,7 +991,9 @@ fn macros_and_automate_scripts_live_side_by_side() {
     // Both survive an xlsx round trip unchanged.
     let b64 = s.execute("file.saveBytes", json!({"format": "xlsx"})).unwrap()["base64"].as_str().unwrap().to_string();
     s.execute("file.open", json!({"name": "both.xlsx", "base64": b64})).unwrap();
-    assert_eq!(s.execute("automate.allScripts", json!({})).unwrap(), scripts);
+    // Opened from a file, the scripts are not trusted yet (#2178); their names and steps are the same.
+    let names_and_steps = |v: &Json| v.as_array().unwrap().iter().map(|s| (s["name"].clone(), s["steps"].clone())).collect::<Vec<_>>();
+    assert_eq!(names_and_steps(&s.execute("automate.allScripts", json!({})).unwrap()), names_and_steps(&scripts));
     assert_eq!(s.execute("macro.list", json!({})).unwrap().as_array().unwrap().len(), 2);
 }
 
