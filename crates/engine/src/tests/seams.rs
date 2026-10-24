@@ -580,6 +580,31 @@ fn a_command_that_panics_leaves_the_history_as_it_found_it() {
 }
 
 #[test]
+fn a_grouped_action_that_panics_is_rolled_back_before_the_panic_goes_on() {
+    // Outside a command, a caller that catches the panic finds the group rolled back and no
+    // group left open, so Undo is enabled and the next grouped action does not nest.
+    let mut s = s();
+    set(&mut s, "A1", "before");
+    let caught = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        s.grouped::<()>("Doomed", |s| {
+            set(s, "A1", "half done");
+            panic!("inside the group");
+        })
+    }));
+    assert!(caught.is_err(), "the panic goes on to the caller");
+    let uid = s.doc().unwrap().uid;
+    assert!(!s.in_group(uid));
+    assert_eq!(v(&s, "A1").display(), "before");
+    assert_eq!(undo_labels(&s), ["Enter Cell"]);
+    s.grouped("Next", |s| {
+        set(s, "A1", "after");
+        Ok(())
+    })
+    .unwrap();
+    assert_eq!(undo_labels(&s), ["Enter Cell", "Next"]);
+}
+
+#[test]
 fn a_group_ended_by_a_command_that_then_panics_keeps_its_step() {
     // The command takes a token the test left for it, ends or rolls back that group, and panics.
     // The group's token went with the command, so the group stays ended; its step runs from the

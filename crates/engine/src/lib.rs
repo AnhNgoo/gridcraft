@@ -680,19 +680,25 @@ impl Session {
     pub fn grouped<R>(&mut self, label: &str, f: impl FnOnce(&mut Session) -> Result<R>) -> Result<R> {
         let token = self.group_begin(label)?;
         let doc = token.doc();
-        match f(self) {
-            Ok(r) => match self.group_end(token) {
+        // A panic in `f` rolls the group back before it goes on, so a caller that catches it
+        // (outside `execute`, which drops a command's groups itself) finds no group left open.
+        match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| f(self))) {
+            Ok(Ok(r)) => match self.group_end(token) {
                 Ok(_) => Ok(r),
                 // `f` closed the group's document (`file.close`, or `file.open` taking the place of
                 // an untouched new workbook), and the group went with it: nothing is left to undo.
                 Err(_) if !self.docs.iter().any(|d| d.uid == doc) => Ok(r),
                 Err(e) => Err(e),
             },
-            Err(e) => {
+            Ok(Err(e)) => {
                 // The error from `f` is the one to report. A rollback fails only when the group
                 // has already ended, and then there is nothing left to undo.
                 let _ = self.group_rollback(token);
                 Err(e)
+            }
+            Err(panic) => {
+                let _ = self.group_rollback(token);
+                std::panic::resume_unwind(panic)
             }
         }
     }
