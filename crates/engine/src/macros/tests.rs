@@ -55,16 +55,25 @@ fn macros_over_the_limits_are_refused() {
     let flat = |n: usize| json!({"name": "Big", "steps": vec![json!({"command": "cell.set"}); n]});
     assert!(parse_macro(&flat(MAX_MACRO_STEPS)).is_ok());
     assert!(parse_macro(&flat(MAX_MACRO_STEPS + 1)).unwrap_err().contains("10000 steps"));
-    // Nested Repeat steps: 4 levels are fine, 5 are not.
-    let nest = |levels: usize| {
+    // Nested Repeat steps: 4 Repeats one inside the other are fine (the innermost holds a
+    // command, or nothing), a 5th is not.
+    let nest = |repeats: usize| {
         let mut step = json!({"command": "cell.set"});
-        for _ in 1..levels {
+        for _ in 0..repeats {
             step = json!({"type": "repeat", "over": "Input", "body": [step]});
         }
         json!({"name": "Deep", "steps": [step]})
     };
-    assert!(parse_macro(&nest(4)).is_ok());
-    assert!(parse_macro(&nest(5)).unwrap_err().contains("4 deep"));
+    assert!(parse_macro(&nest(MAX_MACRO_DEPTH)).is_ok());
+    assert_eq!(parse_macro(&nest(MAX_MACRO_DEPTH)).unwrap().step_count(), MAX_MACRO_DEPTH + 1);
+    assert!(parse_macro(&nest(MAX_MACRO_DEPTH + 1)).unwrap_err().contains("4 deep"));
+    let mut empty = json!({"type": "repeat", "over": "Input", "body": []});
+    for _ in 1..MAX_MACRO_DEPTH {
+        empty = json!({"type": "if", "cell": "A1", "op": "eq", "value": 1, "then": [empty], "else": []});
+    }
+    let deep = parse_macro(&json!({"name": "Deep", "steps": [empty]})).unwrap();
+    assert_eq!(deep.step_count(), MAX_MACRO_DEPTH);
+    assert!(deep.check_limits().is_ok(), "the model's check agrees with the parser");
     // Far deeper than serde would allow is refused before it is read.
     assert!(parse_macro(&nest(200)).is_err());
     for bad in [
@@ -138,6 +147,90 @@ fn a_visible_name_that_looks_like_macro_storage_is_left_alone() {
     assert!(warnings.is_empty(), "{warnings:?}");
     assert!(wb.macros.is_empty());
     assert_eq!(wb.names, vec![name]);
+}
+
+#[test]
+fn input_names_that_read_as_cell_references_are_refused() {
+    // A recorded step holds plain A1 text; an input called `Q1` would take its place.
+    let with_input = |name: &str| json!({"name": "M", "inputs": [{"name": name}]});
+    for name in ["Q1", "AB12", "Sum1", "a1"] {
+        let err = parse_macro(&with_input(name)).unwrap_err();
+        assert!(err.contains("reads as a cell reference"), "{name}: {err}");
+    }
+    for name in ["Amount", "Q", "Sales_Q1", "Total1a"] {
+        assert!(parse_macro(&with_input(name)).is_ok(), "{name}");
+    }
+    assert!(parse_macro(&with_input("Row")).unwrap_err().contains("token of its own"));
+}
+
+#[test]
+fn a_hidden_macro_name_this_build_did_not_write_is_kept() {
+    // `_gc_macro_index_0` is not a numbered item: it is neither read nor dropped on open, and a
+    // save with macros keeps it beside the items written.
+    let mut wb = Workbook::new();
+    let theirs = hidden("_gc_macro_index_0", "{}");
+    wb.names.push(theirs.clone());
+    wb.macros.push(sample_macro("Totals"));
+    let (raw, _) = gridcraft_xlsx::read_xlsx(&crate::io::save_bytes(&wb, "book.xlsx").unwrap()).unwrap();
+    let names = names_of(&raw);
+    assert!(names.contains(&"_gc_macro_index_0".to_string()) && names.contains(&"_gc_macro_0_0".to_string()), "{names:?}");
+    let (back, warnings) = crate::io::open_bytes("book.xlsx", &crate::io::save_bytes(&wb, "book.xlsx").unwrap()).unwrap();
+    assert!(warnings.is_empty(), "{warnings:?}");
+    assert_eq!(back.macros, wb.macros);
+    assert_eq!(names_of(&back), ["_gc_macro_index_0"]);
+}
+
+#[test]
+fn workbook_snapshots_share_the_macro_list_until_it_changes() {
+    // An undo snapshot or a copy made for a cell edit holds the same list, not a copy of every
+    // step; the undo budget charges a list only once it is a snapshot's own.
+    let mut wb = Workbook::new();
+    wb.macros.push(sample_macro("Totals"));
+    let snapshot = wb.clone();
+    assert!(wb.macros.shares(&snapshot.macros));
+    assert_eq!(crate::history_retained_bytes(&snapshot, &wb), std::mem::size_of::<Workbook>());
+    wb.macros.push(sample_macro("More"));
+    assert!(!wb.macros.shares(&snapshot.macros), "a write copies the list first");
+    assert_eq!(snapshot.macros.len(), 1);
+    assert!(crate::history_retained_bytes(&snapshot, &wb) > std::mem::size_of::<Workbook>());
+    // The copy is per list, not per workbook copy: cloning again shares the new list.
+    let again = wb.clone();
+    assert!(wb.macros.shares(&again.macros));
+    let rebuilt: Macros = wb.macros.iter().cloned().collect();
+    assert_eq!(rebuilt, wb.macros);
+    assert_eq!(rebuilt.into_iter().count(), 2);
+}
+
+#[test]
+fn a_macro_built_in_code_goes_through_the_size_check_too() {
+    // `check` is the one check for every path, so a macro that passes it never makes a save fail.
+    let big = Macro {
+        name: "Big".into(),
+        steps: vec![Step::command("cell.set", json!({"input": "x".repeat(crate::cmd::stash::MAX_ITEM_CHARS)}))],
+        ..Macro::default()
+    };
+    assert!(big.check_limits().is_ok(), "the model's limits say nothing about the size");
+    assert!(check(&big).unwrap_err().contains("too large"));
+    let mut wb = Workbook::new();
+    wb.macros.push(big);
+    assert!(crate::io::save_bytes(&wb, "book.xlsx").is_err(), "a macro that fails `check` fails the save");
+}
+
+#[test]
+fn a_save_refuses_a_clashing_visible_name_before_changing_anything() {
+    let mut wb = Workbook::new();
+    wb.macros.push(sample_macro("A"));
+    wb.macros.push(sample_macro("B"));
+    let own = DefinedName { hidden: false, ..hidden("_GC_MACRO_1_0", "mine") };
+    wb.names.push(own.clone());
+    wb.names.push(hidden("_gc_macro_7_0", "stale"));
+    let err = crate::io::save_bytes(&wb, "book.xlsx").unwrap_err().to_string();
+    assert!(err.contains("_GC_MACRO_1_0"), "{err}");
+    assert_eq!(wb.names.len(), 2, "nothing changed");
+    wb.names.remove(0);
+    let (raw, _) = gridcraft_xlsx::read_xlsx(&crate::io::save_bytes(&wb, "book.xlsx").unwrap()).unwrap();
+    let names = names_of(&raw);
+    assert_eq!(names, ["_gc_macro_0_0", "_gc_macro_1_0"], "the stale item went in the same pass");
 }
 
 #[test]

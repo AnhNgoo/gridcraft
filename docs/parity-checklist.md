@@ -16,8 +16,8 @@ Each entry is an Excel ribbon or menu command (feature names only). It counts as
 | Formulas | 23 | 23 | 100% |
 | Data | 23 | 28 | 82% |
 | Review | 15 | 18 | 83% |
-| View | 21 | 21 | 100% |
-| Automate | 3 | 3 | 100% |
+| View | 20 | 20 | 100% |
+| Automate | 4 | 4 | 100% |
 | Table Design | 13 | 13 | 100% |
 | Chart Design | 8 | 8 | 100% |
 | Format | 3 | 3 | 100% |
@@ -325,13 +325,14 @@ Implemented:
 - `view.macros` Macros (Macros)
 - `macro.record` Record Macro (Macros)
 
-## Automate (3 / 3, 100%)
+## Automate (4 / 4, 100%)
 
 Implemented:
 
 - `automate.newScript` New Script (Scripting Tools)
 - `automate.allScripts` All Scripts (Scripting Tools)
 - `automate.recordActions` Record Actions (Scripting Tools)
+- `automate.trustScripts` Trust Scripts (Scripting Tools)
 
 ## Table Design (13 / 13, 100%)
 
