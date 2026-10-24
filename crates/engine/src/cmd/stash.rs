@@ -215,6 +215,13 @@ pub fn keys(wb: &Workbook, prefix: &str) -> Vec<String> {
     group(wb, prefix).into_iter().filter(|(_, parts)| parts.is_item()).map(|(k, _)| k).take(MAX_ITEMS).collect()
 }
 
+/// Whether the workbook holds an item under `name` (compared without case): a hidden workbook-scope
+/// `_gc_<key>_<k>` name, or a workbook-scope legacy `_sc_<key>` name, which is read whether or not
+/// it is hidden. A visible `_gc_` name is the person's own.
+pub fn holds_item(wb: &Workbook, name: &str) -> bool {
+    wb.names.iter().any(|n| n.name.eq_ignore_ascii_case(name) && item_of(n).is_some())
+}
+
 /// The item a hidden name belongs to, lower-cased: `_gc_<key>_<k>` and `_sc_<key>` give `<key>`.
 pub fn item_key(name: &str) -> Option<String> {
     parse_name(name).map(|(k, _)| k.to_ascii_lowercase())

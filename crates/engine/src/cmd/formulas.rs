@@ -392,7 +392,8 @@ fn rename_name_in_formulas(wb: &mut gridcraft_model::Workbook, old: &str, old_sc
 /// name of an item's shape. A visible name of that shape is the person's own (see `stash`), and
 /// the name commands may change it.
 fn holds_gridcraft_data(wb: &Workbook, name: &str) -> bool {
-    wb.names.iter().any(|n| n.hidden && n.scope.is_none() && n.name.eq_ignore_ascii_case(name) && stash::item_key(&n.name).is_some())
+    // The stash's own rule, so the two never disagree: a legacy `_sc_` item is read visible or not.
+    stash::holds_item(wb, name)
 }
 
 fn refuse_stash_name(wb: &Workbook, p: &Json, name: &str) -> Result<()> {
@@ -787,6 +788,8 @@ mod tests {
         let text = "m".repeat(9_000);
         stash::set(wb, "macro_1", &text).unwrap();
         wb.names.push(DefinedName { name: "_sc_watch".into(), scope: None, formula: "\"[]\"".into(), comment: String::new(), hidden: true });
+        // A legacy item is read whether or not it is hidden, so a visible one is data too.
+        wb.names.push(DefinedName { name: "_sc_old".into(), scope: None, formula: "\"[]\"".into(), comment: String::new(), hidden: false });
         let names = |s: &Session| s.doc().unwrap().wb.names.clone();
         let before = names(&s);
         assert!(before.len() >= 3, "the item takes two chunks");
@@ -795,11 +798,12 @@ mod tests {
             json!({"name": "_SC_Watch", "refersTo": "=1"}),
             json!({"name": "Mine", "refersTo": "=1", "oldName": "_gc_macro_1_1"}),
             json!({"name": "_gc_macro_1_0", "refersTo": "=1", "force": false}),
+            json!({"name": "Mine2", "refersTo": "=1", "oldName": "_SC_old"}),
         ] {
             let err = s.execute("formulas.defineName", params.clone()).unwrap_err().to_string();
             assert!(err.contains("force"), "{params}: {err}");
         }
-        for name in ["_gc_macro_1_1", "_sc_watch"] {
+        for name in ["_gc_macro_1_1", "_sc_watch", "_sc_old"] {
             let err = s.execute("formulas.deleteName", json!({"name": name})).unwrap_err().to_string();
             assert!(err.contains("force"), "{name}: {err}");
         }
