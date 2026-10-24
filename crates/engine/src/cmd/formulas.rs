@@ -32,18 +32,26 @@ pub fn specs() -> Vec<CommandSpec> {
             "Define Name…",
             ["Formulas", "Defined Names"],
             None,
-            "{name, refersTo?: \"=Sheet1!$A$1:$A$10\" (default: the selection), scope?: \"Workbook\"|sheet name, comment?, oldName?, oldScope?} (oldName: edit that name (Name Manager › Edit); a new name also renames it in formulas)",
+            "{name, refersTo?: \"=Sheet1!$A$1:$A$10\" (default: the selection), scope?: \"Workbook\"|sheet name, comment?, oldName?, oldScope?, force?: bool} (oldName: edit that name (Name Manager › Edit); a new name also renames it in formulas; names GridCraft keeps its own data in, `_gc_<key>_<n>` and `_sc_<key>`, are refused unless force is true)",
             has_doc,
             define_name
         ),
-        cmd!("formulas.deleteName", "Delete Name", [], None, "{name, scope?: \"Workbook\"|sheet name (default: every scope)}", has_doc, delete_name),
+        cmd!(
+            "formulas.deleteName",
+            "Delete Name",
+            [],
+            None,
+            "{name, scope?: \"Workbook\"|sheet name (default: every scope), force?: bool} (names GridCraft keeps its own data in, `_gc_<key>_<n>` and `_sc_<key>`, are refused unless force is true)",
+            has_doc,
+            delete_name
+        ),
         cmd!(query "formulas.nameManager", "Name Manager", ["Formulas", "Defined Names"], Some("Cmd+F3"), "{} → names with values", has_doc, name_manager),
         cmd!(
             "formulas.createFromSelection",
             "Create from Selection",
             ["Formulas", "Defined Names"],
             Some("Cmd+Shift+F3"),
-            "{range?, top?: true, left?: false, bottom?: false, right?: false, replace?: false (existing names are kept and listed in `skipped`)}",
+            "{range?, top?: true, left?: false, bottom?: false, right?: false, replace?: false (existing names are kept and listed in `skipped`), force?: false (labels of the shape GridCraft keeps its own data in, `_gc_<key>_<n>` and `_sc_<key>`, are listed in `skipped` unless force is true)}",
             has_doc,
             create_from_selection
         ),
@@ -268,6 +276,9 @@ fn define_name(s: &mut Session, p: &Json) -> Result<Json> {
     if !valid_name(&name) {
         return Err(EngineError::Other("The name that you entered is not valid.".into()));
     }
+    for n in [Some(name.as_str()), str_param(p, "oldName")].into_iter().flatten() {
+        refuse_stash_name(p, n)?;
+    }
     let d = s.doc()?;
     let scope = match str_param(p, "scope") {
         None | Some("Workbook") => None,
@@ -374,8 +385,21 @@ fn rename_name_in_formulas(wb: &mut gridcraft_model::Workbook, old: &str, old_sc
     }
 }
 
+/// Refuses a name of the shape GridCraft keeps its own workbook data in ([`super::stash`]):
+/// defining, renaming or deleting one would replace or remove part of an item (a stored macro,
+/// script or view) and leave the rest behind. `force: true` lets the call go ahead.
+fn refuse_stash_name(p: &Json, name: &str) -> Result<()> {
+    if stash::item_key(name).is_some() && !bool_param(p, "force").unwrap_or(false) {
+        return Err(EngineError::Other(format!(
+            "'{name}' is a name GridCraft keeps its own data in (stored macros, scripts or views). Pass `force: true` to change it anyway."
+        )));
+    }
+    Ok(())
+}
+
 fn delete_name(s: &mut Session, p: &Json) -> Result<Json> {
     let name = str_param(p, "name").ok_or_else(|| bad("formulas.deleteName", "missing `name`"))?.to_string();
+    refuse_stash_name(p, &name)?;
     let scope = match str_param(p, "scope") {
         None => None,
         Some("Workbook") => Some(None),
@@ -461,7 +485,11 @@ fn create_from_selection(s: &mut Session, p: &Json) -> Result<Json> {
     // Excel asks before replacing an existing name; here it's kept unless `replace` is set, and
     // reported.
     let exists = |n: &str| d.wb.names.iter().any(|x| x.name.eq_ignore_ascii_case(n) && x.scope.is_none());
-    let (made, skipped): (Vec<_>, Vec<_>) = made.into_iter().partition(|(n, _)| replace || !exists(n));
+    // A label of the shape GridCraft keeps its own data in would replace part of an item, or
+    // stand in the way of one (see `refuse_stash_name`).
+    let force = bool_param(p, "force").unwrap_or(false);
+    let ours = |n: &str| !force && stash::item_key(n).is_some();
+    let (made, skipped): (Vec<_>, Vec<_>) = made.into_iter().partition(|(n, _)| !ours(n) && (replace || !exists(n)));
     let skipped: Vec<String> = skipped.into_iter().map(|(n, _)| n).collect();
     let n = made.len();
     edit(s, |cx| {
@@ -740,6 +768,45 @@ mod tests {
         // Absolute references are kept as they are.
         let r = s.execute("formulas.defineName", json!({"name": "First", "refersTo": "=Sheet1!$A$1"})).unwrap();
         assert_eq!(r["refersTo"], "=Sheet1!$A$1");
+    }
+
+    #[test]
+    fn the_name_commands_leave_gridcraft_data_alone() {
+        // Defining, renaming or deleting a name of a stored item's shape would replace or remove
+        // one of its chunks and leave the rest behind: refused unless `force` is true.
+        let mut s = Session::new();
+        s.new_workbook();
+        let wb = std::sync::Arc::make_mut(&mut s.doc_mut().unwrap().wb);
+        let text = "m".repeat(9_000);
+        stash::set(wb, "macro_1", &text).unwrap();
+        wb.names.push(DefinedName { name: "_sc_watch".into(), scope: None, formula: "\"[]\"".into(), comment: String::new(), hidden: true });
+        let names = |s: &Session| s.doc().unwrap().wb.names.clone();
+        let before = names(&s);
+        assert!(before.len() >= 3, "the item takes two chunks");
+        for params in [
+            json!({"name": "_gc_macro_1_0", "refersTo": "=1"}),
+            json!({"name": "_SC_Watch", "refersTo": "=1"}),
+            json!({"name": "Mine", "refersTo": "=1", "oldName": "_gc_macro_1_1"}),
+            json!({"name": "_gc_macro_1_0", "refersTo": "=1", "force": false}),
+        ] {
+            let err = s.execute("formulas.defineName", params.clone()).unwrap_err().to_string();
+            assert!(err.contains("force"), "{params}: {err}");
+        }
+        for name in ["_gc_macro_1_1", "_sc_watch"] {
+            let err = s.execute("formulas.deleteName", json!({"name": name})).unwrap_err().to_string();
+            assert!(err.contains("force"), "{name}: {err}");
+        }
+        s.execute("range.setValues", json!({"range": "A1:B2", "values": [["_gc_macro_1_0", "Rate"], [1, 2]]})).unwrap();
+        let r = s.execute("formulas.createFromSelection", json!({"range": "A1:B2", "top": true, "replace": true})).unwrap();
+        assert_eq!((r["created"].clone(), r["skipped"].clone()), (json!(1), json!(["_gc_macro_1_0"])));
+        let after = names(&s);
+        assert_eq!(after.iter().filter(|n| n.name != "Rate").cloned().collect::<Vec<_>>(), before);
+        assert_eq!(stash::get(&s.doc().unwrap().wb, "macro_1").as_deref(), Some(text.as_str()));
+        // Ordinary names and forced calls go ahead.
+        s.execute("formulas.deleteName", json!({"name": "Rate"})).unwrap();
+        s.execute("formulas.defineName", json!({"name": "_gc_macro_1_1", "refersTo": "=1", "force": true})).unwrap();
+        s.execute("formulas.deleteName", json!({"name": "_gc_macro_1_1", "force": true})).unwrap();
+        assert!(!names(&s).iter().any(|n| n.name == "_gc_macro_1_1"));
     }
 
     #[test]

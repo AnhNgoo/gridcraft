@@ -85,6 +85,8 @@ Actions made of many commands (macros, a debugger that runs one step per call) u
   U+FDD0 and four hex digits, as is U+FDD0 itself, and read back as they were. `stash::items`
   and `stash::keys` list the items under a key prefix in one pass over the names, at most
   10,000 of them (`stash::MAX_ITEMS`). The older single-name `_sc_<key>` items are read as well.
+  `formulas.defineName` and `formulas.deleteName` refuse names of either shape, and
+  `formulas.createFromSelection` skips labels of either shape, unless `force: true` is passed.
 
 ## Agent control
 
