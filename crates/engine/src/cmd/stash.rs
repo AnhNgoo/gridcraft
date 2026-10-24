@@ -130,8 +130,10 @@ fn item_of(n: &DefinedName) -> Option<(&str, Option<u64>)> {
 fn parse_name(name: &str) -> Option<(&str, Option<u64>)> {
     if let Some(rest) = strip_prefix_ci(name, PREFIX) {
         let (key, k) = rest.rsplit_once('_')?;
-        let all_digits = !k.is_empty() && k.len() <= 9 && k.bytes().all(|b| b.is_ascii_digit());
-        if key.is_empty() || !all_digits {
+        // Only the chunk number as `set` writes it: `_gc_watch_00` is someone else's name, not
+        // chunk 0 under another spelling, so it is neither read nor in the way of `_gc_watch_0`.
+        let canonical = !k.is_empty() && k.len() <= 9 && k.bytes().all(|b| b.is_ascii_digit()) && (k == "0" || !k.starts_with('0'));
+        if key.is_empty() || !canonical {
             return None;
         }
         return k.parse().ok().map(|i| (key, Some(i)));
@@ -356,6 +358,23 @@ mod tests {
         remove(&mut wb, "watch");
         remove(&mut wb, "other");
         assert_eq!(wb.names, vec![own]);
+    }
+
+    #[test]
+    fn a_chunk_number_with_leading_zeros_is_another_name() {
+        // `_gc_watch_00` is not chunk 0 under another spelling: a hidden one is not read, and a
+        // visible one is not in the way of writing `_gc_watch_0`.
+        let mut wb = Workbook::new();
+        wb.names.push(name("_gc_watch_00", "\"theirs\""));
+        assert_eq!(get(&wb, "watch"), None);
+        assert!(keys(&wb, "").is_empty());
+        let own = DefinedName { hidden: false, ..name("_gc_watch_00", "\"mine\"") };
+        wb.names.push(own.clone());
+        set(&mut wb, "watch", "ours").unwrap();
+        assert_eq!(get(&wb, "watch").as_deref(), Some("ours"));
+        assert_eq!(wb.names.len(), 3, "both other names stay");
+        remove(&mut wb, "watch");
+        assert_eq!(wb.names, vec![name("_gc_watch_00", "\"theirs\""), own]);
     }
 
     #[test]
