@@ -563,6 +563,20 @@ fn a_command_that_panics_leaves_the_history_as_it_found_it() {
     assert_eq!(s.doc().unwrap().redo.len(), 1, "the redo history is back");
     s.execute("edit.redo", json!({})).unwrap();
     assert_eq!(v(&s, "A1").display(), "2");
+
+    // A command that undoes through a nested command and then panics: the entry Undo removed
+    // comes back, and the redo entry it made goes.
+    crate::cmd::register_undoable_test_command("test.undoThenPanic", |s, _| {
+        s.execute("edit.undo", json!({}))?;
+        panic!("after an undo");
+    });
+    assert_eq!((undo_labels(&s).len(), s.doc().unwrap().redo.len()), (2, 0));
+    assert!(s.execute("test.undoThenPanic", json!({})).is_err());
+    assert_eq!(v(&s, "A1").display(), "2", "the workbook is restored");
+    assert_eq!(undo_labels(&s), ["Enter Cell", "Enter Cell"], "the undone step is back");
+    assert_eq!(s.doc().unwrap().redo.len(), 0);
+    s.execute("edit.undo", json!({})).unwrap();
+    assert_eq!(v(&s, "A1").display(), "1");
 }
 
 // ---------------------------------------------------------------- recording buffer
