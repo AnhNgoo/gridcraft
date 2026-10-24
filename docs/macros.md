@@ -281,7 +281,8 @@ other macros open; a macro that was left out is not in the saved file.
   Run runs the selected macro on the selection or the selected script; Step Into, Edit and Create
   open the step editor; Delete asks first; Options sets a macro's shortcut letter and description. The dialog keeps the result of `view.macros`,
   as before macros existed.
-- **Step editor.** A resizable window that works on a draft and saves it with `macro.save`. The
+- **Step editor.** A resizable window that works on a draft and saves it with `macro.save`; in a
+  narrow app window it is no larger than the window and its toolbar wraps onto a second row. The
   step list shows each step's number, a breakpoint dot in the gutter (click to set or clear), a
   category icon, a summary, an error marker and an enabled checkbox; Repeat bodies and If branches
   are indented under their step, and rows drag to reorder within their list. Add Step opens a

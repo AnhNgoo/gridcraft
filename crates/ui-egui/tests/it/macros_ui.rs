@@ -283,3 +283,34 @@ fn the_macros_dialog_offers_trust_for_scripts_that_came_with_a_file() {
     h.run_steps(3);
     assert_eq!(value(&h, "D4"), Value::Text("script".into()));
 }
+
+#[test]
+fn the_macros_and_record_macro_dialogs_fit_a_narrow_window() {
+    for size in [egui::vec2(600.0, 480.0), egui::vec2(480.0, 400.0)] {
+        let mut s = Session::new();
+        s.new_workbook();
+        s.execute("macro.save", json!({"name": "Tidy", "steps": []})).unwrap();
+        let app = SheetApp::new(s, Default::default());
+        let mut h = egui_kittest::Harness::builder().with_size(size).build_ui_state(
+            |ui, app: &mut SheetApp| {
+                let ctx = ui.ctx().clone();
+                app.logic(&ctx);
+                app.ui(ui);
+            },
+            app,
+        );
+        h.run_steps(3);
+        let screen = egui::Rect::from_min_size(egui::Pos2::ZERO, size);
+        for (dialog, labels) in [("macros", &["Run", "Delete", "Options…", "Cancel"][..]), ("recordMacro", &["OK", "Cancel"][..])] {
+            h.state_mut().open_dialog(dialog, json!({}));
+            h.run_steps(4);
+            for label in labels {
+                // The dialog's own button: the last one drawn (the ribbon has a Delete too).
+                let r = h.get_all_by_label(label).last().map(|n| n.rect()).unwrap_or(egui::Rect::NOTHING);
+                assert!(screen.contains_rect(r), "{dialog}: {label} at {r:?} is outside the {size:?} window");
+            }
+            h.state_mut().dialog = None;
+            h.run_steps(2);
+        }
+    }
+}

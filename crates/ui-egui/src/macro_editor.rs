@@ -790,14 +790,16 @@ pub fn window(app: &mut SheetApp, ctx: &egui::Context, d: &mut Dialog, open: &mu
     let home_title = home_title(app, &ed);
     let dirty_mark = if ed.dirty { " •" } else { "" };
     let screen = ctx.content_rect();
+    let fit = (screen.size() - vec2(16.0, 16.0)).max(vec2(240.0, 200.0));
     let mut win_open = true;
     ed.refs.drawn = false;
     egui::Window::new(format!("Macro: {}{dirty_mark}", ed.draft.name))
         .id(Id::new("gridcraft.macro_editor"))
         .collapsible(false)
         .resizable(true)
-        .default_size(vec2(840.0, 560.0))
-        .min_size(vec2(660.0, 380.0))
+        // Never larger than the app's window, so a narrow one keeps every control on screen.
+        .default_size(vec2(840.0, 560.0).min(fit))
+        .min_size(vec2(660.0, 380.0).min(fit))
         // To the right, so the data the overlays mark (usually top left) stays in view.
         .default_pos(pos2((screen.right() - 860.0).max(screen.left() + 20.0), screen.top() + 190.0))
         .open(&mut win_open)
@@ -1034,8 +1036,8 @@ fn prompts(app: &mut SheetApp, ctx: &egui::Context, ed: &mut Editor, open: &mut 
 fn body(app: &mut SheetApp, ui: &mut Ui, d: &mut Dialog, ed: &mut Editor) {
     let t = Tokens::get(ui.ctx());
     let debugging = app.session.macro_debug.is_some();
-    // Name, description, Save.
-    ui.horizontal(|ui| {
+    // Name, description, Save; they wrap in a narrow window.
+    ui.horizontal_wrapped(|ui| {
         ui.label("Name:");
         let name = ui.add_enabled(!debugging, egui::TextEdit::singleline(&mut ed.draft.name).desired_width(180.0).id_salt("me_name"));
         ui.label("Description:");
@@ -1055,7 +1057,8 @@ fn body(app: &mut SheetApp, ui: &mut Ui, d: &mut Dialog, ed: &mut Editor) {
     status_line(app, ui, ed, &t);
     ui.separator();
     let avail = ui.available_size();
-    let left_w = (avail.x * 0.52).max(300.0);
+    // The step list takes about half; in a narrow window the inspector keeps room for its tabs.
+    let left_w = (avail.x * 0.52).max(300.0).min((avail.x - 190.0).max(160.0));
     ui.horizontal_top(|ui| {
         ui.allocate_ui_with_layout(vec2(left_w, avail.y), egui::Layout::top_down(egui::Align::Min), |ui| {
             ui.set_min_size(vec2(left_w, avail.y));
@@ -1067,7 +1070,7 @@ fn body(app: &mut SheetApp, ui: &mut Ui, d: &mut Dialog, ed: &mut Editor) {
         });
         ui.separator();
         ui.allocate_ui_with_layout(vec2(ui.available_width(), avail.y), egui::Layout::top_down(egui::Align::Min), |ui| {
-            egui::ScrollArea::vertical().id_salt("me_inspector").auto_shrink([false, false]).show(ui, |ui| {
+            egui::ScrollArea::both().id_salt("me_inspector").auto_shrink([false, false]).show(ui, |ui| {
                 inspector(app, ui, d, ed, debugging);
             });
         });
@@ -1076,34 +1079,33 @@ fn body(app: &mut SheetApp, ui: &mut Ui, d: &mut Dialog, ed: &mut Editor) {
 
 fn toolbar(app: &mut SheetApp, ui: &mut Ui, ed: &mut Editor, debugging: bool) {
     let t = Tokens::get(ui.ctx());
-    ui.horizontal(|ui| {
+    // The buttons wrap onto a second row in a narrow window.
+    ui.horizontal_wrapped(|ui| {
         ui.spacing_mut().item_spacing.x = 2.0;
         let editing = !debugging;
-        if ui.add_enabled_ui(editing, |ui| small_button(ui, Icon::Plus, "Add Step", "Add a step after the selected one", false)).inner.clicked() {
+        if ui.add_enabled(editing, |ui: &mut Ui| small_button(ui, Icon::Plus, "Add Step", "Add a step after the selected one", false)).clicked() {
             ed.picker = Some(Picker::default());
         }
         let has_step = ed.selected.as_deref().and_then(split_path).is_some();
         if ui
-            .add_enabled_ui(editing && has_step, |ui| small_button(ui, Icon::Copy, "Duplicate", "Duplicate the selected step", false))
-            .inner
+            .add_enabled(editing && has_step, |ui: &mut Ui| small_button(ui, Icon::Copy, "Duplicate", "Duplicate the selected step", false))
             .clicked()
         {
             duplicate(ed);
         }
-        if ui.add_enabled_ui(editing && has_step, |ui| small_button(ui, Icon::Delete, "Delete", "Delete the selected step", false)).inner.clicked() {
+        if ui.add_enabled(editing && has_step, |ui: &mut Ui| small_button(ui, Icon::Delete, "Delete", "Delete the selected step", false)).clicked() {
             delete(ed);
         }
         sep(ui, &t);
         if ui
-            .add_enabled_ui(editing, |ui| {
+            .add_enabled(editing, |ui: &mut Ui| {
                 small_button(ui, Icon::Check, "Check", "Check the inputs and show on the grid what the macro would change", false)
             })
-            .inner
             .clicked()
         {
             check(app, ed);
         }
-        if ui.add_enabled_ui(editing, |ui| small_button(ui, Icon::Play, "Run", "Run the macro as one undo step", false)).inner.clicked() {
+        if ui.add_enabled(editing, |ui: &mut Ui| small_button(ui, Icon::Play, "Run", "Run the macro as one undo step", false)).clicked() {
             run(app, ed);
         }
         sep(ui, &t);
@@ -1116,10 +1118,10 @@ fn toolbar(app: &mut SheetApp, ui: &mut Ui, ed: &mut Editor, debugging: bool) {
             debug_action(app, ed, "continue");
         }
         let can_run_to = ed.selected.as_deref().and_then(split_path).is_some();
-        if ui.add_enabled_ui(can_run_to, |ui| small_button(ui, Icon::RunTo, "Run to Here", "Run until the selected step", false)).inner.clicked() {
+        if ui.add_enabled(can_run_to, |ui: &mut Ui| small_button(ui, Icon::RunTo, "Run to Here", "Run until the selected step", false)).clicked() {
             debug_action(app, ed, "runTo");
         }
-        if ui.add_enabled_ui(debugging, |ui| small_button(ui, Icon::StopSquare, "Stop", "Stop debugging", false)).inner.clicked() {
+        if ui.add_enabled(debugging, |ui: &mut Ui| small_button(ui, Icon::StopSquare, "Stop", "Stop debugging", false)).clicked() {
             ed.ask_stop = true;
         }
     });
@@ -1486,7 +1488,7 @@ fn picker(ui: &mut Ui, ed: &mut Editor) {
 // ---------------------------------------------------------------- the inspector
 
 fn inspector(app: &mut SheetApp, ui: &mut Ui, d: &mut Dialog, ed: &mut Editor, debugging: bool) {
-    ui.horizontal(|ui| {
+    ui.horizontal_wrapped(|ui| {
         for (tab, label) in [(Tab::Step, "Details"), (Tab::Inputs, "Inputs"), (Tab::Output, "Output")] {
             if ui.selectable_label(ed.tab == tab, label).clicked() {
                 ed.tab = tab;

@@ -502,3 +502,31 @@ fn the_control_channels_cancel_closes_the_editor_as_its_own_close_does() {
     assert!(h.state().macros.editor.is_none());
     assert!(h.state().grid.macro_overlay.is_none());
 }
+
+#[test]
+fn the_editor_fits_a_narrow_window() {
+    for size in [egui::vec2(600.0, 480.0), egui::vec2(480.0, 400.0)] {
+        let mut session = Session::new();
+        session.new_workbook();
+        let app = SheetApp::new(session, Default::default());
+        let mut h = egui_kittest::Harness::builder().with_size(size).build_ui_state(
+            |ui, app: &mut SheetApp| {
+                let ctx = ui.ctx().clone();
+                app.logic(&ctx);
+                app.ui(ui);
+            },
+            app,
+        );
+        h.run_steps(4);
+        three(&mut h);
+        h.run_steps(4);
+        let screen = egui::Rect::from_min_size(egui::Pos2::ZERO, size);
+        let window = h.get_by_label_contains("Macro: Three").rect();
+        assert!(screen.contains_rect(window), "the editor at {window:?} is outside the {size:?} window");
+        // The editor's own controls (Delete is left out: the ribbon has one too).
+        for label in ["Add Step", "Duplicate", "Check", "Run", "Step", "Continue", "Run to Here", "Stop", "Details", "Inputs", "Output", "Save"] {
+            let r = h.get_by_label(label).rect();
+            assert!(screen.contains_rect(r), "{label} at {r:?} is outside the {size:?} window");
+        }
+    }
+}
