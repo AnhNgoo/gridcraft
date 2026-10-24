@@ -838,6 +838,26 @@ pub fn window(app: &mut SheetApp, ctx: &egui::Context, d: &mut Dialog, open: &mu
     }
 }
 
+/// Closes the step editor at once for a caller outside its window (the control channel's
+/// `ui.dialog.cancel`), with the cleanup its own close does. Refused while it holds a debug run
+/// or unsaved steps, which only its window asks about.
+pub fn close_now(app: &mut SheetApp) -> Result<(), String> {
+    if app.session.macro_debug.is_some() {
+        return Err("A macro is being debugged: stop it first (macro.debug {\"action\": \"stop\"}).".into());
+    }
+    if app.macros.editor.as_ref().is_some_and(|ed| ed.dirty) {
+        return Err("The macro step editor has unsaved steps: save them or close the editor in its window.".into());
+    }
+    if let Some(ed) = app.macros.editor.take()
+        && app.session.active().is_some_and(|d| d.uid == ed.doc)
+    {
+        restore_home(app, &ed.refs);
+    }
+    app.grid.macro_overlay = None;
+    app.dialog = None;
+    Ok(())
+}
+
 // ---------------------------------------------------------------- reference boxes
 
 /// A range as an absolute reference: `$B$2:$D$9`.

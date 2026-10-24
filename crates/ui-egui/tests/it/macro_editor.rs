@@ -402,3 +402,30 @@ fn the_editor_works_only_on_the_workbook_it_opened_in() {
     assert!(h.state().macros.editor.is_none());
     assert!(h.state().dialog.as_ref().is_none_or(|d| d.name() != "macroEditor"));
 }
+
+#[test]
+fn the_control_channels_cancel_closes_the_editor_as_its_own_close_does() {
+    let mut h = harness();
+    three(&mut h);
+    let ctx = h.ctx.clone();
+    let reply = |o: gridcraft_ui_egui::control::Outcome| match o {
+        gridcraft_ui_egui::control::Outcome::Done(v) => v,
+        _ => json!(null),
+    };
+    // Unsaved steps are only the editor's to ask about: cancel is refused and keeps them.
+    h.state_mut().macros.editor.as_mut().unwrap().dirty = true;
+    let r = reply(gridcraft_ui_egui::control::handle(h.state_mut(), &ctx, "ui.dialog.cancel", &json!({})));
+    assert!(r.get("error").is_some(), "{r}");
+    assert!(h.state().macros.editor.is_some());
+    // A saved editor closes, and takes its overlays with it.
+    h.state_mut().macros.editor.as_mut().unwrap().dirty = false;
+    h.get_by_label("Check").click();
+    h.run_steps(3);
+    assert!(h.state().grid.macro_overlay.is_some());
+    let r = reply(gridcraft_ui_egui::control::handle(h.state_mut(), &ctx, "ui.dialog.cancel", &json!({})));
+    assert!(r.get("error").is_none(), "{r}");
+    h.run_steps(2);
+    assert!(h.state().dialog.is_none());
+    assert!(h.state().macros.editor.is_none());
+    assert!(h.state().grid.macro_overlay.is_none());
+}
