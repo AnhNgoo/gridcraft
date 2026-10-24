@@ -772,6 +772,10 @@ pub struct Footprint {
     /// Steps executed by the end of the dry run that made this footprint (the run's one budget).
     #[serde(skip)]
     pub executed: u64,
+    /// The dry run wrote more cells than the touch log keeps, so writes that kept a cell's value
+    /// may be missing from `cells`: a shift cannot trust the block.
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub log_full: bool,
     pub sheets: Vec<SheetFootprint>,
     pub sheets_added: Vec<String>,
     pub sheets_removed: Vec<String>,
@@ -946,6 +950,7 @@ pub fn footprint(s: &mut Session, p: &Prepared, clock: Stopwatch, time_limit_ms:
     rolled?;
     let (after, touched) = if matches!(m.stopped, Some((_, true))) { (before.clone(), Vec::new()) } else { (after, touched) };
     let mut fp = diff(&before, &after, &p.inputs, &touched);
+    fp.log_full = touched.len() >= crate::cmd::TOUCH_LOG_LIMIT;
     fp.executed = m.executed;
     fp.error = outcome.err();
     fp.stopped = m.stopped.map(|(msg, _)| msg);
@@ -1093,6 +1098,9 @@ pub(crate) fn ranges(cells: &mut [CellRef]) -> Vec<String> {
 fn make_room(s: &mut Session, fp: &Footprint, p: &Prepared, down: bool) -> Result<()> {
     if !fp.sheets_removed.is_empty() || fp.objects_removed > 0 {
         return Err(EngineError::Other("Shifting can't make room: the macro deletes sheets or objects.".into()));
+    }
+    if fp.log_full {
+        return Err(EngineError::Other("Shifting can't make room: the macro writes more cells than the footprint can follow.".into()));
     }
     let wb = s.doc()?.wb.clone();
     let env = Env { wb: &wb, active_sheet: usize::MAX, inputs: &[], output: None, item: None };

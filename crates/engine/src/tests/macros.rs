@@ -286,6 +286,28 @@ fn a_shift_that_would_move_an_input_is_refused() {
 }
 
 #[test]
+fn a_shift_is_refused_when_the_footprint_cannot_follow_every_write() {
+    // The touch log keeps at most a million writes; past that, a write that kept a cell's value
+    // is missing from the footprint, so a shift could split a row the macro writes. The footprint
+    // says so and the shift is refused (overwrite, with no dry run, still runs).
+    let mut s = s();
+    set(&mut s, "A1", "x");
+    set(&mut s, "E2", "old");
+    put(
+        &mut s,
+        json!({"name": "Flood", "steps": [
+            {"command": "edit.fillDown", "params": {"range": "A1:A1000001"}},
+            {"command": "cell.set", "params": {"cell": "E2", "input": "new"}}
+        ]}),
+    );
+    let c = s.execute("macro.check", json!({"name": "Flood"})).unwrap();
+    assert_eq!(c["footprint"]["logFull"], true, "{c}");
+    let err = s.execute("macro.run", json!({"name": "Flood", "onConflict": "shiftDown"})).unwrap_err().to_string();
+    assert!(err.contains("more cells than the footprint can follow"), "{err}");
+    assert_eq!(v(&s, "E2").display(), "old", "nothing changed");
+}
+
+#[test]
 fn a_dry_run_leaves_a_clean_workbook_clean() {
     // `view.zoom` and `sheet.activate` move the saved mark to the current workbook on a clean
     // document; the dry run's rollback puts the workbook back, so the mark must come back too.
