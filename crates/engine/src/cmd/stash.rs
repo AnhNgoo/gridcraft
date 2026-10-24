@@ -103,7 +103,8 @@ pub fn keys(wb: &Workbook, prefix: &str) -> Vec<String> {
     let mut keys: Vec<String> = wb
         .names
         .iter()
-        .filter_map(|n| item_of(n).map(|(k, _)| k.to_ascii_lowercase()))
+        // A later chunk on its own is no item, as `get` reads it.
+        .filter_map(|n| item_of(n).filter(|(_, chunk)| chunk.is_none_or(|i| i == 0)).map(|(k, _)| k.to_ascii_lowercase()))
         .filter(|k| k.starts_with(&prefix.to_ascii_lowercase()))
         .collect();
     keys.sort();
@@ -294,11 +295,13 @@ mod tests {
         wb.names.push(name("_gc_gap_0", "\"a\""));
         wb.names.push(name("_gc_gap_2", "\"c\""));
         assert_eq!(get(&wb, "gap").as_deref(), Some("a"));
-        // Only a later chunk: no item, and the legacy name is still read.
+        // Only a later chunk: no item, not listed, and the legacy name is still read.
         wb.names.push(name("_gc_orphan_2", "\"c\""));
         assert_eq!(get(&wb, "orphan"), None);
+        assert_eq!(keys(&wb, "orphan"), Vec::<String>::new());
         wb.names.push(name("_sc_orphan", "\"old\""));
         assert_eq!(get(&wb, "orphan").as_deref(), Some("old"));
+        assert_eq!(keys(&wb, "orphan"), ["orphan"]);
         // Chunks out of order, a duplicate, junk around the literals, an unterminated literal.
         wb.names.push(name("_gc_mix_1", "\"b\"&A1&"));
         wb.names.push(name("_gc_mix_0", "SUM(\"a\")"));
