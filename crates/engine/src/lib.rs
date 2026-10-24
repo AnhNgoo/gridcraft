@@ -536,6 +536,13 @@ impl Session {
         // made or undid, and the redo history they cleared, come back. A length is not enough,
         // because a nested `edit.undo` removes entries.
         let history_before = before.as_ref().and_then(|(uid, ..)| self.docs.iter().find(|d| d.uid == *uid).map(|d| (d.undo.clone(), d.redo.clone())));
+        // The groups open on the document before the command (usually none), for the same reason.
+        let groups_before: Vec<(u64, String, Arc<Workbook>, Selection)> = match &before {
+            Some((uid, ..)) => {
+                self.groups.iter().filter(|g| g.doc == *uid).map(|g| (g.id, g.label.clone(), g.wb.clone(), g.selection.clone())).collect()
+            }
+            None => Vec::new(),
+        };
         // The recorder keeps top-level calls with the place they ran in.
         let place = (self.depth == 0 && self.recorder.is_some()).then(|| match self.active() {
             Some(d) => (d.uid, d.wb.active_sheet, d.wb.active().map(|sh| sh.name.clone()).unwrap_or_default(), d.selection.clone()),
@@ -558,6 +565,7 @@ impl Session {
                 // Restore the workbook and its history as they were, and drop the undo groups the
                 // command opened.
                 self.groups.retain(|g| g.id < first_group);
+                let group_open = before.as_ref().is_some_and(|(uid, ..)| self.groups.iter().any(|g| g.doc == *uid));
                 if let Some((uid, wb, sel)) = &before
                     && let Some(d) = self.docs.iter_mut().find(|d| d.uid == *uid)
                 {
@@ -566,6 +574,16 @@ impl Session {
                     if let Some((undo, redo)) = history_before {
                         d.undo = undo;
                         d.redo = redo;
+                    }
+                    // A group open before the command and ended or rolled back inside it stays
+                    // ended (its token went with the command), and keeps a step from its start to
+                    // the restored workbook, so Undo still returns to the state before the group.
+                    if !group_open
+                        && let Some((_, label, wb, selection)) = groups_before.into_iter().min_by_key(|g| g.0)
+                        && !Arc::ptr_eq(&wb, &d.wb)
+                    {
+                        push_entry(&mut d.undo, label, wb, &d.wb, selection);
+                        d.redo.clear();
                     }
                     d.calc.rebuild(&d.wb);
                 }

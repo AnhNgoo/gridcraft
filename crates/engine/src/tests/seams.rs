@@ -579,6 +579,45 @@ fn a_command_that_panics_leaves_the_history_as_it_found_it() {
     assert_eq!(v(&s, "A1").display(), "1");
 }
 
+#[test]
+fn a_group_ended_by_a_command_that_then_panics_keeps_its_step() {
+    // The command takes a token the test left for it, ends or rolls back that group, and panics.
+    // The group's token went with the command, so the group stays ended; its step runs from the
+    // group's start to the restored workbook, so Undo still returns to the state before the group.
+    static TOKEN: std::sync::Mutex<Option<crate::GroupToken>> = std::sync::Mutex::new(None);
+    crate::cmd::register_undoable_test_command("test.endGroupThenPanic", |s, _| {
+        let token = TOKEN.lock().map_err(|_| EngineError::Other("lock".into()))?.take();
+        if let Some(token) = token {
+            s.group_end(token)?;
+        }
+        panic!("after ending a group");
+    });
+    crate::cmd::register_undoable_test_command("test.rollBackGroupThenPanic", |s, _| {
+        let token = TOKEN.lock().map_err(|_| EngineError::Other("lock".into()))?.take();
+        if let Some(token) = token {
+            s.group_rollback(token)?;
+        }
+        panic!("after rolling back a group");
+    });
+    for cmd in ["test.endGroupThenPanic", "test.rollBackGroupThenPanic"] {
+        let mut s = s();
+        set(&mut s, "A1", "before");
+        let token = s.group_begin("Outer").unwrap();
+        set(&mut s, "A1", "inside");
+        set(&mut s, "A2", "inside too");
+        *TOKEN.lock().unwrap() = Some(token);
+        assert!(s.execute(cmd, json!({})).is_err());
+        let uid = s.doc().unwrap().uid;
+        assert!(!s.in_group(uid), "{cmd}: the group stays ended");
+        assert_eq!(undo_labels(&s), ["Enter Cell", "Outer"], "{cmd}");
+        assert_eq!(v(&s, "A1").display(), "inside", "{cmd}: the workbook is as the command found it");
+        s.execute("edit.undo", json!({})).unwrap();
+        assert_eq!((v(&s, "A1").display(), v(&s, "A2").display()), ("before".into(), String::new()), "{cmd}");
+        s.execute("edit.redo", json!({})).unwrap();
+        assert_eq!(v(&s, "A2").display(), "inside too", "{cmd}");
+    }
+}
+
 // ---------------------------------------------------------------- recording buffer
 
 fn recorded_ids(s: &Session) -> Vec<String> {
