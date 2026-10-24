@@ -102,15 +102,22 @@ pub fn get(wb: &Workbook, key: &str) -> Option<String> {
     assemble(&parts)
 }
 
+/// What a listing found: the first [`MAX_ITEMS`] items or keys, and how many more there were.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct Listing<T> {
+    pub found: T,
+    /// Items past the cap, not listed. A caller says so rather than letting them vanish.
+    pub more: usize,
+}
+
 /// The items whose key starts with `prefix` (`"macro_"`), by lower-cased key, read in one pass
-/// over the names: the first [`MAX_ITEMS`] of [`keys`], without those over the size limit.
-pub fn items(wb: &Workbook, prefix: &str) -> BTreeMap<String, String> {
-    group(wb, prefix)
-        .into_iter()
-        .filter(|(_, parts)| parts.is_item())
-        .take(MAX_ITEMS)
-        .filter_map(|(k, parts)| assemble(&parts).map(|text| (k, text)))
-        .collect()
+/// over the names: the first [`MAX_ITEMS`] of [`keys`], without those over the size limit, and
+/// the count of the rest.
+pub fn items(wb: &Workbook, prefix: &str) -> Listing<BTreeMap<String, String>> {
+    let all: Vec<(String, Parts)> = group(wb, prefix).into_iter().filter(|(_, parts)| parts.is_item()).collect();
+    let more = all.len().saturating_sub(MAX_ITEMS);
+    let found = all.into_iter().take(MAX_ITEMS).filter_map(|(k, parts)| assemble(&parts).map(|text| (k, text))).collect();
+    Listing { found, more }
 }
 
 /// The text of the item held by `parts`, as [`get`] reads it.
@@ -227,8 +234,11 @@ pub fn set_json(wb: &mut Workbook, key: &str, v: &Json) -> Result<()> {
 /// The keys of the items stored in the workbook that start with `prefix` (`"macro_"`), sorted
 /// and lower-cased: the first [`MAX_ITEMS`] of them. To read them all, [`items`] takes one pass
 /// where a [`get`] per key would take one each.
-pub fn keys(wb: &Workbook, prefix: &str) -> Vec<String> {
-    group(wb, prefix).into_iter().filter(|(_, parts)| parts.is_item()).map(|(k, _)| k).take(MAX_ITEMS).collect()
+pub fn keys(wb: &Workbook, prefix: &str) -> Listing<Vec<String>> {
+    let mut found: Vec<String> = group(wb, prefix).into_iter().filter(|(_, parts)| parts.is_item()).map(|(k, _)| k).collect();
+    let more = found.len().saturating_sub(MAX_ITEMS);
+    found.truncate(MAX_ITEMS);
+    Listing { found, more }
 }
 
 /// Whether the workbook holds an item under `name` (compared without case): a hidden workbook-scope
@@ -433,10 +443,10 @@ mod tests {
         // Only a later chunk: no item, not listed, and the legacy name is still read.
         wb.names.push(name("_gc_orphan_2", "\"c\""));
         assert_eq!(get(&wb, "orphan"), None);
-        assert_eq!(keys(&wb, "orphan"), Vec::<String>::new());
+        assert_eq!(keys(&wb, "orphan").found, Vec::<String>::new());
         wb.names.push(name("_sc_orphan", "\"old\""));
         assert_eq!(get(&wb, "orphan").as_deref(), Some("old"));
-        assert_eq!(keys(&wb, "orphan"), ["orphan"]);
+        assert_eq!(keys(&wb, "orphan").found, ["orphan"]);
         // Chunks out of order, a duplicate, junk around the literals, an unterminated literal.
         wb.names.push(name("_gc_mix_1", "\"b\"&A1&"));
         wb.names.push(name("_gc_mix_0", "SUM(\"a\")"));
@@ -484,7 +494,7 @@ mod tests {
         let own = DefinedName { hidden: false, ..name("_gc_watch_0", "\"mine\"") };
         wb.names.push(own.clone());
         assert_eq!(get(&wb, "watch"), None);
-        assert!(keys(&wb, "").is_empty());
+        assert!(keys(&wb, "").found.is_empty());
         // Writing the item would put a hidden name of the same name beside it, and an xlsx file
         // keeps only one of them: refused, with the names as they were.
         let err = set(&mut wb, "watch", "theirs").unwrap_err().to_string();
@@ -517,7 +527,7 @@ mod tests {
         let mut wb = Workbook::new();
         wb.names.push(name("_gc_watch_00", "\"theirs\""));
         assert_eq!(get(&wb, "watch"), None);
-        assert!(keys(&wb, "").is_empty());
+        assert!(keys(&wb, "").found.is_empty());
         let own = DefinedName { hidden: false, ..name("_gc_watch_00", "\"mine\"") };
         wb.names.push(own.clone());
         set(&mut wb, "watch", "ours").unwrap();
@@ -533,7 +543,7 @@ mod tests {
         set(&mut wb, "macro_2", "b").unwrap();
         set(&mut wb, "macro_1", &"a".repeat(9_000)).unwrap();
         set(&mut wb, "scripts", "{}").unwrap();
-        assert_eq!(keys(&wb, "macro_"), ["macro_1", "macro_2"]);
+        assert_eq!(keys(&wb, "macro_").found, ["macro_1", "macro_2"]);
         assert_eq!(item_key("_gc_macro_1_3").as_deref(), Some("macro_1"));
         assert_eq!(item_key("_SC_Scripts").as_deref(), Some("scripts"));
         assert_eq!(item_key("Total"), None);
@@ -553,7 +563,8 @@ mod tests {
         wb.names.push(name("_gc_macro_orphan_1", "\"no chunk 0\""));
         wb.names.push(name("_gc_other_0", "\"not a macro\""));
         NAME_VISITS.with(|v| v.set(0));
-        let all = items(&wb, "MACRO_");
+        let listing = items(&wb, "MACRO_");
+        let all = &listing.found;
         assert_eq!(NAME_VISITS.with(|v| v.get()), wb.names.len(), "one pass over the names");
         assert_eq!(all.len(), MAX_ITEMS);
         let first: Vec<&String> = all.keys().take(2).collect();
@@ -563,19 +574,20 @@ mod tests {
         NAME_VISITS.with(|v| v.set(0));
         let listed = keys(&wb, "macro_");
         assert_eq!(NAME_VISITS.with(|v| v.get()), wb.names.len());
-        assert_eq!(listed, all.keys().cloned().collect::<Vec<_>>(), "keys and items agree");
+        assert_eq!(listed.found, all.keys().cloned().collect::<Vec<_>>(), "keys and items agree");
+        assert_eq!((listing.more, listed.more), (10_002, 10_002), "the rest are counted, not lost");
 
         // Under the cap every item is there, read as `get` reads it.
         wb.names.retain(|n| !n.name.starts_with("_gc_macro_0") && !n.name.starts_with("_gc_macro_1"));
-        let few = items(&wb, "macro_");
+        let few = items(&wb, "macro_").found;
         let want: BTreeMap<String, String> =
             [("macro_big", "b".repeat(9_000)), ("macro_legacy", "old".into())].into_iter().map(|(k, t)| (k.to_string(), t)).collect();
         assert_eq!(few, want);
         for (k, text) in &few {
             assert_eq!(get(&wb, k).as_ref(), Some(text));
         }
-        assert_eq!(keys(&wb, "macro_"), ["macro_big", "macro_legacy"]);
-        assert_eq!(items(&wb, "").len(), 3, "the other item too");
+        assert_eq!(keys(&wb, "macro_").found, ["macro_big", "macro_legacy"]);
+        assert_eq!((items(&wb, "").found.len(), items(&wb, "").more), (3, 0), "the other item too, none past the cap");
     }
 
     #[test]
