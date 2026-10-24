@@ -542,8 +542,9 @@ fn a_macro_at_the_step_limit_opens_without_freezing_the_editor() {
     h.run_steps(2);
     // Each row used to copy the whole list: five frames took about a minute. Now well under a
     // second; the bound leaves room for a slow machine.
-    let t = std::time::Instant::now();
+    let t = gridcraft_ui_egui::now_ms();
     h.run_steps(5);
-    assert!(t.elapsed() < std::time::Duration::from_secs(10), "five frames took {:?}", t.elapsed());
+    let ms = gridcraft_ui_egui::now_ms() - t;
+    assert!(ms < 10_000.0, "five frames took {ms} ms");
     assert!(h.query_by_label_contains("Step 1: ").is_some());
 }
