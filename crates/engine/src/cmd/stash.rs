@@ -8,7 +8,7 @@
 //! one name each, `_sc_<key>`; reading accepts that form as well, so those items can move to this
 //! format later, and a write of the same key replaces it.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashSet};
 
 use gridcraft_model::{DefinedName, Workbook};
 use serde_json::Value as Json;
@@ -59,25 +59,40 @@ pub fn get(wb: &Workbook, key: &str) -> Option<String> {
 
 /// Stores `text` under `key`, replacing what was there (in either format). Empty text removes it.
 pub fn set(wb: &mut Workbook, key: &str, text: &str) -> Result<()> {
-    check_key(key)?;
-    if text.chars().count() > MAX_ITEM_CHARS {
-        return Err(EngineError::Other(format!("The data is too large to keep in the workbook ({} MB at most).", MAX_ITEM_CHARS / (1024 * 1024))));
-    }
-    let formulas = chunk_formulas(text);
-    // A visible name of the item's shape is someone's own (see `item_of`); a hidden name beside
-    // it with the same name would be the one an xlsx file drops. Refuse before changing anything.
-    for i in 0..formulas.len() {
-        let name = format!("{PREFIX}{key}_{i}");
-        if wb.names.iter().any(|n| n.scope.is_none() && !n.hidden && n.name.eq_ignore_ascii_case(&name)) {
+    set_many(wb, &[(key.to_string(), text.to_string())])
+}
+
+/// Stores every `(key, text)` of `items` as [`set`] would, with the checks done before anything
+/// changes and one pass over the names for all of them, so writing a thousand items into a
+/// workbook with many thousands of names stays near-linear.
+pub fn set_many(wb: &mut Workbook, items: &[(String, String)]) -> Result<()> {
+    let mut planned = Vec::new();
+    let mut keys: HashSet<String> = HashSet::new();
+    for (key, text) in items {
+        check_key(key)?;
+        if text.chars().count() > MAX_ITEM_CHARS {
             return Err(EngineError::Other(format!(
-                "The workbook has a defined name '{name}', which GridCraft needs for its own data. Rename it first."
+                "The data is too large to keep in the workbook ({} MB at most).",
+                MAX_ITEM_CHARS / (1024 * 1024)
             )));
         }
+        keys.insert(key.to_ascii_lowercase());
+        for (i, formula) in chunk_formulas(text).into_iter().enumerate() {
+            planned.push(DefinedName { name: format!("{PREFIX}{key}_{i}"), scope: None, formula, comment: "GridCraft data".into(), hidden: true });
+        }
     }
-    remove(wb, key);
-    for (i, formula) in formulas.into_iter().enumerate() {
-        wb.names.push(DefinedName { name: format!("{PREFIX}{key}_{i}"), scope: None, formula, comment: "GridCraft data".into(), hidden: true });
+    // A visible name of an item's shape is someone's own (see `item_of`); a hidden name beside
+    // it with the same name would be the one an xlsx file drops. Refuse before changing anything.
+    let names: HashSet<String> = planned.iter().map(|n| n.name.to_ascii_lowercase()).collect();
+    if let Some(n) = wb.names.iter().find(|n| n.scope.is_none() && !n.hidden && names.contains(&n.name.to_ascii_lowercase())) {
+        return Err(EngineError::Other(format!(
+            "The workbook has a defined name '{}', which GridCraft needs for its own data. Rename it first.",
+            n.name
+        )));
     }
+    // What was there under these keys goes, in either format, then the new chunks come.
+    wb.names.retain(|n| !item_of(n).is_some_and(|(k, _)| keys.contains(&k.to_ascii_lowercase())));
+    wb.names.extend(planned);
     Ok(())
 }
 
@@ -100,7 +115,8 @@ pub fn keys(wb: &Workbook, prefix: &str) -> Vec<String> {
     let mut keys: Vec<String> = wb
         .names
         .iter()
-        .filter_map(|n| item_of(n).map(|(k, _)| k.to_ascii_lowercase()))
+        // A later chunk on its own is no item, as `get` reads it.
+        .filter_map(|n| item_of(n).filter(|(_, chunk)| chunk.is_none_or(|i| i == 0)).map(|(k, _)| k.to_ascii_lowercase()))
         .filter(|k| k.starts_with(&prefix.to_ascii_lowercase()))
         .collect();
     keys.sort();
@@ -127,8 +143,10 @@ fn item_of(n: &DefinedName) -> Option<(&str, Option<u64>)> {
 fn parse_name(name: &str) -> Option<(&str, Option<u64>)> {
     if let Some(rest) = strip_prefix_ci(name, PREFIX) {
         let (key, k) = rest.rsplit_once('_')?;
-        let all_digits = !k.is_empty() && k.len() <= 9 && k.bytes().all(|b| b.is_ascii_digit());
-        if key.is_empty() || !all_digits {
+        // Only the chunk number as `set` writes it: `_gc_watch_00` is someone else's name, not
+        // chunk 0 under another spelling, so it is neither read nor in the way of `_gc_watch_0`.
+        let canonical = !k.is_empty() && k.len() <= 9 && k.bytes().all(|b| b.is_ascii_digit()) && (k == "0" || !k.starts_with('0'));
+        if key.is_empty() || !canonical {
             return None;
         }
         return k.parse().ok().map(|i| (key, Some(i)));
@@ -289,11 +307,13 @@ mod tests {
         wb.names.push(name("_gc_gap_0", "\"a\""));
         wb.names.push(name("_gc_gap_2", "\"c\""));
         assert_eq!(get(&wb, "gap").as_deref(), Some("a"));
-        // Only a later chunk: no item, and the legacy name is still read.
+        // Only a later chunk: no item, not listed, and the legacy name is still read.
         wb.names.push(name("_gc_orphan_2", "\"c\""));
         assert_eq!(get(&wb, "orphan"), None);
+        assert_eq!(keys(&wb, "orphan"), Vec::<String>::new());
         wb.names.push(name("_sc_orphan", "\"old\""));
         assert_eq!(get(&wb, "orphan").as_deref(), Some("old"));
+        assert_eq!(keys(&wb, "orphan"), ["orphan"]);
         // Chunks out of order, a duplicate, junk around the literals, an unterminated literal.
         wb.names.push(name("_gc_mix_1", "\"b\"&A1&"));
         wb.names.push(name("_gc_mix_0", "SUM(\"a\")"));
@@ -353,6 +373,23 @@ mod tests {
         remove(&mut wb, "watch");
         remove(&mut wb, "other");
         assert_eq!(wb.names, vec![own]);
+    }
+
+    #[test]
+    fn a_chunk_number_with_leading_zeros_is_another_name() {
+        // `_gc_watch_00` is not chunk 0 under another spelling: a hidden one is not read, and a
+        // visible one is not in the way of writing `_gc_watch_0`.
+        let mut wb = Workbook::new();
+        wb.names.push(name("_gc_watch_00", "\"theirs\""));
+        assert_eq!(get(&wb, "watch"), None);
+        assert!(keys(&wb, "").is_empty());
+        let own = DefinedName { hidden: false, ..name("_gc_watch_00", "\"mine\"") };
+        wb.names.push(own.clone());
+        set(&mut wb, "watch", "ours").unwrap();
+        assert_eq!(get(&wb, "watch").as_deref(), Some("ours"));
+        assert_eq!(wb.names.len(), 3, "both other names stay");
+        remove(&mut wb, "watch");
+        assert_eq!(wb.names, vec![name("_gc_watch_00", "\"theirs\""), own]);
     }
 
     #[test]

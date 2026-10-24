@@ -171,6 +171,27 @@ fn a_long_group_keeps_the_history_before_it() {
 }
 
 #[test]
+fn a_grouped_action_that_closes_its_document_succeeds() {
+    // The group goes with the document; the action did what it was asked.
+    let mut s = s();
+    let uid = s.doc().unwrap().uid;
+    s.grouped("Close", |s| s.execute("file.close", json!({}))).unwrap();
+    assert!(s.docs.iter().all(|d| d.uid != uid) && !s.in_group(uid));
+    // Opening a file into an untouched new workbook takes its place the same way.
+    s.new_workbook();
+    let uid = s.doc().unwrap().uid;
+    let bytes = serde_json::to_vec(&gridcraft_model::Workbook::new()).unwrap();
+    s.grouped("Open", |s| s.execute("file.open", json!({"name": "theirs.json", "base64": crate::io::base64_encode(&bytes)}))).unwrap();
+    assert!(s.docs.iter().all(|d| d.uid != uid) && !s.in_group(uid) && s.groups.is_empty());
+    // A group ended by someone else while its document is still open is still an error.
+    let err = s.grouped("Ended", |s| {
+        let token = s.groups.last().map(|g| crate::GroupToken { id: g.id, doc: g.doc });
+        s.group_end(token.ok_or_else(|| EngineError::Other("no group".into()))?).map(|_| ())
+    });
+    assert!(err.unwrap_err().to_string().contains("already ended"));
+}
+
+#[test]
 fn closing_a_document_drops_its_groups() {
     let mut s = s();
     let token = s.group_begin("Debug Macro").unwrap();
@@ -226,6 +247,27 @@ fn register_group_commands() {
     });
     // A command that is one group keeps the group's name.
     register("test.onlyGroup", |s, _| s.grouped("Named Step", |s| put(s, "D1", "x")).map(|_| json!({})));
+    // A group, then an edit the command makes itself (no nested command, so no undo entry).
+    register("test.groupThenEdit", |s, _| {
+        s.grouped("Named Step", |s| put(s, "D1", "x"))?;
+        crate::cmd::edit(s, |cx| {
+            let at = gridcraft_core::CellRef::parse("D2").ok_or_else(|| EngineError::Other("D2".into()))?;
+            cx.sheet_mut(0)?.set_value(at, gridcraft_core::Value::Text("y".into()));
+            cx.touch(0, at);
+            Ok(())
+        })?;
+        Ok(json!({}))
+    });
+    // A group with a change, then one that is rolled back: the step is still the first group's.
+    register("test.groupThenRolledBack", |s, _| {
+        s.grouped("Named Step", |s| put(s, "D1", "x"))?;
+        let failed: crate::Result<()> = s.grouped("Doomed", |s| {
+            put(s, "D3", "gone")?;
+            Err(EngineError::Other("no".into()))
+        });
+        assert!(failed.is_err());
+        Ok(json!({}))
+    });
     // An edit, then the rollback of the innermost group that was open before the command.
     register("test.rollbackOpenGroup", |s, _| {
         put(s, "E1", "gone")?;
@@ -238,6 +280,33 @@ fn register_group_commands() {
         put(s, "E1", "end")?;
         let token = s.groups.last().map(|g| crate::GroupToken { id: g.id, doc: g.doc });
         s.group_end(token.ok_or_else(|| EngineError::Other("no group".into()))?)?;
+        Ok(json!({}))
+    });
+    // The end of the innermost group that was open before the command, then an edit.
+    register("test.endOpenGroupThenEdit", |s, _| {
+        let token = s.groups.last().map(|g| crate::GroupToken { id: g.id, doc: g.doc });
+        s.group_end(token.ok_or_else(|| EngineError::Other("no group".into()))?)?;
+        put(s, "E1", "after")?;
+        Ok(json!({}))
+    });
+    // Many nested edits: the steps they make are bounded while the command runs. (Not undoable
+    // itself: like a script, its nested steps are the undo steps.)
+    crate::cmd::register_test_command("test.manyNestedEdits", |s, _| {
+        let start = s.doc()?.undo.len();
+        for i in 0..crate::UNDO_LIMIT + 50 {
+            put(s, "A1", &i.to_string())?;
+        }
+        let len = s.doc()?.undo.len();
+        if len > start + crate::UNDO_LIMIT {
+            return Err(EngineError::Other(format!("{} steps kept inside the command", len - start)));
+        }
+        Ok(json!({}))
+    });
+    // An edit, then a group the command leaves open (a debugger's start).
+    register("test.editThenOpenGroup", |s, _| {
+        put(s, "A1", "first")?;
+        let _open = s.group_begin("Debug")?;
+        put(s, "A2", "second")?;
         Ok(json!({}))
     });
 }
@@ -266,9 +335,9 @@ fn a_command_that_runs_its_own_group_makes_one_step() {
 
 #[test]
 fn a_stale_group_step_does_not_name_a_later_command() {
-    // The record of the last group step (document, length, epoch) survives the Undo of that step.
-    // A later command that ends a group of its own at the same history length, after rolling
-    // another back, must not take the name of the nested edit it made.
+    // The record of the last group step survives the Undo of that step. A later command that
+    // ends a group of its own at the same history length, after rolling another back, must not
+    // take the name of the nested edit it made.
     register_group_commands();
     let mut s = s();
     s.execute("test.onlyGroup", json!({})).unwrap();
@@ -283,6 +352,95 @@ fn a_stale_group_step_does_not_name_a_later_command() {
     assert_eq!(v(&s, "B2").display(), "kept");
     s.execute("edit.undo", json!({})).unwrap();
     assert!(v(&s, "B2").is_empty() && v(&s, "D1").is_empty());
+}
+
+#[test]
+fn a_command_keeps_its_groups_name_only_for_exactly_that_step() {
+    // The name comes from the group only when the group's step is the command's whole step: an
+    // edit after the group (no nested command, so the history length matches) makes it the
+    // command's own, while a later group that rolled back changes nothing.
+    register_group_commands();
+    let mut s = s();
+    s.execute("test.groupThenEdit", json!({})).unwrap();
+    assert_eq!(undo_labels(&s), ["test.groupThenEdit"]);
+    assert_eq!((v(&s, "D1").display(), v(&s, "D2").display()), ("x".into(), "y".into()));
+    s.execute("edit.undo", json!({})).unwrap();
+    assert!(v(&s, "D1").is_empty() && v(&s, "D2").is_empty());
+    assert_eq!(undo_labels(&s), Vec::<String>::new());
+    s.execute("test.groupThenRolledBack", json!({})).unwrap();
+    assert_eq!(undo_labels(&s), ["Named Step"]);
+    assert_eq!(v(&s, "D1").display(), "x");
+    assert!(v(&s, "D3").is_empty());
+    s.execute("edit.undo", json!({})).unwrap();
+    assert!(v(&s, "D1").is_empty());
+}
+
+#[test]
+fn what_a_command_changes_after_ending_a_group_is_its_own_step() {
+    // Ending a group that was open before the command leaves the group its step (if it made one)
+    // and makes a step of the command's own for what it changed after the end.
+    register_group_commands();
+    let mut s = s();
+    // The group made no step: the command's edit must still be undoable, under its own name.
+    let _unchanged = s.group_begin("Debug").unwrap();
+    s.execute("test.endOpenGroupThenEdit", json!({})).unwrap();
+    assert_eq!(undo_labels(&s), ["test.endOpenGroupThenEdit"]);
+    assert_eq!(v(&s, "E1").display(), "after");
+    s.execute("edit.undo", json!({})).unwrap();
+    assert!(v(&s, "E1").is_empty());
+    s.execute("edit.redo", json!({})).unwrap();
+    assert_eq!(v(&s, "E1").display(), "after");
+    // The group made a step: two steps, the group's and the command's.
+    s.execute("edit.undo", json!({})).unwrap();
+    let _changed = s.group_begin("Debug").unwrap();
+    set(&mut s, "B1", "inside");
+    s.execute("test.endOpenGroupThenEdit", json!({})).unwrap();
+    assert_eq!(undo_labels(&s), ["Debug", "test.endOpenGroupThenEdit"]);
+    s.execute("edit.undo", json!({})).unwrap();
+    assert!(v(&s, "E1").is_empty());
+    assert_eq!(v(&s, "B1").display(), "inside");
+    s.execute("edit.undo", json!({})).unwrap();
+    assert!(v(&s, "B1").is_empty());
+}
+
+#[test]
+fn a_group_a_command_leaves_open_starts_where_the_command_did() {
+    // A command that edits and then opens a group it leaves open has no undo step of its own:
+    // the group's step, made when it ends, covers the command's edit too, so no state from
+    // inside the command can come back.
+    register_group_commands();
+    let mut s = s();
+    set(&mut s, "C1", "base");
+    s.execute("test.editThenOpenGroup", json!({})).unwrap();
+    let d = s.doc().unwrap();
+    assert!(s.in_group(d.uid));
+    let token = s.groups.last().map(|g| crate::GroupToken { id: g.id, doc: g.doc }).unwrap();
+    assert!(s.group_end(token).unwrap());
+    assert_eq!(undo_labels(&s), ["Enter Cell", "Debug"]);
+    s.execute("edit.undo", json!({})).unwrap();
+    assert!(v(&s, "A1").is_empty() && v(&s, "A2").is_empty());
+    assert_eq!(v(&s, "C1").display(), "base");
+    s.execute("edit.redo", json!({})).unwrap();
+    assert_eq!((v(&s, "A1").display(), v(&s, "A2").display()), ("first".into(), "second".into()));
+}
+
+#[test]
+fn steps_made_inside_a_command_are_bounded_while_it_runs() {
+    // The history limit applies when the outermost command finishes, so a command's bookkeeping
+    // holds; but a command that runs thousands of nested commands (a script, a subtotal) must not
+    // keep thousands of steps alive until then. Each nested step bounds the steps made since the
+    // command began, and leaves the history from before it alone.
+    register_group_commands();
+    let mut s = s();
+    let before = fill_history(&mut s);
+    s.execute("test.manyNestedEdits", json!({})).unwrap();
+    let d = s.doc().unwrap();
+    assert_eq!(d.undo.len(), crate::UNDO_LIMIT);
+    assert!(d.undo.iter().all(|e| e.label == "Enter Cell"));
+    assert!(!d.undo.iter().any(|e| before.iter().any(|w| std::sync::Arc::ptr_eq(w, &e.wb))), "the older history gave way to the newest steps");
+    assert_eq!(v(&s, "A1").display(), "149");
+    s.execute("edit.undo", json!({})).unwrap();
+    assert_eq!(v(&s, "A1").display(), "148");
 }
 
 #[test]
@@ -385,10 +543,123 @@ fn a_group_ended_at_the_history_limit_replaces_only_the_oldest_step() {
     assert_undo_redo(&mut s, &[("F1", "one"), ("F2", "two")]);
 }
 
+#[test]
+fn a_command_that_panics_leaves_the_history_as_it_found_it() {
+    // A command that edits through a nested command and then panics: the nested step is gone
+    // with the workbook it changed, and the redo history the nested step cleared comes back.
+    crate::cmd::register_undoable_test_command("test.editThenPanic", |s, _| {
+        put(s, "A1", "half done")?;
+        panic!("after an edit");
+    });
+    let mut s = s();
+    set(&mut s, "A1", "1");
+    set(&mut s, "A1", "2");
+    s.execute("edit.undo", json!({})).unwrap();
+    assert_eq!((undo_labels(&s).len(), s.doc().unwrap().redo.len()), (1, 1));
+    let err = s.execute("test.editThenPanic", json!({})).unwrap_err().to_string();
+    assert!(err.contains("after an edit"), "{err}");
+    assert_eq!(v(&s, "A1").display(), "1", "the workbook is restored");
+    assert_eq!(undo_labels(&s), ["Enter Cell"], "no step for the nested edit");
+    assert_eq!(s.doc().unwrap().redo.len(), 1, "the redo history is back");
+    s.execute("edit.redo", json!({})).unwrap();
+    assert_eq!(v(&s, "A1").display(), "2");
+
+    // A command that undoes through a nested command and then panics: the entry Undo removed
+    // comes back, and the redo entry it made goes.
+    crate::cmd::register_undoable_test_command("test.undoThenPanic", |s, _| {
+        s.execute("edit.undo", json!({}))?;
+        panic!("after an undo");
+    });
+    assert_eq!((undo_labels(&s).len(), s.doc().unwrap().redo.len()), (2, 0));
+    assert!(s.execute("test.undoThenPanic", json!({})).is_err());
+    assert_eq!(v(&s, "A1").display(), "2", "the workbook is restored");
+    assert_eq!(undo_labels(&s), ["Enter Cell", "Enter Cell"], "the undone step is back");
+    assert_eq!(s.doc().unwrap().redo.len(), 0);
+    s.execute("edit.undo", json!({})).unwrap();
+    assert_eq!(v(&s, "A1").display(), "1");
+}
+
+#[test]
+fn a_grouped_action_that_panics_is_rolled_back_before_the_panic_goes_on() {
+    // Outside a command, a caller that catches the panic finds the group rolled back and no
+    // group left open, so Undo is enabled and the next grouped action does not nest.
+    let mut s = s();
+    set(&mut s, "A1", "before");
+    let caught = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        s.grouped::<()>("Doomed", |s| {
+            set(s, "A1", "half done");
+            panic!("inside the group");
+        })
+    }));
+    assert!(caught.is_err(), "the panic goes on to the caller");
+    let uid = s.doc().unwrap().uid;
+    assert!(!s.in_group(uid));
+    assert_eq!(v(&s, "A1").display(), "before");
+    assert_eq!(undo_labels(&s), ["Enter Cell"]);
+    s.grouped("Next", |s| {
+        set(s, "A1", "after");
+        Ok(())
+    })
+    .unwrap();
+    assert_eq!(undo_labels(&s), ["Enter Cell", "Next"]);
+}
+
+#[test]
+fn a_group_ended_by_a_command_that_then_panics_keeps_its_step() {
+    // The command takes a token the test left for it, ends or rolls back that group, and panics.
+    // The group's token went with the command, so the group stays ended; its step runs from the
+    // group's start to the restored workbook, so Undo still returns to the state before the group.
+    static TOKEN: std::sync::Mutex<Option<crate::GroupToken>> = std::sync::Mutex::new(None);
+    crate::cmd::register_undoable_test_command("test.endGroupThenPanic", |s, _| {
+        let token = TOKEN.lock().map_err(|_| EngineError::Other("lock".into()))?.take();
+        if let Some(token) = token {
+            s.group_end(token)?;
+        }
+        panic!("after ending a group");
+    });
+    crate::cmd::register_undoable_test_command("test.rollBackGroupThenPanic", |s, _| {
+        let token = TOKEN.lock().map_err(|_| EngineError::Other("lock".into()))?.take();
+        if let Some(token) = token {
+            s.group_rollback(token)?;
+        }
+        panic!("after rolling back a group");
+    });
+    for cmd in ["test.endGroupThenPanic", "test.rollBackGroupThenPanic"] {
+        let mut s = s();
+        set(&mut s, "A1", "before");
+        let token = s.group_begin("Outer").unwrap();
+        set(&mut s, "A1", "inside");
+        set(&mut s, "A2", "inside too");
+        *TOKEN.lock().unwrap() = Some(token);
+        assert!(s.execute(cmd, json!({})).is_err());
+        let uid = s.doc().unwrap().uid;
+        assert!(!s.in_group(uid), "{cmd}: the group stays ended");
+        assert_eq!(undo_labels(&s), ["Enter Cell", "Outer"], "{cmd}");
+        assert_eq!(v(&s, "A1").display(), "inside", "{cmd}: the workbook is as the command found it");
+        s.execute("edit.undo", json!({})).unwrap();
+        assert_eq!((v(&s, "A1").display(), v(&s, "A2").display()), ("before".into(), String::new()), "{cmd}");
+        s.execute("edit.redo", json!({})).unwrap();
+        assert_eq!(v(&s, "A2").display(), "inside too", "{cmd}");
+    }
+}
+
 // ---------------------------------------------------------------- recording buffer
 
 fn recorded_ids(s: &Session) -> Vec<String> {
     s.recorder.as_ref().unwrap().steps.iter().map(|st| st.id.clone()).collect()
+}
+
+#[test]
+fn a_headless_call_that_fails_for_want_of_a_file_is_not_recorded() {
+    // `file.open` with no file queues a dialog and succeeds; a headless caller gets an error for
+    // it instead, so the recording keeps no step for it either.
+    let mut s = s();
+    s.start_recording();
+    set(&mut s, "A1", "1");
+    assert!(s.execute_headless("file.open", json!({})).is_err());
+    assert_eq!(recorded_ids(&s), ["cell.set"]);
+    let rec = s.stop_recording().unwrap();
+    assert_eq!(rec.dropped, 0);
 }
 
 #[test]
@@ -450,6 +721,31 @@ fn the_recorder_has_a_cap() {
     }
     assert_eq!(rec.steps.len(), crate::record::RECORD_LIMIT);
     assert_eq!(rec.dropped, 3);
+}
+
+#[test]
+fn the_recorder_has_a_byte_cap_and_keeps_a_prefix() {
+    // A `file.open` step holds the whole file as base64: the buffer is bounded in bytes too, and
+    // once a step is dropped every later one is, so what is kept is always how the recording began.
+    let mut rec = crate::record::Recorder::default();
+    let step = |n: usize| crate::record::RecordedStep {
+        doc: 1,
+        sheet: 0,
+        sheet_name: "Sheet1".into(),
+        selection: crate::Selection::default(),
+        id: "file.open".into(),
+        params: json!({"base64": "A".repeat(n)}),
+    };
+    let big = crate::record::RECORD_MAX_BYTES / 2;
+    rec.push(step(big));
+    assert_eq!((rec.steps.len(), rec.dropped), (1, 0));
+    rec.push(step(big));
+    assert_eq!((rec.steps.len(), rec.dropped), (1, 1), "the second does not fit beside the first");
+    rec.push(step(1));
+    assert_eq!((rec.steps.len(), rec.dropped), (1, 2), "a small step after a dropped one is dropped too");
+    let mut rec = crate::record::Recorder::default();
+    rec.push(step(crate::record::RECORD_MAX_BYTES + 1));
+    assert_eq!((rec.steps.len(), rec.dropped), (0, 1), "a step larger than the whole budget is not kept");
 }
 
 #[test]
@@ -547,4 +843,36 @@ fn pasting_from_a_file_carries_its_trust() {
     assert_eq!(Trust::Local.receive(Trust::FromFile), Trust::FromFile);
     assert_eq!(Trust::FromFile.receive(Trust::Local), Trust::FromFile);
     assert_eq!(Trust::Local.receive(Trust::Local), Trust::Local);
+}
+
+#[test]
+fn a_linked_paste_carries_the_files_trust_whatever_it_pastes() {
+    // Paste Link writes a formula into every cell whatever `what` says, so a linked paste of
+    // formats from a file carries the file's trust like one of formulas. Column widths and notes
+    // write no cells, linked or not.
+    let mut s = s();
+    open_json(&mut s, &gridcraft_model::Workbook::new());
+    set(&mut s, "A1", "=1+1");
+    s.execute("review.newComment", json!({"cell": "A1", "text": "theirs"})).unwrap();
+    let wide = gridcraft_model::LineInfo { size: Some(123.0), ..Default::default() };
+    std::sync::Arc::make_mut(&mut s.doc_mut().unwrap().wb).sheet_mut(0).unwrap().cols.insert(0, wide);
+    s.execute("edit.copy", json!({"range": "A1"})).unwrap();
+    let b1 = gridcraft_core::CellRef::parse("B1").unwrap();
+    let sheet = |s: &Session| s.doc().unwrap().wb.sheet(0).unwrap().clone();
+    for what in ["columnWidths", "comments"] {
+        s.new_workbook();
+        s.execute("edit.pasteSpecial", json!({"what": what, "link": true, "at": "B1"})).unwrap();
+        assert_eq!(trust(&s), Trust::Local, "{what}");
+        let sh = sheet(&s);
+        assert!(sh.cell(b1).is_none(), "a linked paste of {what} writes no cell");
+        if what == "comments" {
+            assert_eq!(sh.comments.get(&b1).map(|c| c.text.as_str()), Some("theirs"));
+        } else {
+            assert_eq!(sh.cols.get(&1).and_then(|c| c.size), Some(123.0));
+        }
+    }
+    s.new_workbook();
+    s.execute("edit.pasteSpecial", json!({"what": "formats", "link": true, "at": "B1"})).unwrap();
+    assert!(sheet(&s).cell(b1).is_some_and(|c| c.formula.is_some()), "a linked paste of formats writes a formula");
+    assert_eq!(trust(&s), Trust::FromFile);
 }

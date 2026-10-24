@@ -812,6 +812,13 @@ fn compare(v: &Value, op: CompareOp, want: &Json) -> bool {
 #[derive(Clone, Debug, Default, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Footprint {
+    /// Steps executed by the end of the dry run that made this footprint (the run's one budget).
+    #[serde(skip)]
+    pub executed: u64,
+    /// The dry run wrote more cells than the touch log keeps, so writes that kept a cell's value
+    /// may be missing from `cells`: a shift cannot trust the block.
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub log_full: bool,
     pub sheets: Vec<SheetFootprint>,
     pub sheets_added: Vec<String>,
     pub sheets_removed: Vec<String>,
@@ -882,13 +889,19 @@ impl Footprint {
 struct Saved {
     active: usize,
     docs: Vec<u64>,
+    /// The workbook as last saved: `sheet.activate` and the view commands move it to the
+    /// current workbook on a clean document, and the rollback puts the workbook back but not this.
+    saved: Option<Arc<Workbook>>,
     sheet_selections: Vec<Selection>,
     unlocked_ranges: Vec<(String, String)>,
     trust: Trust,
     clipboard: Option<crate::Clipboard>,
     prefs: crate::Prefs,
     mode: crate::Mode,
+    /// The journal's length and how many entries it had dropped from its front; a dry run that
+    /// pushes past the journal's limits drops more, which a length alone cannot see.
     journal: usize,
+    journal_dropped: u64,
     recording: Option<usize>,
     ui_requests: usize,
     format_painter: Option<(Arc<Workbook>, usize, RangeRef, bool)>,
@@ -906,6 +919,7 @@ impl Saved {
         Saved {
             active: s.active,
             docs: s.docs.iter().map(|d| d.uid).collect(),
+            saved: d.map(|d| d.saved.clone()),
             sheet_selections: d.map(|d| d.sheet_selections.clone()).unwrap_or_default(),
             unlocked_ranges: d.map(|d| d.unlocked_ranges.clone()).unwrap_or_default(),
             trust: d.map_or(Trust::Local, |d| d.trust),
@@ -913,6 +927,7 @@ impl Saved {
             prefs: s.prefs.clone(),
             mode: s.mode,
             journal: s.journal.len(),
+            journal_dropped: s.journal_dropped(),
             recording: s.recording,
             ui_requests: s.ui_requests.len(),
             format_painter: s.format_painter.clone(),
@@ -928,6 +943,9 @@ impl Saved {
     fn restore(self, s: &mut Session, doc: u64) {
         s.docs.retain(|d| self.docs.contains(&d.uid));
         if let Some(d) = s.docs.iter_mut().find(|d| d.uid == doc) {
+            if let Some(saved) = self.saved {
+                d.saved = saved;
+            }
             d.sheet_selections = self.sheet_selections;
             d.unlocked_ranges = self.unlocked_ranges;
             d.trust = self.trust;
@@ -936,8 +954,11 @@ impl Saved {
         s.clipboard = self.clipboard;
         s.prefs = self.prefs;
         s.mode = self.mode;
-        s.journal.truncate(self.journal);
-        s.recording = self.recording;
+        // Entries the dry run pushed go; entries the journal dropped meanwhile are gone for good,
+        // and the recording's start moves back with them.
+        let dropped = usize::try_from(s.journal_dropped().saturating_sub(self.journal_dropped)).unwrap_or(usize::MAX);
+        s.truncate_journal(self.journal.saturating_sub(dropped));
+        s.recording = self.recording.map(|r| r.saturating_sub(dropped));
         s.ui_requests.truncate(self.ui_requests);
         s.format_painter = self.format_painter;
         s.last_find = self.last_find;
@@ -951,7 +972,7 @@ impl Saved {
 
 /// Runs the macro in dry-run mode on its workbook, puts everything back, and says what it would
 /// change. The dry run stops once `time_limit_ms` has passed on `clock`.
-pub fn footprint(s: &mut Session, p: &Prepared, clock: Stopwatch, time_limit_ms: f64) -> Result<Footprint> {
+pub fn footprint(s: &mut Session, p: &Prepared, clock: Stopwatch, time_limit_ms: f64, executed: u64) -> Result<Footprint> {
     let i = s.docs.iter().position(|d| d.uid == p.doc).ok_or(EngineError::NoDocument)?;
     s.set_active(i);
     let saved = Saved::take(s, p.doc);
@@ -961,7 +982,7 @@ pub fn footprint(s: &mut Session, p: &Prepared, clock: Stopwatch, time_limit_ms:
         d.touched = Some(Vec::new());
     }
     let mut m = Machine::new(p, true);
-    (m.clock, m.time_limit_ms) = (clock, time_limit_ms);
+    (m.clock, m.time_limit_ms, m.executed) = (clock, time_limit_ms, executed);
     let outcome = m.run_to_end(s);
     let (after, touched) = match s.docs.iter_mut().find(|d| d.uid == p.doc) {
         Some(d) => (d.wb.clone(), d.touched.take().unwrap_or_default()),
@@ -972,6 +993,8 @@ pub fn footprint(s: &mut Session, p: &Prepared, clock: Stopwatch, time_limit_ms:
     rolled?;
     let (after, touched) = if matches!(m.stopped, Some((_, true))) { (before.clone(), Vec::new()) } else { (after, touched) };
     let mut fp = diff(&before, &after, &p.inputs, &touched);
+    fp.log_full = touched.len() >= crate::cmd::TOUCH_LOG_LIMIT;
+    fp.executed = m.executed;
     fp.error = outcome.err();
     fp.stopped = m.stopped.map(|(msg, _)| msg);
     fp.partial = m.partial.map(|(step, reason)| json!({"step": step, "reason": reason}));
@@ -1112,16 +1135,41 @@ pub(crate) fn ranges(cells: &mut [CellRef]) -> Vec<String> {
 }
 
 /// Inserts blank cells where the footprint lands (moving what is there down or right), so the
-/// macro writes into empty cells.
-fn make_room(s: &mut Session, fp: &Footprint, down: bool) -> Result<()> {
+/// macro writes into empty cells. The block is every written cell's, so a row the macro writes
+/// stays together. A shift that would move one of the macro's inputs is refused: the inputs were
+/// checked and bound where they are, and only the block's columns (or rows) would move.
+fn make_room(s: &mut Session, fp: &Footprint, p: &Prepared, down: bool) -> Result<()> {
     if !fp.sheets_removed.is_empty() || fp.objects_removed > 0 {
         return Err(EngineError::Other("Shifting can't make room: the macro deletes sheets or objects.".into()));
     }
+    if fp.log_full {
+        return Err(EngineError::Other("Shifting can't make room: the macro writes more cells than the footprint can follow.".into()));
+    }
     let wb = s.doc()?.wb.clone();
+    let env = Env { wb: &wb, active_sheet: usize::MAX, inputs: &[], output: None, item: None };
+    let mut moves = Vec::new();
     for sh in fp.sheets.iter().filter(|s| s.conflict_count > 0) {
-        let Some(bounds) = sh.bounds_range else { continue };
-        let env = Env { wb: &wb, active_sheet: usize::MAX, inputs: &[], output: None, item: None };
-        let range = resolve::a1(Place { sheet: sh.index, range: bounds }, &env);
+        let Some(block) = sh.bounds_range else { continue };
+        // What the insertion moves: the block's columns from its top row down, or its rows from
+        // its left column rightwards.
+        let moved = |r: &RangeRef| {
+            if down {
+                r.start.col <= block.end.col && r.end.col >= block.start.col && r.end.row >= block.start.row
+            } else {
+                r.start.row <= block.end.row && r.end.row >= block.start.row && r.end.col >= block.start.col
+            }
+        };
+        // The output is where the macro writes, so moving what is there is the point; the second
+        // footprint catches data the shift moved into it.
+        if let Some((name, pl)) = p.inputs.iter().map(|(n, pl, _)| (n.as_str(), *pl)).find(|(_, pl)| pl.sheet == sh.index && moved(&pl.range)) {
+            return Err(EngineError::Other(format!(
+                "Shifting the data would move {name} ({}). Run with onConflict overwrite or fail, or make room first.",
+                resolve::a1(pl, &env)
+            )));
+        }
+        moves.push(resolve::a1(Place { sheet: sh.index, range: block }, &env));
+    }
+    for range in moves {
         s.execute("home.insertCells", json!({"range": range, "shift": if down { "down" } else { "right" }}))?;
     }
     Ok(())
@@ -1170,7 +1218,9 @@ pub fn make_way(s: &mut Session, b: &Begun) -> Result<(Machine, bool)> {
     if rule == OnConflict::Overwrite {
         return Ok((machine, false));
     }
-    let mut fp = footprint(s, &b.prepared, machine.clock, b.time_limit_ms)?;
+    // The dry runs and the run share one step budget as they share one clock.
+    let mut fp = footprint(s, &b.prepared, machine.clock, b.time_limit_ms, machine.executed)?;
+    machine.executed = fp.executed;
     if let Some(e) = fp.error.take() {
         return Err(e.into_engine(&m.name));
     }
@@ -1188,8 +1238,9 @@ pub fn make_way(s: &mut Session, b: &Begun) -> Result<(Machine, bool)> {
                 return Err(EngineError::Other(format!("Macro '{}' would write over cells that hold data ({what}). Nothing was changed.", m.name)));
             }
             OnConflict::ShiftDown | OnConflict::ShiftRight => {
-                make_room(s, &fp, rule == OnConflict::ShiftDown)?;
-                fp = footprint(s, &b.prepared, machine.clock, b.time_limit_ms)?;
+                make_room(s, &fp, &b.prepared, rule == OnConflict::ShiftDown)?;
+                fp = footprint(s, &b.prepared, machine.clock, b.time_limit_ms, machine.executed)?;
+                machine.executed = fp.executed;
                 if let Some(e) = fp.error.take() {
                     return Err(e.into_engine(&m.name));
                 }
@@ -1219,11 +1270,13 @@ pub fn run(s: &mut Session, name: &str, p: &Json) -> Result<Json> {
     s.grouped(&label, |s| {
         let (mut machine, shifted) = make_way(s, &b)?;
         let name = &b.mac.name;
+        // `ran` counts the run's own steps; the budget also holds the dry runs'.
+        let before_run = machine.executed;
         machine.run_to_end(s).map_err(|e| e.into_engine(name))?;
         match machine.stopped {
             Some((msg, true)) => Err(EngineError::Other(format!("Macro '{name}' stopped: {msg} Nothing was changed."))),
             stopped => {
-                let mut out = json!({"macro": name, "ran": machine.executed, "inputs": b.inputs});
+                let mut out = json!({"macro": name, "ran": machine.executed.saturating_sub(before_run), "inputs": b.inputs});
                 if let Some((msg, _)) = stopped {
                     out["stopped"] = json!(msg);
                 }
@@ -1241,17 +1294,18 @@ fn time_limit(p: &Json) -> f64 {
     p.get("timeLimit").and_then(Json::as_f64).map(|t| (t * 1000.0).clamp(1.0, 600_000.0)).unwrap_or(DEFAULT_TIME_LIMIT_MS)
 }
 
-/// The conflict rule for this run: `onConflict`, or `overwrite: true` (the answer to the
-/// question), else the macro's own.
+/// The conflict rule for this run: `onConflict`, else the macro's own. `overwrite: true` is the
+/// answer to the question, so it turns `ask` into `overwrite` whichever way `ask` was given.
 fn conflict_rule(p: &Json, m: &Macro) -> Result<OnConflict> {
-    if let Some(t) = p.get("onConflict").and_then(Json::as_str) {
-        return OnConflict::parse(t)
-            .ok_or_else(|| EngineError::Other(format!("onConflict must be ask, fail, overwrite, shiftDown or shiftRight, not '{t}'.")));
-    }
-    if p.get("overwrite").and_then(Json::as_bool) == Some(true) {
+    let rule = match p.get("onConflict").and_then(Json::as_str) {
+        Some(t) => OnConflict::parse(t)
+            .ok_or_else(|| EngineError::Other(format!("onConflict must be ask, fail, overwrite, shiftDown or shiftRight, not '{t}'.")))?,
+        None => m.output.on_conflict,
+    };
+    if rule == OnConflict::Ask && p.get("overwrite").and_then(Json::as_bool) == Some(true) {
         return Ok(OnConflict::Overwrite);
     }
-    Ok(m.output.on_conflict)
+    Ok(rule)
 }
 
 /// `macro.check`: what running the macro would do, without changing anything.
@@ -1290,7 +1344,7 @@ pub fn check(s: &mut Session, name: &str, p: &Json) -> Result<Json> {
     if !asks.is_empty() && !approved {
         return Ok(out);
     }
-    let fp = footprint(s, &prepared, Stopwatch::start(), time_limit(p))?;
+    let fp = footprint(s, &prepared, Stopwatch::start(), time_limit(p), 0)?;
     out["ok"] = json!(fp.error.is_none());
     out["conflicts"] = json!(fp.conflict_count());
     if let Some(e) = &fp.error {
