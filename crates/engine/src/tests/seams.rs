@@ -731,3 +731,25 @@ fn pasting_from_a_file_carries_its_trust() {
     assert_eq!(Trust::FromFile.receive(Trust::Local), Trust::FromFile);
     assert_eq!(Trust::Local.receive(Trust::Local), Trust::Local);
 }
+
+#[test]
+fn a_linked_paste_carries_the_files_trust_whatever_it_pastes() {
+    // Paste Link writes a formula into every cell whatever `what` says, so a linked paste of
+    // formats from a file carries the file's trust like one of formulas. Column widths and notes
+    // write no cells, linked or not.
+    let mut s = s();
+    open_json(&mut s, &gridcraft_model::Workbook::new());
+    set(&mut s, "A1", "=1+1");
+    s.execute("edit.copy", json!({"range": "A1"})).unwrap();
+    let b1 = |s: &Session| s.doc().unwrap().wb.sheet(0).unwrap().cell(gridcraft_core::CellRef::parse("B1").unwrap()).cloned();
+    for what in ["columnWidths", "comments"] {
+        s.new_workbook();
+        s.execute("edit.pasteSpecial", json!({"what": what, "link": true, "at": "B1"})).unwrap();
+        assert_eq!(trust(&s), Trust::Local, "{what}");
+        assert!(b1(&s).is_none(), "a linked paste of {what} writes no cell");
+    }
+    s.new_workbook();
+    s.execute("edit.pasteSpecial", json!({"what": "formats", "link": true, "at": "B1"})).unwrap();
+    assert!(b1(&s).is_some_and(|c| c.formula.is_some()), "a linked paste of formats writes a formula");
+    assert_eq!(trust(&s), Trust::FromFile);
+}

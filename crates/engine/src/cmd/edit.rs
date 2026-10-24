@@ -1262,9 +1262,10 @@ fn paste_special(s: &mut Session, p: &Json) -> Result<Json> {
     })?;
     // Formulas and validation from an untrusted file leave the destination untrusted; plain values,
     // formats (cell styles and merged areas, no conditional formats), column widths and notes
-    // carry nothing active (a linked paste of values still writes formulas).
+    // carry nothing active. A linked paste writes a formula into every cell whatever `what` says,
+    // except for column widths and notes, which write no cells at all.
     let passive =
-        matches!(what, What::Formats | What::ColumnWidths | What::Comments) || (!link && matches!(what, What::Values | What::ValuesAndNumberFormats));
+        matches!(what, What::ColumnWidths | What::Comments) || (!link && matches!(what, What::Formats | What::Values | What::ValuesAndNumberFormats));
     if !same_doc && !passive {
         let d = s.doc_mut()?;
         d.trust = d.trust.receive(clip.trust);
