@@ -39,7 +39,10 @@ version.
 - **Inputs**: `kind` (`cell` or `range`), `rows` and `cols` as `[min, max]` (0 for no maximum;
   rows exclude the header), `header`, `colTypes` (`number`, `text`, `date`, `bool`, `any`),
   `nonEmpty` and `defaultRef`. These declare what a range must look like for the macro to work
-  on it. This version stores and checks the declaration; it does not bind inputs or run macros.
+  on it. An input's name is letters, digits and `_`, starting with a letter, and is neither a
+  token of its own (`Output`, `Row`, `Column`, `Name`) nor something that reads as a cell
+  reference (`Q1`), so a step written with plain A1 text keeps meaning the cell. This version
+  stores and checks the declaration; it does not bind inputs or run macros.
 - **Limits**: 1,000 macros a workbook, 10,000 steps a macro, and Repeat and If nested 4 deep.
 
 ## Storage

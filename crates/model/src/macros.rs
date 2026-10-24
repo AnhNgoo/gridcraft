@@ -113,6 +113,10 @@ impl Macro {
             if ["Output", "Row", "Column", "Name"].iter().any(|r| r.eq_ignore_ascii_case(n)) {
                 return Err(format!("'{n}' is a token of its own and can't name an input."));
             }
+            // A step written with plain A1 text (a recorded one) must keep meaning the cell.
+            if gridcraft_core::RangeRef::parse(n).is_some() {
+                return Err(format!("'{n}' reads as a cell reference and can't name an input."));
+            }
             if self.inputs.iter().take(k).any(|o| o.name.eq_ignore_ascii_case(n)) {
                 return Err(format!("Two inputs are called '{n}'."));
             }

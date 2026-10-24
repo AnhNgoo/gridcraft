@@ -150,6 +150,20 @@ fn a_visible_name_that_looks_like_macro_storage_is_left_alone() {
 }
 
 #[test]
+fn input_names_that_read_as_cell_references_are_refused() {
+    // A recorded step holds plain A1 text; an input called `Q1` would take its place.
+    let with_input = |name: &str| json!({"name": "M", "inputs": [{"name": name}]});
+    for name in ["Q1", "AB12", "Sum1", "a1"] {
+        let err = parse_macro(&with_input(name)).unwrap_err();
+        assert!(err.contains("reads as a cell reference"), "{name}: {err}");
+    }
+    for name in ["Amount", "Q", "Sales_Q1", "Total1a"] {
+        assert!(parse_macro(&with_input(name)).is_ok(), "{name}");
+    }
+    assert!(parse_macro(&with_input("Row")).unwrap_err().contains("token of its own"));
+}
+
+#[test]
 fn a_hidden_macro_name_this_build_did_not_write_is_kept() {
     // `_gc_macro_index_0` is not a numbered item: it is neither read nor dropped on open, and a
     // save with macros keeps it beside the items written.
