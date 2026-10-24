@@ -76,7 +76,11 @@ pub fn set_many(wb: &mut Workbook, items: &[(String, String)]) -> Result<()> {
                 MAX_ITEM_CHARS / (1024 * 1024)
             )));
         }
-        keys.insert(key.to_ascii_lowercase());
+        // Two items under one key (names compare without case) would leave two hidden names of
+        // one name, of which an xlsx file keeps one: a caller's mistake, refused.
+        if !keys.insert(key.to_ascii_lowercase()) {
+            return Err(EngineError::Other(format!("`{key}` is given twice.")));
+        }
         for (i, formula) in chunk_formulas(text).into_iter().enumerate() {
             planned.push(DefinedName { name: format!("{PREFIX}{key}_{i}"), scope: None, formula, comment: "GridCraft data".into(), hidden: true });
         }
@@ -373,6 +377,18 @@ mod tests {
         remove(&mut wb, "watch");
         remove(&mut wb, "other");
         assert_eq!(wb.names, vec![own]);
+    }
+
+    #[test]
+    fn set_many_refuses_one_key_twice() {
+        // Two items under one key, in any case, would leave two hidden names of one name.
+        let mut wb = Workbook::new();
+        wb.names.push(name("_gc_other_0", "\"stays\""));
+        let err = set_many(&mut wb, &[("k".into(), "a".into()), ("K".into(), "b".into())]).unwrap_err().to_string();
+        assert!(err.contains("given twice"), "{err}");
+        assert_eq!(wb.names.len(), 1, "nothing changed");
+        set_many(&mut wb, &[("k".into(), "a".into()), ("k2".into(), "b".into())]).unwrap();
+        assert_eq!((get(&wb, "k").as_deref(), get(&wb, "K2").as_deref(), get(&wb, "other").as_deref()), (Some("a"), Some("b"), Some("stays")));
     }
 
     #[test]
