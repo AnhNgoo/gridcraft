@@ -8,7 +8,7 @@
 //! one name each, `_sc_<key>`; reading accepts that form as well, so those items can move to this
 //! format later, and a write of the same key replaces it.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashSet};
 
 use gridcraft_model::{DefinedName, Workbook};
 use serde_json::Value as Json;
@@ -59,28 +59,40 @@ pub fn get(wb: &Workbook, key: &str) -> Option<String> {
 
 /// Stores `text` under `key`, replacing what was there (in either format). Empty text removes it.
 pub fn set(wb: &mut Workbook, key: &str, text: &str) -> Result<()> {
-    check_key(key)?;
-    if text.chars().count() > MAX_ITEM_CHARS {
-        return Err(EngineError::Other(format!("The data is too large to keep in the workbook ({} MB at most).", MAX_ITEM_CHARS / (1024 * 1024))));
+    set_many(wb, &[(key.to_string(), text.to_string())])
+}
+
+/// Stores every `(key, text)` of `items` as [`set`] would, with the checks done before anything
+/// changes and one pass over the names for all of them, so writing a thousand items into a
+/// workbook with many thousands of names stays near-linear.
+pub fn set_many(wb: &mut Workbook, items: &[(String, String)]) -> Result<()> {
+    let mut planned = Vec::new();
+    let mut keys: HashSet<String> = HashSet::new();
+    for (key, text) in items {
+        check_key(key)?;
+        if text.chars().count() > MAX_ITEM_CHARS {
+            return Err(EngineError::Other(format!(
+                "The data is too large to keep in the workbook ({} MB at most).",
+                MAX_ITEM_CHARS / (1024 * 1024)
+            )));
+        }
+        keys.insert(key.to_ascii_lowercase());
+        for (i, formula) in chunk_formulas(text).into_iter().enumerate() {
+            planned.push(DefinedName { name: format!("{PREFIX}{key}_{i}"), scope: None, formula, comment: "GridCraft data".into(), hidden: true });
+        }
     }
-    let formulas = chunk_formulas(text);
-    // A visible name of the item's shape is someone's own (see `item_of`); a hidden name beside
-    // it with the same name would be the one an xlsx file drops. Refuse before changing anything,
-    // in one pass over the names (a file can carry many thousands).
-    let chunks = formulas.len() as u64;
-    let taken = |n: &&DefinedName| {
-        n.scope.is_none() && !n.hidden && parse_name(&n.name).is_some_and(|(k, i)| k.eq_ignore_ascii_case(key) && i.is_some_and(|i| i < chunks))
-    };
-    if let Some(n) = wb.names.iter().find(taken) {
+    // A visible name of an item's shape is someone's own (see `item_of`); a hidden name beside
+    // it with the same name would be the one an xlsx file drops. Refuse before changing anything.
+    let names: HashSet<String> = planned.iter().map(|n| n.name.to_ascii_lowercase()).collect();
+    if let Some(n) = wb.names.iter().find(|n| n.scope.is_none() && !n.hidden && names.contains(&n.name.to_ascii_lowercase())) {
         return Err(EngineError::Other(format!(
             "The workbook has a defined name '{}', which GridCraft needs for its own data. Rename it first.",
             n.name
         )));
     }
-    remove(wb, key);
-    for (i, formula) in formulas.into_iter().enumerate() {
-        wb.names.push(DefinedName { name: format!("{PREFIX}{key}_{i}"), scope: None, formula, comment: "GridCraft data".into(), hidden: true });
-    }
+    // What was there under these keys goes, in either format, then the new chunks come.
+    wb.names.retain(|n| !item_of(n).is_some_and(|(k, _)| keys.contains(&k.to_ascii_lowercase())));
+    wb.names.extend(planned);
     Ok(())
 }
 

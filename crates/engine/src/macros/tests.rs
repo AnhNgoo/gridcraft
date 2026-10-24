@@ -150,6 +150,76 @@ fn a_visible_name_that_looks_like_macro_storage_is_left_alone() {
 }
 
 #[test]
+fn a_hidden_macro_name_this_build_did_not_write_is_kept() {
+    // `_gc_macro_index_0` is not a numbered item: it is neither read nor dropped on open, and a
+    // save with macros keeps it beside the items written.
+    let mut wb = Workbook::new();
+    let theirs = hidden("_gc_macro_index_0", "{}");
+    wb.names.push(theirs.clone());
+    wb.macros.push(sample_macro("Totals"));
+    let (raw, _) = gridcraft_xlsx::read_xlsx(&crate::io::save_bytes(&wb, "book.xlsx").unwrap()).unwrap();
+    let names = names_of(&raw);
+    assert!(names.contains(&"_gc_macro_index_0".to_string()) && names.contains(&"_gc_macro_0_0".to_string()), "{names:?}");
+    let (back, warnings) = crate::io::open_bytes("book.xlsx", &crate::io::save_bytes(&wb, "book.xlsx").unwrap()).unwrap();
+    assert!(warnings.is_empty(), "{warnings:?}");
+    assert_eq!(back.macros, wb.macros);
+    assert_eq!(names_of(&back), ["_gc_macro_index_0"]);
+}
+
+#[test]
+fn workbook_snapshots_share_the_macro_list_until_it_changes() {
+    // An undo snapshot or a copy made for a cell edit holds the same list, not a copy of every
+    // step; the undo budget charges a list only once it is a snapshot's own.
+    let mut wb = Workbook::new();
+    wb.macros.push(sample_macro("Totals"));
+    let snapshot = wb.clone();
+    assert!(wb.macros.shares(&snapshot.macros));
+    assert_eq!(crate::history_retained_bytes(&snapshot, &wb), std::mem::size_of::<Workbook>());
+    wb.macros.push(sample_macro("More"));
+    assert!(!wb.macros.shares(&snapshot.macros), "a write copies the list first");
+    assert_eq!(snapshot.macros.len(), 1);
+    assert!(crate::history_retained_bytes(&snapshot, &wb) > std::mem::size_of::<Workbook>());
+    // The copy is per list, not per workbook copy: cloning again shares the new list.
+    let again = wb.clone();
+    assert!(wb.macros.shares(&again.macros));
+    let rebuilt: Macros = wb.macros.iter().cloned().collect();
+    assert_eq!(rebuilt, wb.macros);
+    assert_eq!(rebuilt.into_iter().count(), 2);
+}
+
+#[test]
+fn a_macro_built_in_code_goes_through_the_size_check_too() {
+    // `check` is the one check for every path, so a macro that passes it never makes a save fail.
+    let big = Macro {
+        name: "Big".into(),
+        steps: vec![Step::command("cell.set", json!({"input": "x".repeat(crate::cmd::stash::MAX_ITEM_CHARS)}))],
+        ..Macro::default()
+    };
+    assert!(big.check_limits().is_ok(), "the model's limits say nothing about the size");
+    assert!(check(&big).unwrap_err().contains("too large"));
+    let mut wb = Workbook::new();
+    wb.macros.push(big);
+    assert!(crate::io::save_bytes(&wb, "book.xlsx").is_err(), "a macro that fails `check` fails the save");
+}
+
+#[test]
+fn a_save_refuses_a_clashing_visible_name_before_changing_anything() {
+    let mut wb = Workbook::new();
+    wb.macros.push(sample_macro("A"));
+    wb.macros.push(sample_macro("B"));
+    let own = DefinedName { hidden: false, ..hidden("_GC_MACRO_1_0", "mine") };
+    wb.names.push(own.clone());
+    wb.names.push(hidden("_gc_macro_7_0", "stale"));
+    let err = crate::io::save_bytes(&wb, "book.xlsx").unwrap_err().to_string();
+    assert!(err.contains("_GC_MACRO_1_0"), "{err}");
+    assert_eq!(wb.names.len(), 2, "nothing changed");
+    wb.names.remove(0);
+    let (raw, _) = gridcraft_xlsx::read_xlsx(&crate::io::save_bytes(&wb, "book.xlsx").unwrap()).unwrap();
+    let names = names_of(&raw);
+    assert_eq!(names, ["_gc_macro_0_0", "_gc_macro_1_0"], "the stale item went in the same pass");
+}
+
+#[test]
 fn scripts_and_vba_stay_as_they_are() {
     // Automate scripts keep their own storage, and a VBA project is carried through unchanged.
     let mut wb = Workbook::new();

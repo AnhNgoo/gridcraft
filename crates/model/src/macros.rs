@@ -121,6 +121,75 @@ impl Macro {
     }
 }
 
+/// The macros of a workbook. Workbook snapshots share the list until one of them changes it, so
+/// an undo entry or a copy made for a cell edit holds the same list rather than a copy of every
+/// step. Reads go through `Deref` to the list; a write through `DerefMut` first copies the list
+/// when another snapshot shares it.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[serde(transparent)]
+pub struct Macros(std::sync::Arc<Vec<Macro>>);
+
+impl Macros {
+    pub fn is_empty(&self) -> bool {
+        self.0.is_empty()
+    }
+
+    /// Whether both hold the one list, with no copy made between them.
+    pub fn shares(&self, other: &Macros) -> bool {
+        std::sync::Arc::ptr_eq(&self.0, &other.0)
+    }
+
+    /// A rough size of the list in memory, for the undo budget.
+    pub fn estimated_bytes(&self) -> usize {
+        self.0.iter().fold(0usize, |bytes, m| {
+            let text = m.name.len().saturating_add(m.description.len());
+            let steps = m.step_count().saturating_mul(std::mem::size_of::<Step>().saturating_add(64));
+            bytes.saturating_add(std::mem::size_of::<Macro>()).saturating_add(text).saturating_add(steps)
+        })
+    }
+}
+
+impl From<Vec<Macro>> for Macros {
+    fn from(list: Vec<Macro>) -> Macros {
+        Macros(std::sync::Arc::new(list))
+    }
+}
+
+impl std::ops::Deref for Macros {
+    type Target = Vec<Macro>;
+    fn deref(&self) -> &Vec<Macro> {
+        &self.0
+    }
+}
+
+impl std::ops::DerefMut for Macros {
+    fn deref_mut(&mut self) -> &mut Vec<Macro> {
+        std::sync::Arc::make_mut(&mut self.0)
+    }
+}
+
+impl IntoIterator for Macros {
+    type Item = Macro;
+    type IntoIter = std::vec::IntoIter<Macro>;
+    fn into_iter(self) -> Self::IntoIter {
+        std::sync::Arc::unwrap_or_clone(self.0).into_iter()
+    }
+}
+
+impl<'a> IntoIterator for &'a Macros {
+    type Item = &'a Macro;
+    type IntoIter = std::slice::Iter<'a, Macro>;
+    fn into_iter(self) -> Self::IntoIter {
+        self.0.iter()
+    }
+}
+
+impl FromIterator<Macro> for Macros {
+    fn from_iter<I: IntoIterator<Item = Macro>>(iter: I) -> Macros {
+        Macros(std::sync::Arc::new(iter.into_iter().collect()))
+    }
+}
+
 /// Refuses a format version newer than [`MACRO_VERSION`]: this build would drop the fields it
 /// doesn't know, and a save would then write the rest back as if it were the whole macro.
 pub fn check_version(v: u64) -> Result<(), String> {

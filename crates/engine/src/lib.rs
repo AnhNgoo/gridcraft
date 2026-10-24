@@ -224,6 +224,10 @@ fn history_retained_bytes(older: &Workbook, newer: &Workbook) -> usize {
         let next = newer.sheets.get(index).map_or(&empty, |next| &next.cells);
         bytes = bytes.saturating_add(sheet.cells.retained_bytes_against(next));
     }
+    // Snapshots share the macro list until a change to it; a snapshot with its own list keeps it.
+    if !older.macros.shares(&newer.macros) {
+        bytes = bytes.saturating_add(older.macros.estimated_bytes());
+    }
     bytes
 }
 
