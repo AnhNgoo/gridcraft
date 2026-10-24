@@ -775,16 +775,26 @@ fn a_linked_paste_carries_the_files_trust_whatever_it_pastes() {
     let mut s = s();
     open_json(&mut s, &gridcraft_model::Workbook::new());
     set(&mut s, "A1", "=1+1");
+    s.execute("review.newComment", json!({"cell": "A1", "text": "theirs"})).unwrap();
+    let wide = gridcraft_model::LineInfo { size: Some(123.0), ..Default::default() };
+    std::sync::Arc::make_mut(&mut s.doc_mut().unwrap().wb).sheet_mut(0).unwrap().cols.insert(0, wide);
     s.execute("edit.copy", json!({"range": "A1"})).unwrap();
-    let b1 = |s: &Session| s.doc().unwrap().wb.sheet(0).unwrap().cell(gridcraft_core::CellRef::parse("B1").unwrap()).cloned();
+    let b1 = gridcraft_core::CellRef::parse("B1").unwrap();
+    let sheet = |s: &Session| s.doc().unwrap().wb.sheet(0).unwrap().clone();
     for what in ["columnWidths", "comments"] {
         s.new_workbook();
         s.execute("edit.pasteSpecial", json!({"what": what, "link": true, "at": "B1"})).unwrap();
         assert_eq!(trust(&s), Trust::Local, "{what}");
-        assert!(b1(&s).is_none(), "a linked paste of {what} writes no cell");
+        let sh = sheet(&s);
+        assert!(sh.cell(b1).is_none(), "a linked paste of {what} writes no cell");
+        if what == "comments" {
+            assert_eq!(sh.comments.get(&b1).map(|c| c.text.as_str()), Some("theirs"));
+        } else {
+            assert_eq!(sh.cols.get(&1).and_then(|c| c.size), Some(123.0));
+        }
     }
     s.new_workbook();
     s.execute("edit.pasteSpecial", json!({"what": "formats", "link": true, "at": "B1"})).unwrap();
-    assert!(b1(&s).is_some_and(|c| c.formula.is_some()), "a linked paste of formats writes a formula");
+    assert!(sheet(&s).cell(b1).is_some_and(|c| c.formula.is_some()), "a linked paste of formats writes a formula");
     assert_eq!(trust(&s), Trust::FromFile);
 }
