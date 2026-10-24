@@ -233,6 +233,110 @@ fn shifting_makes_room_and_is_checked_again() {
 }
 
 #[test]
+fn a_shift_that_would_move_an_input_is_refused() {
+    // A shift inserts cells over the conflicting block, which moves the block's columns (or rows)
+    // from there on. When one of the macro's own inputs lies in the way, its data would move and
+    // shear while the run keeps the old coordinates, so the shift is refused and nothing changes.
+    let mut s = s();
+    data(&mut s);
+    set(&mut s, "B1", "Old title");
+    put(
+        &mut s,
+        json!({"name": "Title", "inputs": [{"name": "Input", "header": true}], "steps": [
+            {"command": "cell.set", "params": {"cell": "Input.cell(0,1)", "input": "Report"}}
+        ]}),
+    );
+    let start = s.doc().unwrap().wb.clone();
+    let err = s.execute("macro.run", json!({"name": "Title", "inputs": "B2:C5", "onConflict": "shiftDown"})).unwrap_err().to_string();
+    assert!(err.contains("would move Input (") && err.contains("B2:C5"), "{err}");
+    assert!(Arc::ptr_eq(&s.doc().unwrap().wb, &start), "nothing changed");
+    assert_eq!((v(&s, "B1").display(), v(&s, "B3").display()), ("Old title".into(), "Ann".into()));
+    // Writing left of the input and shifting right would move it too.
+    put(
+        &mut s,
+        json!({"name": "Left", "inputs": [{"name": "Input", "header": true}], "steps": [
+            {"command": "cell.set", "params": {"cell": "Input.offset(1,-1).cell(1,1)", "input": "x"}}
+        ]}),
+    );
+    set(&mut s, "A3", "in the way");
+    let err = s.execute("macro.run", json!({"name": "Left", "inputs": "B2:C5", "onConflict": "shiftRight"})).unwrap_err().to_string();
+    assert!(err.contains("would move Input"), "{err}");
+    // The output counts as well.
+    put(
+        &mut s,
+        json!({"name": "Out", "inputs": [{"name": "Input", "header": true}], "output": {"anchor": "Input.below(1)"}, "steps": [
+            {"command": "cell.set", "params": {"cell": "Input.cell(0,1)", "input": "Report"}}
+        ]}),
+    );
+    let err = s.execute("macro.run", json!({"name": "Out", "inputs": "B2:C5", "onConflict": "shiftDown"})).unwrap_err().to_string();
+    assert!(err.contains("would move Input"), "{err}");
+    // A shift that moves nothing of the macro's own still works, over the block of every written
+    // cell, so a row the macro writes stays together.
+    set(&mut s, "H1", "elsewhere");
+    put(
+        &mut s,
+        json!({"name": "Wide", "inputs": [{"name": "Input", "header": true}], "steps": [
+            {"command": "cell.set", "params": {"cell": "H1", "input": "over"}},
+            {"command": "cell.set", "params": {"cell": "H9", "input": "far"}}
+        ]}),
+    );
+    s.execute("macro.run", json!({"name": "Wide", "inputs": "B2:C5", "onConflict": "shiftDown"})).unwrap();
+    assert_eq!((v(&s, "H1").display(), v(&s, "H9").display(), v(&s, "H10").display()), ("over".into(), "far".into(), "elsewhere".into()));
+    assert_eq!(v(&s, "B3").display(), "Ann", "the input did not move");
+}
+
+#[test]
+fn a_dry_run_leaves_a_clean_workbook_clean() {
+    // `view.zoom` and `sheet.activate` move the saved mark to the current workbook on a clean
+    // document; the dry run's rollback puts the workbook back, so the mark must come back too.
+    let mut s = s();
+    data(&mut s);
+    let d = s.doc_mut().unwrap();
+    d.saved = d.wb.clone();
+    assert!(!s.doc().unwrap().is_dirty());
+    put(&mut s, json!({"name": "Look", "steps": [{"command": "view.zoom", "params": {"percent": 120}}]}));
+    s.execute("macro.check", json!({"name": "Look"})).unwrap();
+    assert!(!s.doc().unwrap().is_dirty(), "a dry run changed nothing");
+    // A run refused by the conflict rule changed nothing either.
+    put(&mut s, totals());
+    set(&mut s, "E3", "taken");
+    let d = s.doc_mut().unwrap();
+    d.saved = d.wb.clone();
+    assert!(s.execute("macro.run", json!({"name": "Totals", "inputs": "B2:C5", "onConflict": "fail"})).is_err());
+    assert!(!s.doc().unwrap().is_dirty());
+}
+
+#[test]
+fn the_answer_to_the_question_counts_however_ask_was_given() {
+    let mut s = s();
+    data(&mut s);
+    put(&mut s, totals());
+    set(&mut s, "E3", "taken");
+    let p = json!({"name": "Totals", "inputs": "B2:C5", "onConflict": "ask"});
+    assert!(matches!(s.execute("macro.run", p.clone()), Err(EngineError::Confirm(_))));
+    let mut answered = p;
+    answered["overwrite"] = json!(true);
+    s.execute("macro.run", answered).unwrap();
+    assert_eq!(v(&s, "E3").display(), "400");
+}
+
+#[test]
+fn the_step_limit_is_one_budget_across_the_dry_run_and_the_run() {
+    // 300 x 300 passes is under the limit for one phase; the dry run and the run together are not.
+    let mut s = s();
+    put(
+        &mut s,
+        json!({"name": "Spin", "steps": [{"type": "repeat", "over": "A1:A300", "body": [
+            {"type": "repeat", "over": "A1:A300", "body": [{"type": "if", "cell": "A1", "op": "empty"}]}
+        ]}]}),
+    );
+    let err = s.execute("macro.run", json!({"name": "Spin"})).unwrap_err().to_string();
+    assert!(err.contains("more than 100000 steps"), "{err}");
+    // With no dry run (overwrite), the same macro fits.
+    s.execute("macro.run", json!({"name": "Spin", "onConflict": "overwrite"})).unwrap();
+}
+
+#[test]
 fn the_footprint_covers_other_sheets_objects_and_edges() {
     let mut s = s();
     data(&mut s);
