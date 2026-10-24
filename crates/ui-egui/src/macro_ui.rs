@@ -352,7 +352,11 @@ pub fn macros_dialog(app: &mut SheetApp, ui: &mut Ui, d: &mut Dialog, open: &mut
         return;
     }
     // Scripts that came with a file stay disabled until the user trusts the workbook (#2178).
-    let untrusted = d.result.as_ref().and_then(Json::as_array).is_some_and(|items| items.iter().any(|it| it.get("trusted").and_then(Json::as_bool) == Some(false)));
+    let untrusted = d
+        .result
+        .as_ref()
+        .and_then(Json::as_array)
+        .is_some_and(|items| items.iter().any(|it| it.get("trusted").and_then(Json::as_bool) == Some(false)));
     if untrusted {
         ui.horizontal(|ui| {
             ui.weak("Scripts in this workbook came from a file and are disabled.");
