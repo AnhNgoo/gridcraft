@@ -52,6 +52,8 @@ pub struct Picker {
 /// The editor's state while it is open.
 #[derive(Clone, Debug)]
 pub struct Editor {
+    /// The workbook (`DocState::uid`) the macro is in: the editor saves, checks and runs there only.
+    pub doc: u64,
     pub draft: Macro,
     /// The name the macro is saved under (`None` until it is first saved).
     pub saved_as: Option<String>,
@@ -485,7 +487,9 @@ pub fn open(app: &mut SheetApp, params: &Json) -> Option<Dialog> {
     let start_debug = params["debug"].as_bool() == Some(true) && saved_as.is_some();
     let title = format!("Macro: {}", draft.name);
     let selected = (!draft.steps.is_empty()).then(|| "1".to_string());
+    let doc = doc.uid;
     app.macros.editor = Some(Editor {
+        doc,
         draft,
         dirty: saved_as.is_none(),
         saved_as,
@@ -511,8 +515,27 @@ pub fn open(app: &mut SheetApp, params: &Json) -> Option<Dialog> {
 
 // ---------------------------------------------------------------- actions
 
+/// Whether the editor's workbook is the active one, which the `macro.*` commands act on. When
+/// another workbook is active (File › New, Switch Window, an agent), says so and returns false.
+fn at_home(app: &mut SheetApp, ed: &Editor, title: &str) -> bool {
+    if app.session.active().is_some_and(|d| d.uid == ed.doc) {
+        return true;
+    }
+    let book = home_title(app, ed);
+    app.message = Some((title.into(), format!("The macro “{}” is in “{book}”. Switch back to it to save, check or run the macro.", ed.draft.name)));
+    false
+}
+
+/// The title of the editor's workbook.
+fn home_title(app: &SheetApp, ed: &Editor) -> String {
+    app.session.documents().iter().find(|d| d.uid == ed.doc).map(|d| d.display_title()).unwrap_or_default()
+}
+
 /// Saves the draft (renaming the saved macro if its name changed). False when it couldn't.
 pub fn save(app: &mut SheetApp, ed: &mut Editor) -> bool {
+    if !at_home(app, ed, "Save Macro") {
+        return false;
+    }
     ed.draft.name = ed.draft.name.trim().to_string();
     if let Err(e) = ed.draft.check_limits() {
         app.message = Some(("Save Macro".into(), e));
@@ -568,7 +591,7 @@ fn error_step(msg: &str) -> Option<(String, String)> {
 pub fn check(app: &mut SheetApp, ed: &mut Editor) {
     // A reference box picking from the grid would take the selections the action makes.
     ed.refs.pick = None;
-    if !ensure_saved(app, ed) {
+    if !at_home(app, ed, "Check Macro") || !ensure_saved(app, ed) {
         return;
     }
     ed.errors.clear();
@@ -619,7 +642,7 @@ fn check_text(v: &Json) -> String {
 /// Run: runs the saved macro as one undo step.
 pub fn run(app: &mut SheetApp, ed: &mut Editor) {
     ed.refs.pick = None;
-    if !ensure_saved(app, ed) {
+    if !at_home(app, ed, "Run Macro") || !ensure_saved(app, ed) {
         return;
     }
     ed.errors.clear();
@@ -660,7 +683,7 @@ pub fn debug_action(app: &mut SheetApp, ed: &mut Editor, action: &str) {
     // Starting selects the first step: take Run to Here's target before that.
     let target = ed.selected.clone().filter(|s| split_path(s).is_some());
     if !debugging {
-        if !ensure_saved(app, ed) {
+        if !at_home(app, ed, "Debug Macro") || !ensure_saved(app, ed) {
             return;
         }
         ed.errors.clear();
@@ -752,6 +775,13 @@ pub fn window(app: &mut SheetApp, ctx: &egui::Context, d: &mut Dialog, open: &mu
     if ed.debug.is_some() && app.session.macro_debug.is_none() {
         ed.debug = None;
     }
+    // Its workbook was closed: the macro went with it.
+    if !app.session.documents().iter().any(|d| d.uid == ed.doc) {
+        *open = false;
+        return;
+    }
+    let home = app.session.active().is_some_and(|d| d.uid == ed.doc);
+    let home_title = home_title(app, &ed);
     let dirty_mark = if ed.dirty { " •" } else { "" };
     let screen = ctx.content_rect();
     let mut win_open = true;
@@ -766,12 +796,21 @@ pub fn window(app: &mut SheetApp, ctx: &egui::Context, d: &mut Dialog, open: &mu
         .default_pos(pos2((screen.right() - 860.0).max(screen.left() + 20.0), screen.top() + 190.0))
         .open(&mut win_open)
         .show(ctx, |ui| {
-            if let Some(key) = ed.refs.collapsed.clone() {
-                ref_edit(app, ui, d, &mut ed.refs, &key, 340.0);
-                apply_ref_value(&mut ed, d, &key);
-                return;
+            if !home {
+                let t = Tokens::get(ui.ctx());
+                ui.label(
+                    egui::RichText::new(format!("This macro is in “{home_title}”. Switch back to it to edit, check or run the macro."))
+                        .color(t.danger),
+                );
             }
-            body(app, ui, d, &mut ed);
+            ui.add_enabled_ui(home, |ui| {
+                if let Some(key) = ed.refs.collapsed.clone() {
+                    ref_edit(app, ui, d, &mut ed.refs, &key, 340.0);
+                    apply_ref_value(&mut ed, d, &key);
+                    return;
+                }
+                body(app, ui, d, &mut ed);
+            });
         });
     if ed.refs.pick.is_some() && !ed.refs.drawn {
         ed.refs.pick = None;
@@ -790,10 +829,11 @@ pub fn window(app: &mut SheetApp, ctx: &egui::Context, d: &mut Dialog, open: &mu
         ed.picker = None;
     }
     prompts(app, ctx, &mut ed, open);
-    app.grid.macro_overlay = if *open { overlay(app, &ed) } else { None };
+    // The overlays mark the editor's workbook's cells, so they show only while it is active.
+    app.grid.macro_overlay = if *open && home { overlay(app, &ed) } else { None };
     if *open {
         app.macros.editor = Some(ed);
-    } else {
+    } else if home {
         restore_home(app, &ed.refs);
     }
 }

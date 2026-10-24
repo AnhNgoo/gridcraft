@@ -290,7 +290,10 @@ other macros open; a macro that was left out is not in the saved file.
   reference boxes that take a typed reference or a selection on the grid and switch between a
   token relative to the example input (Rel) and an absolute reference (Abs); the Inputs tab sets
   each input's shape, header and column types, and Use current selection as example infers them;
-  the Output tab sets the anchor and what to do when results would land on data.
+  the Output tab sets the anchor and what to do when results would land on data. The editor
+  belongs to the workbook it opened in: while another workbook is active it says so and Save,
+  Check, Run and Debug wait until that workbook is active again, and closing the workbook closes
+  the editor.
 - **Debug bar.** Check dry-runs the macro and colours the grid: inputs blue, the cells it writes
   green, the cells among them that hold data red. Run runs it as one undo step. Step, Continue and
   Run to Here start the debugger when needed (`macro.debug` with the editor's breakpoints and

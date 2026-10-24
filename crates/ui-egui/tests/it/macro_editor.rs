@@ -359,3 +359,46 @@ fn enter_in_change_never_picks_a_control_step() {
         assert!(matches!(&ed.draft.steps[0].kind, StepKind::Command { .. }), "{search:?}: {:?}", ed.draft.steps[0].kind);
     }
 }
+
+#[test]
+fn the_editor_works_only_on_the_workbook_it_opened_in() {
+    let mut h = harness();
+    // A new macro whose one step writes A1, not saved yet.
+    h.state_mut().open_dialog("macroEditor", json!({"new": "Fresh"}));
+    h.run_steps(3);
+    let step = gridcraft_engine::model::Step::command("cell.set", json!({"cell": "A1", "input": "ran"}));
+    h.state_mut().macros.editor.as_mut().unwrap().draft.steps = vec![step];
+    let book1 = h.state().session.active().unwrap().uid;
+    // Another workbook becomes active while the editor is open (File › New, Switch Window, an agent).
+    h.state_mut().session.new_workbook();
+    h.run_steps(3);
+    let mut ed = h.state_mut().macros.editor.take().unwrap();
+    let app = h.state_mut();
+    // Save, Check, Run and Debug never act on the other workbook.
+    assert!(!gridcraft_ui_egui::macro_editor::save(app, &mut ed));
+    gridcraft_ui_egui::macro_editor::check(app, &mut ed);
+    gridcraft_ui_egui::macro_editor::run(app, &mut ed);
+    gridcraft_ui_egui::macro_editor::debug_action(app, &mut ed, "step");
+    assert!(app.session.macro_debug.is_none());
+    assert!(app.session.active().unwrap().wb.macros.is_empty(), "nothing was saved into the other workbook");
+    assert_eq!(value(&h, "A1"), Value::Empty, "nothing ran there");
+    assert!(h.state().message.as_ref().is_some_and(|(_, m)| m.contains("Book1")), "{:?}", h.state().message);
+    h.state_mut().message = None;
+    h.state_mut().macros.editor = Some(ed);
+    h.run_steps(3);
+    assert!(h.query_by_label_contains("Switch back to it").is_some(), "the editor says whose macro it is");
+    // Back in its own workbook, the editor saves there.
+    let mut ed = h.state_mut().macros.editor.take().unwrap();
+    let app = h.state_mut();
+    let i = app.session.documents().iter().position(|d| d.uid == book1).unwrap();
+    app.session.set_active(i);
+    assert!(gridcraft_ui_egui::macro_editor::save(app, &mut ed));
+    assert_eq!(app.session.active().unwrap().wb.macros.iter().map(|m| m.name.as_str()).collect::<Vec<_>>(), ["Fresh"]);
+    app.macros.editor = Some(ed);
+    h.run_steps(3);
+    // Closing the workbook (without saving it) closes its editor.
+    h.state_mut().run("file.close", json!({"force": true})).unwrap();
+    h.run_steps(3);
+    assert!(h.state().macros.editor.is_none());
+    assert!(h.state().dialog.as_ref().is_none_or(|d| d.name() != "macroEditor"));
+}
