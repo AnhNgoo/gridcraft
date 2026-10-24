@@ -572,6 +572,19 @@ fn recorded_ids(s: &Session) -> Vec<String> {
 }
 
 #[test]
+fn a_headless_call_that_fails_for_want_of_a_file_is_not_recorded() {
+    // `file.open` with no file queues a dialog and succeeds; a headless caller gets an error for
+    // it instead, so the recording keeps no step for it either.
+    let mut s = s();
+    s.start_recording();
+    set(&mut s, "A1", "1");
+    assert!(s.execute_headless("file.open", json!({})).is_err());
+    assert_eq!(recorded_ids(&s), ["cell.set"]);
+    let rec = s.stop_recording().unwrap();
+    assert_eq!(rec.dropped, 0);
+}
+
+#[test]
 fn the_recorder_keeps_top_level_calls_with_where_they_ran() {
     let mut s = s();
     s.execute("home.insertSheet", json!({})).unwrap();
