@@ -403,6 +403,67 @@ fn the_editor_works_only_on_the_workbook_it_opened_in() {
     assert!(h.state().dialog.as_ref().is_none_or(|d| d.name() != "macroEditor"));
 }
 
+/// Asks the window to close (the close button, Alt+F4, quitting) and returns the commands the
+/// app answered with over the next frames.
+fn request_window_close(h: &mut Harness) -> Vec<egui::ViewportCommand> {
+    h.input_mut().viewports.entry(egui::ViewportId::ROOT).or_default().events.push(egui::ViewportEvent::Close);
+    step_commands(h)
+}
+
+fn step_commands(h: &mut Harness) -> Vec<egui::ViewportCommand> {
+    let mut out = Vec::new();
+    for _ in 0..4 {
+        h.step();
+        out.extend(h.output().viewport_output.get(&egui::ViewportId::ROOT).map(|v| v.commands.clone()).unwrap_or_default());
+    }
+    out
+}
+
+#[test]
+fn quitting_asks_about_the_editors_unsaved_steps_first() {
+    let mut h = harness();
+    three(&mut h);
+    h.state_mut().macros.editor.as_mut().unwrap().draft.name = "Unsaved".into();
+    h.state_mut().macros.editor.as_mut().unwrap().dirty = true;
+    // As if the workbook had just been saved.
+    let d = h.state_mut().session.active_mut().unwrap();
+    d.saved = d.wb.clone();
+    h.run_steps(2);
+    // Every workbook is saved, but the draft is not: the window stays open and the editor asks.
+    let sent = request_window_close(&mut h);
+    assert!(sent.contains(&egui::ViewportCommand::CancelClose), "{sent:?}");
+    assert!(!sent.contains(&egui::ViewportCommand::Close), "{sent:?}");
+    assert!(h.query_by_label_contains("Save changes to macro “Unsaved”").is_some());
+    // Cancel keeps the app and the draft.
+    h.get_by_label("Cancel").click();
+    let sent = step_commands(&mut h);
+    assert!(!sent.contains(&egui::ViewportCommand::Close), "{sent:?}");
+    assert_eq!(h.state().macros.editor.as_ref().map(|e| e.draft.name.as_str()), Some("Unsaved"));
+    // Asked again, Don't Save closes the editor and then the window.
+    request_window_close(&mut h);
+    h.get_by_label("Don't Save").click();
+    let sent = step_commands(&mut h);
+    assert!(h.state().macros.editor.is_none());
+    assert!(sent.contains(&egui::ViewportCommand::Close), "{sent:?}");
+}
+
+#[test]
+fn quitting_with_the_editor_open_still_asks_about_unsaved_workbooks() {
+    let mut h = harness();
+    three(&mut h);
+    h.state_mut().run("cell.set", json!({"cell": "Z9", "input": "unsaved"})).unwrap();
+    h.run_steps(2);
+    let sent = request_window_close(&mut h);
+    assert!(sent.contains(&egui::ViewportCommand::CancelClose), "{sent:?}");
+    // The saved, unchanged editor closes and the window close goes on (the window then asks to
+    // close again, which a test harness has to do by hand); the workbook is asked about as
+    // without the editor.
+    assert!(h.state().macros.editor.is_none());
+    assert!(sent.contains(&egui::ViewportCommand::Close), "{sent:?}");
+    request_window_close(&mut h);
+    assert_eq!(h.state().dialog.as_ref().map(|d| d.name()), Some("saveChanges"));
+}
+
 #[test]
 fn a_dialog_asked_for_over_the_editor_says_why_it_did_not_open() {
     let mut h = harness();

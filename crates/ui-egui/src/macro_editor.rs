@@ -75,6 +75,10 @@ pub struct Editor {
     /// Asking whether to keep what a stopped debug run did (and then close, if `closing`).
     pub ask_stop: bool,
     pub closing: bool,
+    /// Close as the title bar's close button does (asking first) on the next frame.
+    pub close_requested: bool,
+    /// The window is quitting: once the editor has closed, the window close goes on.
+    pub quit: bool,
     /// Asking whether to save before closing.
     pub ask_close: bool,
     /// Start debugging on the first frame (Macros › Step Into).
@@ -503,6 +507,8 @@ pub fn open(app: &mut SheetApp, params: &Json) -> Option<Dialog> {
         errors: BTreeMap::new(),
         ask_stop: false,
         closing: false,
+        close_requested: false,
+        quit: false,
         ask_close: false,
         start_debug,
         start_check: params["check"].as_bool() == Some(true),
@@ -815,7 +821,7 @@ pub fn window(app: &mut SheetApp, ctx: &egui::Context, d: &mut Dialog, open: &mu
     if ed.refs.pick.is_some() && !ed.refs.drawn {
         ed.refs.pick = None;
     }
-    if !win_open {
+    if !win_open || std::mem::take(&mut ed.close_requested) {
         if app.session.macro_debug.is_some() {
             ed.ask_stop = true;
             ed.closing = true;
@@ -833,8 +839,23 @@ pub fn window(app: &mut SheetApp, ctx: &egui::Context, d: &mut Dialog, open: &mu
     app.grid.macro_overlay = if *open && home { overlay(app, &ed) } else { None };
     if *open {
         app.macros.editor = Some(ed);
-    } else if home {
-        restore_home(app, &ed.refs);
+    } else {
+        if home {
+            restore_home(app, &ed.refs);
+        }
+        if ed.quit {
+            ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+        }
+    }
+}
+
+/// Asks the open step editor to close, as its close button does: it asks about a debug run or
+/// unsaved steps first. With `quit` (the window is closing), the window close goes on once the
+/// editor has closed; a Cancel in its questions keeps both open.
+pub fn request_close(app: &mut SheetApp, quit: bool) {
+    if let Some(ed) = app.macros.editor.as_mut() {
+        ed.close_requested = true;
+        ed.quit = quit;
     }
 }
 
@@ -966,6 +987,7 @@ fn prompts(app: &mut SheetApp, ctx: &egui::Context, ed: &mut Editor, open: &mut 
             Some(None) => {
                 ed.ask_stop = false;
                 ed.closing = false;
+                ed.quit = false;
             }
             None => {}
         }
@@ -1000,7 +1022,10 @@ fn prompts(app: &mut SheetApp, ctx: &egui::Context, ed: &mut Editor, open: &mut 
                 ed.ask_close = false;
                 *open = false;
             }
-            Some(None) => ed.ask_close = false,
+            Some(None) => {
+                ed.ask_close = false;
+                ed.quit = false;
+            }
             None => {}
         }
     }

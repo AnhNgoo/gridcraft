@@ -293,7 +293,9 @@ other macros open; a macro that was left out is not in the saved file.
   the Output tab sets the anchor and what to do when results would land on data. The editor
   belongs to the workbook it opened in: while another workbook is active it says so and Save,
   Check, Run and Debug wait until that workbook is active again, and closing the workbook closes
-  the editor.
+  the editor. It keeps its window until it closes itself: another dialog asked for meanwhile is
+  refused with a message, and closing the app first asks about the editor's debug run and unsaved
+  steps, then about unsaved workbooks.
 - **Debug bar.** Check dry-runs the macro and colours the grid: inputs blue, the cells it writes
   green, the cells among them that hold data red. Run runs it as one undo step. Step, Continue and
   Run to Here start the debugger when needed (`macro.debug` with the editor's breakpoints and
