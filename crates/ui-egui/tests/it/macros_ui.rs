@@ -249,3 +249,37 @@ fn view_macros_record_macro_toggles_recording() {
     assert!(h.state().dialog.is_none());
     assert!(!h.state().session.is_recording());
 }
+
+#[test]
+fn the_macros_dialog_offers_trust_for_scripts_that_came_with_a_file() {
+    let mut s = Session::new();
+    s.new_workbook();
+    s.execute("automate.newScript", json!({"name": "Mark", "commands": [{"command": "cell.set", "params": {"cell": "D4", "input": "script"}}]}))
+        .unwrap();
+    // As when the workbook was opened with its scripts (#2178).
+    s.active_mut().unwrap().scripts_trusted = false;
+    let mut app = SheetApp::new(s, Default::default());
+    app.ui.ribbon_tab = "Automate".into();
+    let mut h = egui_kittest::Harness::builder().with_size(egui::vec2(1280.0, 800.0)).build_ui_state(
+        |ui, app: &mut SheetApp| {
+            let ctx = ui.ctx().clone();
+            app.logic(&ctx);
+            app.ui(ui);
+        },
+        app,
+    );
+    h.run_steps(3);
+    h.state_mut().open_dialog("macros", json!({}));
+    h.run_steps(2);
+    assert!(h.query_by_label_contains("came from a file and are disabled").is_some());
+    h.get_by_label("Trust Scripts").click();
+    // The dialog shrinks without the row: let it settle before the next click.
+    h.run_steps(4);
+    assert!(h.state().session.doc().unwrap().scripts_trusted);
+    assert!(h.query_by_label("Trust Scripts").is_none(), "the row goes once the scripts are trusted");
+    h.get_by_label("Mark    (script, 1 step)").click();
+    h.run_steps(2);
+    h.get_by_label("Run").click();
+    h.run_steps(3);
+    assert_eq!(value(&h, "D4"), Value::Text("script".into()));
+}

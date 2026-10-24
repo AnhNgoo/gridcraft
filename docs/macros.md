@@ -276,6 +276,8 @@ other macros open; a macro that was left out is not in the saved file.
   Macro opens the step editor on a new macro.
 - **Macros dialog** (Automate › Macros, View › Macros, Alt+F8). It lists the workbook's macros
   (with their shortcuts), then its Automate scripts, and says when the file carries a VBA project.
+  Scripts that came with an opened file stay disabled until Trust Scripts (`automate.trustScripts`)
+  trusts them for the session.
   Run runs the selected macro on the selection or the selected script; Step Into, Edit and Create
   open the step editor; Delete asks first; Options sets a macro's shortcut letter and description. The dialog keeps the result of `view.macros`,
   as before macros existed.
