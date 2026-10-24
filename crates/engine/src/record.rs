@@ -49,22 +49,18 @@ pub struct Recorder {
 impl Recorder {
     /// Adds a step, or counts it as dropped once the buffer is full.
     pub fn push(&mut self, step: RecordedStep) {
+        // Once a step has been dropped, or the step count is full, the rest are counted without
+        // being serialized (a `file.open` step holds a whole file).
+        if self.dropped > 0 || self.steps.len() >= RECORD_LIMIT {
+            self.dropped = self.dropped.saturating_add(1);
+            return;
+        }
         let size = serde_json::to_vec(&step).map_or(0, |v| v.len());
-        let fits = self.steps.len() < RECORD_LIMIT && self.bytes.saturating_add(size) <= RECORD_MAX_BYTES;
-        if fits && self.dropped == 0 {
+        if self.bytes.saturating_add(size) <= RECORD_MAX_BYTES {
             self.bytes = self.bytes.saturating_add(size);
             self.steps.push(step);
         } else {
             self.dropped = self.dropped.saturating_add(1);
         }
-    }
-
-    /// Forgets the steps after the first `steps` and puts the dropped count back to `dropped`,
-    /// for a command the caller received as failed after it was recorded.
-    pub fn truncate(&mut self, steps: usize, dropped: usize) {
-        for step in self.steps.drain(steps.min(self.steps.len())..) {
-            self.bytes = self.bytes.saturating_sub(serde_json::to_vec(&step).map_or(0, |v| v.len()));
-        }
-        self.dropped = dropped;
     }
 }
