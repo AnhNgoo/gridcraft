@@ -55,16 +55,25 @@ fn macros_over_the_limits_are_refused() {
     let flat = |n: usize| json!({"name": "Big", "steps": vec![json!({"command": "cell.set"}); n]});
     assert!(parse_macro(&flat(MAX_MACRO_STEPS)).is_ok());
     assert!(parse_macro(&flat(MAX_MACRO_STEPS + 1)).unwrap_err().contains("10000 steps"));
-    // Nested Repeat steps: 4 levels are fine, 5 are not.
-    let nest = |levels: usize| {
+    // Nested Repeat steps: 4 Repeats one inside the other are fine (the innermost holds a
+    // command, or nothing), a 5th is not.
+    let nest = |repeats: usize| {
         let mut step = json!({"command": "cell.set"});
-        for _ in 1..levels {
+        for _ in 0..repeats {
             step = json!({"type": "repeat", "over": "Input", "body": [step]});
         }
         json!({"name": "Deep", "steps": [step]})
     };
-    assert!(parse_macro(&nest(4)).is_ok());
-    assert!(parse_macro(&nest(5)).unwrap_err().contains("4 deep"));
+    assert!(parse_macro(&nest(MAX_MACRO_DEPTH)).is_ok());
+    assert_eq!(parse_macro(&nest(MAX_MACRO_DEPTH)).unwrap().step_count(), MAX_MACRO_DEPTH + 1);
+    assert!(parse_macro(&nest(MAX_MACRO_DEPTH + 1)).unwrap_err().contains("4 deep"));
+    let mut empty = json!({"type": "repeat", "over": "Input", "body": []});
+    for _ in 1..MAX_MACRO_DEPTH {
+        empty = json!({"type": "if", "cell": "A1", "op": "eq", "value": 1, "then": [empty], "else": []});
+    }
+    let deep = parse_macro(&json!({"name": "Deep", "steps": [empty]})).unwrap();
+    assert_eq!(deep.step_count(), MAX_MACRO_DEPTH);
+    assert!(deep.check_limits().is_ok(), "the model's check agrees with the parser");
     // Far deeper than serde would allow is refused before it is read.
     assert!(parse_macro(&nest(200)).is_err());
     for bad in [

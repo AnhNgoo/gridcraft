@@ -81,10 +81,8 @@ impl Macro {
             return Err(format!("A macro description can be at most {MAX_MACRO_TEXT} characters long."));
         }
         // Count without recursing past the depth limit (a hostile file can nest deeper).
+        // A Repeat or If at the top is nested 1 deep; one inside it, 2 deep.
         fn walk(steps: &[Step], level: usize, count: &mut usize) -> Result<(), String> {
-            if level > MAX_MACRO_DEPTH {
-                return Err(format!("Repeat and If steps can nest at most {MAX_MACRO_DEPTH} deep."));
-            }
             for s in steps {
                 *count = count.saturating_add(1);
                 if *count > MAX_MACRO_STEPS {
@@ -92,6 +90,9 @@ impl Macro {
                 }
                 if s.note.chars().count() > MAX_MACRO_TEXT {
                     return Err(format!("A step note can be at most {MAX_MACRO_TEXT} characters long."));
+                }
+                if s.kind.children().next().is_some() && level > MAX_MACRO_DEPTH {
+                    return Err(format!("Repeat and If steps can nest at most {MAX_MACRO_DEPTH} deep."));
                 }
                 for body in s.kind.children() {
                     walk(body, level + 1, count)?;

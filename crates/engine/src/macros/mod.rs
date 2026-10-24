@@ -53,9 +53,6 @@ fn check_size(m: &Macro) -> Result<(), String> {
 /// before the steps are deserialized.
 fn normalize_steps(steps: &mut Json, level: usize) -> Result<(), String> {
     let Some(list) = steps.as_array_mut() else { return Err("`steps` must be a list.".into()) };
-    if level > gridcraft_model::MAX_MACRO_DEPTH {
-        return Err(format!("Repeat and If steps can nest at most {} deep.", gridcraft_model::MAX_MACRO_DEPTH));
-    }
     for st in list {
         let Some(o) = st.as_object_mut() else { return Err("Every step must be an object.".into()) };
         if !o.contains_key("type")
@@ -63,6 +60,11 @@ fn normalize_steps(steps: &mut Json, level: usize) -> Result<(), String> {
         {
             o.insert("type".into(), json!("command"));
             o.insert("id".into(), id);
+        }
+        // A step with a body is a Repeat or an If: one at the top is nested 1 deep.
+        let nested = ["body", "then", "else"].iter().any(|key| o.contains_key(*key));
+        if nested && level > gridcraft_model::MAX_MACRO_DEPTH {
+            return Err(format!("Repeat and If steps can nest at most {} deep.", gridcraft_model::MAX_MACRO_DEPTH));
         }
         for key in ["body", "then", "else"] {
             if let Some(body) = o.get_mut(key) {
