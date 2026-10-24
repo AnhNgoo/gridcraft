@@ -15,7 +15,7 @@
 //!   shape, header and column types are inferred from it.
 
 use gridcraft_core::{CellRef, RangeRef, Value};
-use gridcraft_model::{ColType, InputKind, Macro, NamedInput, Step, StepKind, Workbook};
+use gridcraft_model::{ColType, InputKind, MAX_MACRO_STEPS, Macro, NamedInput, Step, StepKind, Workbook};
 use serde_json::{Map, Value as Json, json};
 
 use super::policy::{Policy, macro_policy};
@@ -41,15 +41,28 @@ pub struct Converted {
     pub mac: Macro,
     /// Commands left out (ids), in order.
     pub skipped: Vec<String>,
+    /// Steps not kept: past the macro's step limit (a recorded run of a long macro adds all of
+    /// its steps) or recorded in another workbook.
+    pub cut: usize,
 }
 
 /// Builds a macro called `name` from the recorded steps.
 pub fn convert(name: &str, start: &RecordingStart, steps: &[RecordedStep], wb: &Workbook) -> Converted {
     let mut skipped = Vec::new();
     // Commands as they'll be played back: (id, params, sheet before, selection before, whether
-    // they came from another macro and stay as written).
+    // they came from another macro and stay as written). At most the macro's step limit are
+    // gathered: a recording of a thousand runs of a long macro would otherwise expand to
+    // millions of steps before the limit cut them back.
     let mut cmds: Vec<(String, Json, usize, String, Selection, bool)> = Vec::new();
+    let mut cut = steps.iter().filter(|st| st.doc != start.doc).count();
     let refused = |id: &str, params: &Json| matches!(macro_policy(id, params, crate::Trust::Local), Policy::Deny(_) | Policy::NeedsPermission(_));
+    let mut push = |cmds: &mut Vec<(String, Json, usize, String, Selection, bool)>, cmd: (String, Json, usize, String, Selection, bool)| {
+        if cmds.len() < MAX_MACRO_STEPS {
+            cmds.push(cmd);
+        } else {
+            cut = cut.saturating_add(1);
+        }
+    };
     for st in steps.iter().filter(|st| st.doc == start.doc) {
         let id = st.id.as_str();
         if id == "macro.run" {
@@ -64,7 +77,7 @@ pub fn convert(name: &str, start: &RecordingStart, steps: &[RecordedStep], wb: &
                             skipped.push(cid.clone());
                             continue;
                         }
-                        cmds.push((cid.clone(), params.clone(), st.sheet, st.sheet_name.clone(), st.selection.clone(), true));
+                        push(&mut cmds, (cid.clone(), params.clone(), st.sheet, st.sheet_name.clone(), st.selection.clone(), true));
                     }
                 }
                 _ => skipped.push(id.to_string()),
@@ -80,7 +93,7 @@ pub fn convert(name: &str, start: &RecordingStart, steps: &[RecordedStep], wb: &
                             skipped.push(cid);
                             continue;
                         }
-                        cmds.push((cid, params, st.sheet, st.sheet_name.clone(), st.selection.clone(), true));
+                        push(&mut cmds, (cid, params, st.sheet, st.sheet_name.clone(), st.selection.clone(), true));
                     }
                 }
                 None => skipped.push(id.to_string()),
@@ -91,7 +104,7 @@ pub fn convert(name: &str, start: &RecordingStart, steps: &[RecordedStep], wb: &
             skipped.push(id.to_string());
             continue;
         }
-        cmds.push((id.to_string(), st.params.clone(), st.sheet, st.sheet_name.clone(), st.selection.clone(), false));
+        push(&mut cmds, (id.to_string(), st.params.clone(), st.sheet, st.sheet_name.clone(), st.selection.clone(), false));
     }
 
     // Sheet and selection changes made without a command: where a command ran on another sheet,
@@ -131,7 +144,14 @@ pub fn convert(name: &str, start: &RecordingStart, steps: &[RecordedStep], wb: &
     let steps: Vec<Step> = collapsed
         .into_iter()
         .map(|(id, params, on, kept)| {
-            let here = on.eq_ignore_ascii_case(&start.sheet_name);
+            // A step that names another sheet with its `sheet` parameter runs there, whatever
+            // sheet was active: its unqualified references are that sheet's cells.
+            let names_other_sheet = params.get("sheet").is_some_and(|v| match v {
+                Json::String(n) => !n.eq_ignore_ascii_case(&start.sheet_name),
+                Json::Number(i) => i.as_u64() != Some(start.sheet as u64),
+                _ => false,
+            });
+            let here = on.eq_ignore_ascii_case(&start.sheet_name) && !names_other_sheet;
             let params = if start.relative && !kept { relative(&params, example, &start.sheet_name, here, &mut used_input, None) } else { params };
             Step::command(id, params)
         })
@@ -140,7 +160,7 @@ pub fn convert(name: &str, start: &RecordingStart, steps: &[RecordedStep], wb: &
     if start.relative && used_input {
         mac.inputs = vec![infer_input(wb, start.sheet, example)];
     }
-    Converted { mac, skipped }
+    Converted { mac, skipped, cut }
 }
 
 fn selection_params(sel: &Selection) -> Json {
@@ -153,22 +173,28 @@ fn selection_params(sel: &Selection) -> Json {
 fn relative(v: &Json, example: RangeRef, sheet: &str, here: bool, used: &mut bool, key: Option<&str>) -> Json {
     match v {
         Json::Object(o) => {
+            // A selection of several areas stays as it is, its active cell with it: a token for
+            // the active cell alone would put it outside the areas on playback.
+            let several_areas = o.get("range").and_then(Json::as_str).is_some_and(|r| r.contains(','));
             let mut out = Map::new();
             for (k, x) in o {
-                out.insert(k.clone(), relative(x, example, sheet, here, used, Some(k)));
+                let x = if several_areas && k == "active" { x.clone() } else { relative(x, example, sheet, here, used, Some(k)) };
+                out.insert(k.clone(), x);
             }
             Json::Object(out)
         }
         Json::Array(a) => Json::Array(a.iter().map(|x| relative(x, example, sheet, here, used, key)).collect()),
         Json::String(t) if key.is_some_and(super::resolve::is_ref_key) => {
-            // A list of areas ("A1:B2,D4") stays as it is unless every part has a token.
-            let parts: Option<Vec<String>> = t.split(',').map(|part| ref_token(part, example, sheet, here)).collect();
-            match parts {
-                Some(p) if p.len() == 1 => {
+            // One area becomes a token; a list of areas ("A1:B2,D4") stays as it is.
+            if t.contains(',') {
+                return v.clone();
+            }
+            match ref_token(t, example, sheet, here) {
+                Some(token) => {
                     *used = true;
-                    json!(p.join(""))
+                    json!(token)
                 }
-                _ => v.clone(),
+                None => v.clone(),
             }
         }
         Json::String(t) if here && t.starts_with('=') && example.count() > 1 => {
@@ -255,22 +281,9 @@ fn token(t: RangeRef, r: RangeRef) -> Option<String> {
 /// Replaces references in a formula that are exactly the example input, one of its columns or
 /// rows, or a column without its first row, with `{{token}}`.
 fn formula_tokens(f: &str, r: RangeRef) -> (String, bool) {
-    let mut candidates: Vec<(String, String)> = vec![(r.a1(), "Input".into())];
-    for (i, col) in (r.start.col..=r.end.col).enumerate() {
-        let n = i + 1;
-        candidates.push((RangeRef::new(CellRef::new(r.start.row, col), CellRef::new(r.end.row, col)).a1(), format!("Input.col({n})")));
-        if r.height() > 2 {
-            candidates
-                .push((RangeRef::new(CellRef::new(r.start.row + 1, col), CellRef::new(r.end.row, col)).a1(), format!("Input.rows(2..).col({n})")));
-        }
-    }
-    if r.width() > 1 {
-        for (i, row) in (r.start.row..=r.end.row).enumerate() {
-            candidates.push((RangeRef::new(CellRef::new(row, r.start.col), CellRef::new(row, r.end.col)).a1(), format!("Input.row({})", i + 1)));
-        }
-    }
-    // Longest first, so `B2:B10` isn't taken for a `B2` cell reference.
-    candidates.sort_by_key(|(a1, _)| std::cmp::Reverse(a1.len()));
+    // Each reference in the formula text is read and matched on its own, so the work is the
+    // formula's length whatever the example's size (an example of a whole sheet has a million
+    // rows, which no list of candidates may grow with).
     let mut out = String::with_capacity(f.len());
     let mut changed = false;
     let (mut i, mut in_text) = (0, false);
@@ -282,19 +295,20 @@ fn formula_tokens(f: &str, r: RangeRef) -> (String, bool) {
             in_text = !in_text;
         }
         let prev_ok = i == 0 || !bytes.get(i - 1).is_some_and(|b| b.is_ascii_alphanumeric() || matches!(b, b'$' | b'!' | b'_' | b'.' | b':'));
-        if !in_text && prev_ok {
-            let hit = candidates.iter().find(|(a1, _)| {
-                rest.starts_with(a1.as_str())
-                    && !rest
-                        .get(a1.len()..)
-                        .and_then(|x| x.chars().next())
-                        .is_some_and(|c| c.is_ascii_alphanumeric() || matches!(c, ':' | '!' | '(' | '_'))
-            });
-            if let Some((a1, tok)) = hit {
+        if !in_text && prev_ok && ch.is_ascii_alphabetic() {
+            // The longest run of reference characters here: letters, digits and one `:`.
+            let n = rest.bytes().take_while(|b| b.is_ascii_alphanumeric() || *b == b':').count();
+            let text = rest.get(..n).unwrap_or("");
+            let followed = rest.get(n..).and_then(|x| x.chars().next()).is_some_and(|c| matches!(c, '!' | '(' | '_' | '$'));
+            if !followed
+                && !text.contains('$')
+                && let Some(t) = RangeRef::parse(text)
+                && let Some(tok) = formula_token(t, r)
+            {
                 out.push_str("{{");
-                out.push_str(tok);
+                out.push_str(&tok);
                 out.push_str("}}");
-                i += a1.len();
+                i += n;
                 changed = true;
                 continue;
             }
@@ -303,6 +317,29 @@ fn formula_tokens(f: &str, r: RangeRef) -> (String, bool) {
         i += ch.len_utf8();
     }
     (out, changed)
+}
+
+/// The token for a reference inside a formula: exactly the example input, one of its columns or
+/// rows, or a column without its first row. Other references stay as they are.
+fn formula_token(t: RangeRef, r: RangeRef) -> Option<String> {
+    if t == r {
+        return Some("Input".into());
+    }
+    if !r.contains_range(&t) {
+        return None;
+    }
+    let col = usize::try_from(t.start.col.checked_sub(r.start.col)?).ok()?.checked_add(1)?;
+    let row = usize::try_from(t.start.row.checked_sub(r.start.row)?).ok()?.checked_add(1)?;
+    if t.start.col == t.end.col && t.start.row == r.start.row && t.end.row == r.end.row {
+        return Some(format!("Input.col({col})"));
+    }
+    if t.start.col == t.end.col && r.height() > 2 && t.start.row == r.start.row.checked_add(1)? && t.end.row == r.end.row {
+        return Some(format!("Input.rows(2..).col({col})"));
+    }
+    if r.width() > 1 && t.start.row == t.end.row && t.start.col == r.start.col && t.end.col == r.end.col {
+        return Some(format!("Input.row({row})"));
+    }
+    None
 }
 
 /// The example input's shape: a header when the first row is all text over other kinds of

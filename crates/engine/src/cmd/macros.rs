@@ -45,7 +45,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "Record Macro",
             ["View", "Macros"],
             None,
-            "{stop?: bool, relative?: bool (default true; when starting), name?, description? (when stopping; a taken name gets a suffix)} toggles recording; with relative references the selection when it starts is the example input → {recording, relative?, input?} or {recording: false, saved, steps, dropped, skipped, inputs}",
+            "{stop?: bool, cancel?: bool (ends a recording without saving it), relative?: bool (default true; when starting), name?, description? (when stopping; a taken name gets a suffix)} toggles recording; with relative references the selection when it starts is the example input → {recording, relative?, input?} or {recording: false, saved, steps, dropped, skipped, inputs}",
             has_doc,
             record
         ),
@@ -163,6 +163,13 @@ fn check(s: &mut Session, p: &Json) -> Result<Json> {
 }
 
 fn record(s: &mut Session, p: &Json) -> Result<Json> {
+    // `cancel` ends a recording without saving it: the way out of a recording whose macro
+    // cannot be saved (too large for the workbook, for one).
+    if bool_param(p, "cancel").unwrap_or(false) {
+        let was = s.stop_recording().is_some();
+        s.macro_recording = None;
+        return Ok(json!({"recording": false, "cancelled": was}));
+    }
     if bool_param(p, "stop").unwrap_or(false) || s.is_recording() {
         return stop_recording(s, p);
     }
@@ -228,8 +235,9 @@ fn save_recording(s: &mut Session, p: &Json, rec: &crate::record::Recorder, star
         None => crate::macros::next_name(&wb),
     };
     let mut converted = crate::macros::recorder::convert(&name, &start, &rec.steps, &wb);
-    // Steps past the macro limit are left out and counted with the ones the recorder dropped.
-    let cut = converted.mac.steps.len().saturating_sub(gridcraft_model::MAX_MACRO_STEPS);
+    // Steps past the macro limit, and ones recorded in another workbook, are left out and counted
+    // with the ones the recorder dropped.
+    let cut = converted.cut.saturating_add(converted.mac.steps.len().saturating_sub(gridcraft_model::MAX_MACRO_STEPS));
     converted.mac.steps.truncate(gridcraft_model::MAX_MACRO_STEPS);
     if let Some(desc) = str_param(p, "description") {
         converted.mac.description = desc.chars().take(gridcraft_model::MAX_MACRO_TEXT).collect();

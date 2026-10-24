@@ -1047,6 +1047,104 @@ fn a_relative_recording_keeps_references_on_another_sheet() {
 }
 
 #[test]
+fn a_step_that_names_another_sheet_keeps_its_references() {
+    // `sheet` names where the step runs whatever sheet is active, so its C4 is that sheet's C4.
+    let mut s = s();
+    s.execute("home.insertSheet", json!({"name": "Two"})).unwrap();
+    s.execute("sheet.activate", json!({"sheet": "Sheet1"})).unwrap();
+    data(&mut s);
+    s.execute("selection.set", json!({"range": "B2:C5"})).unwrap();
+    s.execute("macro.record", json!({})).unwrap();
+    s.execute("cell.set", json!({"sheet": "Two", "cell": "C4", "input": "x"})).unwrap();
+    s.execute("cell.set", json!({"sheet": "Sheet1", "cell": "C4", "input": "90"})).unwrap();
+    s.execute("macro.record", json!({"stop": true, "name": "Named"})).unwrap();
+    let steps = recorded(&mut s, "Named");
+    assert!(steps.contains(&"cell.set {\"cell\":\"C4\",\"input\":\"x\",\"sheet\":\"Two\"}".to_string()), "{steps:?}");
+    assert!(steps.contains(&"cell.set {\"cell\":\"Input.cell(3,2)\",\"input\":\"90\",\"sheet\":\"Sheet1\"}".to_string()), "{steps:?}");
+}
+
+#[test]
+fn inlining_recorded_runs_stops_at_the_step_limit() {
+    // A recorded run of a long macro adds all of its steps; the conversion gathers at most the
+    // macro's step limit and counts the rest, instead of expanding every run first.
+    let mut s = s();
+    let steps: Vec<Json> = (0..6_000).map(|_| json!({"command": "cell.set", "params": {"cell": "A1", "input": "x"}})).collect();
+    put(&mut s, json!({"name": "Big", "output": {"onConflict": "overwrite"}, "steps": steps}));
+    s.execute("macro.record", json!({})).unwrap();
+    s.execute("macro.run", json!({"name": "Big"})).unwrap();
+    s.execute("macro.run", json!({"name": "Big"})).unwrap();
+    let r = s.execute("macro.record", json!({"stop": true, "name": "Twice"})).unwrap();
+    assert_eq!((r["steps"].as_u64(), r["dropped"].as_u64()), (Some(10_000), Some(2_000)), "{r}");
+}
+
+#[test]
+fn a_recording_can_be_cancelled() {
+    let mut s = s();
+    data(&mut s);
+    let before = s.execute("macro.list", json!({})).unwrap();
+    s.execute("macro.record", json!({})).unwrap();
+    set(&mut s, "E2", "x");
+    let r = s.execute("macro.record", json!({"cancel": true})).unwrap();
+    assert_eq!(r, json!({"recording": false, "cancelled": true}));
+    assert!(!s.is_recording() && s.macro_recording.is_none());
+    assert_eq!(s.execute("macro.list", json!({})).unwrap(), before, "nothing was saved");
+    assert_eq!(s.execute("macro.record", json!({"cancel": true})).unwrap()["cancelled"], false);
+    // Recording works again afterwards.
+    s.execute("macro.record", json!({})).unwrap();
+    assert!(s.is_recording());
+    s.execute("macro.record", json!({"cancel": true})).unwrap();
+}
+
+#[test]
+fn formulas_are_tokenized_by_reading_their_references() {
+    // An example as large as a sheet has a million rows: each reference in the formula is read
+    // and matched on its own, instead of a list of every column and row of the example.
+    let mut s = s();
+    s.execute("selection.set", json!({"range": "A1:Z1000000"})).unwrap();
+    s.execute("macro.record", json!({})).unwrap();
+    s.execute("cell.set", json!({"cell": "AB1", "input": "=SUM(A1:A1000000)+SUM(A1:A3)+B2"})).unwrap();
+    s.execute("cell.set", json!({"cell": "AB2", "input": "=SUM(A1:Z1000000)&\"A1:A1000000\""})).unwrap();
+    s.execute("macro.record", json!({"stop": true, "name": "Wide"})).unwrap();
+    let steps = recorded(&mut s, "Wide");
+    // A single cell inside a formula stays as it is: only the input, its columns and its rows
+    // become tokens there.
+    assert!(steps.iter().any(|st| st.contains("=SUM({{Input.col(1)}})+SUM(A1:A3)+B2")), "{steps:?}");
+    assert!(steps.iter().any(|st| st.contains("=SUM({{Input}})&\\\"A1:A1000000\\\"")), "{steps:?}");
+}
+
+#[test]
+fn a_selection_of_several_areas_keeps_its_active_cell_as_it_is() {
+    let mut s = s();
+    data(&mut s);
+    s.execute("selection.set", json!({"range": "B2:C5"})).unwrap();
+    s.execute("macro.record", json!({})).unwrap();
+    // Several areas picked with the mouse: no command, so the recording adds a selection.set
+    // with the active cell before the next step.
+    let (a, b) = (gridcraft_core::RangeRef::parse("B2:C5").unwrap(), gridcraft_core::RangeRef::parse("E2:E5").unwrap());
+    s.doc_mut().unwrap().selection = crate::Selection { active: b.start, anchor: b.start, ranges: vec![a, b] };
+    s.execute("home.bold", json!({})).unwrap();
+    s.execute("macro.record", json!({"stop": true, "name": "Areas"})).unwrap();
+    let steps = recorded(&mut s, "Areas");
+    assert!(steps.contains(&"selection.set {\"active\":\"E2\",\"range\":\"B2:C5,E2:E5\"}".to_string()), "{steps:?}");
+    assert!(steps.iter().all(|st| !st.contains("\"active\":\"Input")), "{steps:?}");
+}
+
+#[test]
+fn steps_recorded_in_another_workbook_are_counted() {
+    let mut s = s();
+    data(&mut s);
+    let home = s.active_index();
+    s.execute("macro.record", json!({})).unwrap();
+    s.new_workbook();
+    set(&mut s, "A1", "elsewhere");
+    set(&mut s, "A2", "too");
+    s.set_active(home);
+    set(&mut s, "E2", "here");
+    let r = s.execute("macro.record", json!({"stop": true, "name": "Home"})).unwrap();
+    assert_eq!((r["steps"].as_u64(), r["dropped"].as_u64()), (Some(1), Some(2)), "{r}");
+}
+
+#[test]
 fn a_recorded_macro_run_is_inlined_only_when_its_steps_stand_alone() {
     let mut s = s();
     put(
