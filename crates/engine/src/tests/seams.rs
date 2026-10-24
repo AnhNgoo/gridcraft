@@ -732,6 +732,53 @@ fn stop_action_rolls_back_a_group_left_open() {
     assert!(s.in_group(other_uid));
 }
 
+fn history_of(s: &Session) -> Vec<(String, *const gridcraft_model::Workbook)> {
+    let d = s.doc().unwrap();
+    d.undo.iter().chain(d.redo.iter()).map(|e| (e.label.clone(), std::sync::Arc::as_ptr(&e.wb))).collect()
+}
+
+#[test]
+fn queries_take_no_copy_of_the_history() {
+    // `execute` copies the history so a panic can put it back; a query leaves it alone, so the
+    // copy is skipped for the queries front ends run all the time.
+    let mut s = s();
+    for i in 0..50 {
+        set(&mut s, "A1", &i.to_string());
+    }
+    s.execute("edit.undo", json!({})).unwrap();
+    super::HISTORY_COPIES.with(|n| n.set(0));
+    for _ in 0..100 {
+        s.execute("history.list", json!({})).unwrap();
+        s.execute("cell.get", json!({"cell": "A1"})).unwrap();
+        s.execute("document.inspect", json!({})).unwrap();
+    }
+    assert_eq!(super::HISTORY_COPIES.with(|n| n.get()), 0);
+    set(&mut s, "A2", "x");
+    assert_eq!(super::HISTORY_COPIES.with(|n| n.get()), 1, "a command that can change it still copies it");
+}
+
+#[test]
+fn every_query_leaves_the_history_alone() {
+    // What lets a query skip the copy: none of them changes the undo or redo history.
+    let mut s = Session::new();
+    s.execute("file.new", json!({"sample": "sales"})).unwrap();
+    set(&mut s, "A1", "1");
+    set(&mut s, "A1", "2");
+    s.execute("edit.undo", json!({})).unwrap();
+    let before = history_of(&s);
+    assert_eq!(before.len(), 2);
+    let mut queries = 0;
+    for spec in crate::command_specs().iter().filter(|c| !c.journal && !c.undoable) {
+        queries += 1;
+        for params in [json!({}), json!({"range": "A1:B3", "cell": "A1", "sheet": 0}), json!([1, 2])] {
+            let _ = s.execute(spec.id, params.clone());
+            s.set_active(0);
+            assert_eq!(history_of(&s), before, "{} {params}", spec.id);
+        }
+    }
+    assert!(queries > 40, "{queries}");
+}
+
 // ---------------------------------------------------------------- recording buffer
 
 fn recorded_ids(s: &Session) -> Vec<String> {

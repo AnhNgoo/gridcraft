@@ -534,8 +534,15 @@ impl Session {
         let start = before.as_ref().and_then(|(uid, ..)| self.docs.iter().find(|d| d.uid == *uid).map(|d| (self.in_group(*uid), d.undo.len())));
         // A command that panics leaves the history as it found it: the steps commands nested in it
         // made or undid, and the redo history they cleared, come back. A length is not enough,
-        // because a nested `edit.undo` removes entries.
-        let history_before = before.as_ref().and_then(|(uid, ..)| self.docs.iter().find(|d| d.uid == *uid).map(|d| (d.undo.clone(), d.redo.clone())));
+        // because a nested `edit.undo` removes entries. A query runs no commands and leaves the
+        // history alone (`every_query_leaves_the_history_alone` runs each one), so it needs no
+        // copy; front ends run queries all the time.
+        let query = !spec.journal && !spec.undoable;
+        let history_before = before.as_ref().filter(|_| !query).and_then(|(uid, ..)| {
+            #[cfg(test)]
+            tests::HISTORY_COPIES.with(|n| n.set(n.get().saturating_add(1)));
+            self.docs.iter().find(|d| d.uid == *uid).map(|d| (d.undo.clone(), d.redo.clone()))
+        });
         // The groups open on the document before the command (usually none), for the same reason.
         let groups_before: Vec<(u64, String, Arc<Workbook>, Selection)> = match &before {
             Some((uid, ..)) => {
