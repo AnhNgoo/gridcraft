@@ -33,7 +33,8 @@ including tests, 2026-10-10.
    `Session::execute(id, params)`. Commands are `CommandSpec { id, label, menu, shortcut, params,
    enabled, run, journal, undoable }`; ids follow Excel's ribbon (`home.bold`, `insert.chart`,
    `data.sortAscending`) plus primitives (`cell.set`, `selection.set`, `range.setValues`).
-   `Session::execute` catches escaped panics and restores the workbook (never-crash guard).
+   `Session::execute` catches escaped panics and restores the workbook, its selection and its
+   undo and redo history as they were before the command (never-crash guard).
 2. **Edits** change the model through copy-on-write bands; undo keeps the previous snapshot.
    Undo retains at most 100 steps and trims older steps when its estimated retained cell storage
    exceeds 128 MiB. The newest step remains undoable even if that step alone exceeds the budget.

@@ -543,6 +543,28 @@ fn a_group_ended_at_the_history_limit_replaces_only_the_oldest_step() {
     assert_undo_redo(&mut s, &[("F1", "one"), ("F2", "two")]);
 }
 
+#[test]
+fn a_command_that_panics_leaves_the_history_as_it_found_it() {
+    // A command that edits through a nested command and then panics: the nested step is gone
+    // with the workbook it changed, and the redo history the nested step cleared comes back.
+    crate::cmd::register_undoable_test_command("test.editThenPanic", |s, _| {
+        put(s, "A1", "half done")?;
+        panic!("after an edit");
+    });
+    let mut s = s();
+    set(&mut s, "A1", "1");
+    set(&mut s, "A1", "2");
+    s.execute("edit.undo", json!({})).unwrap();
+    assert_eq!((undo_labels(&s).len(), s.doc().unwrap().redo.len()), (1, 1));
+    let err = s.execute("test.editThenPanic", json!({})).unwrap_err().to_string();
+    assert!(err.contains("after an edit"), "{err}");
+    assert_eq!(v(&s, "A1").display(), "1", "the workbook is restored");
+    assert_eq!(undo_labels(&s), ["Enter Cell"], "no step for the nested edit");
+    assert_eq!(s.doc().unwrap().redo.len(), 1, "the redo history is back");
+    s.execute("edit.redo", json!({})).unwrap();
+    assert_eq!(v(&s, "A1").display(), "2");
+}
+
 // ---------------------------------------------------------------- recording buffer
 
 fn recorded_ids(s: &Session) -> Vec<String> {

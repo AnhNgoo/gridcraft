@@ -532,6 +532,9 @@ impl Session {
         let (first_group, group_epoch) = (self.next_group, self.group_epoch);
         // Whether a group was open on the document before the command, and how long its history was.
         let start = before.as_ref().and_then(|(uid, ..)| self.docs.iter().find(|d| d.uid == *uid).map(|d| (self.in_group(*uid), d.undo.len())));
+        // A command that panics leaves the history as it found it: the steps commands nested in it
+        // made go with the workbook, and the redo history they cleared comes back.
+        let redo_before = before.as_ref().and_then(|(uid, ..)| self.docs.iter().find(|d| d.uid == *uid).map(|d| d.redo.clone()));
         // The recorder keeps top-level calls with the place they ran in.
         let place = (self.depth == 0 && self.recorder.is_some()).then(|| match self.active() {
             Some(d) => (d.uid, d.wb.active_sheet, d.wb.active().map(|sh| sh.name.clone()).unwrap_or_default(), d.selection.clone()),
@@ -551,13 +554,20 @@ impl Session {
             Err(p) => {
                 let msg =
                     p.downcast_ref::<&str>().map(|s| s.to_string()).or_else(|| p.downcast_ref::<String>().cloned()).unwrap_or_else(|| "panic".into());
-                // Restore the workbook as it was, and drop the undo groups the command opened.
+                // Restore the workbook and its history as they were, and drop the undo groups the
+                // command opened.
                 self.groups.retain(|g| g.id < first_group);
                 if let Some((uid, wb, sel)) = &before
                     && let Some(d) = self.docs.iter_mut().find(|d| d.uid == *uid)
                 {
                     d.wb = wb.clone();
                     d.selection = sel.clone();
+                    if let Some((_, len)) = start {
+                        d.undo.truncate(len);
+                    }
+                    if let Some(redo) = redo_before {
+                        d.redo = redo;
+                    }
                     d.calc.rebuild(&d.wb);
                 }
                 if self.depth == 0 {
