@@ -1,6 +1,6 @@
 # Macros
 
-> **Last updated:** 2026-10-21 · **Change:** minor (running and checking macros: `macro.run`, `macro.check`)
+> **Last updated:** 2026-10-24 · **Change:** minor (running and checking macros: `macro.run`, `macro.check`)
 
 GridCraft macros are typed, declarative lists of commands, not VBA. Every step runs a GridCraft
 command (the same ids the ribbon, CLI and MCP use) or one of three bounded control steps. A macro
@@ -40,12 +40,16 @@ no macro debugger, recorder or management commands in this version, and no macro
   `{"command": "cell.set", "params": {…}}` is accepted for a command step.
 - **Inputs**: `kind` (`cell` or `range`), `rows` and `cols` as `[min, max]` (0 for no maximum;
   rows exclude the header), `header`, `colTypes` (`number`, `text`, `date`, `bool`, `any`),
-  `nonEmpty` and `defaultRef`. A run binds each input to the range it is given, its default, or
-  (for the first input) the selection, and refuses with messages that name the cells:
-  "Input column 2 (Amount) must hold numbers; C4 holds text."
+  `nonEmpty` and `defaultRef`. An input's name is letters, digits and `_`, starting with a letter,
+  and is neither a token of its own (`Output`, `Row`, `Column`, `Name`) nor something that reads
+  as a cell reference (`Q1`), so a step written with plain A1 text keeps meaning the cell. A run
+  binds each input to the range it is given, its default, or (for the first input) the
+  selection, and refuses with messages that name the cells: "Input column 2 (Amount) must hold
+  numbers; C4 holds text."
 - **Limits**: 1,000 macros a workbook, 10,000 steps a macro, Repeat and If nested 4 deep,
-  100,000 steps executed per run, and 60 seconds a run, footprint checks included (`timeLimit`
-  to change; the web build has no clock, so there only the step limit applies).
+  100,000 steps executed per run and 60 seconds a run, both shared by the footprint dry runs and
+  the run itself (`timeLimit` to change the time; the web build has no clock, so there only the
+  step limit applies).
 
 ## Tokens
 
@@ -68,9 +72,14 @@ exists is used and methods follow it.
 
 Write a token as the whole value of a reference parameter (`cell`, `range`, `target`, keys ending
 in `Cell` or `Range`…), as `{"$ref": "Input.col(2)"}` anywhere, or as `{{Input.col(2)}}` inside
-any string, such as a formula. Plain A1 references stay absolute; a `Name:` anchor follows
-inserted rows. A reference with a sheet name is never a token, so `Output!A1` is a cell on a sheet
-called Output, even when a token or input has that name.
+any string, such as a formula; `{{{{` in a string is a literal `{{`. Under the general keys that
+other commands use for plain words (`to`, `from`, `at`, `area`, `source`, `target`,
+`destination`, `location`), a bare `Row` or `Column` stays text (a replacement word, a pivot
+area); write `Row.col(2)`, `{{Row}}` or `{"$ref": "Row"}` there. Plain A1 references stay
+absolute; a `Name:` anchor follows inserted rows. A reference with a sheet name is never a token,
+so `Output!A1` is a cell on a sheet called Output, even when a token or input has that name.
+`Input.data` on a range that is only a header row, and `Name:` of a table with no data rows, are
+refused rather than read as the header.
 
 ## Running
 

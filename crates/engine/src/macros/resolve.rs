@@ -109,6 +109,19 @@ pub fn is_ref_key(key: &str) -> bool {
     REF_KEYS.iter().any(|r| r.eq_ignore_ascii_case(key)) || ["cell", "cells", "range", "ranges", "ref"].iter().any(|end| k.ends_with(end))
 }
 
+/// Reference keys that other commands use for plain words: `to` is a replacement word in
+/// Review › Change Spelling, `area` is `row` or `column` in a pivot field move. Under these a
+/// bare `Row` or `Column` stays text; `Row.col(2)`, `{{Row}}` or `{"$ref": "Row"}` is the token.
+fn is_general_key(key: &str) -> bool {
+    ["area", "areas", "at", "destination", "from", "location", "source", "sources", "target", "to"].iter().any(|k| k.eq_ignore_ascii_case(key))
+}
+
+/// `Row` or `Column` on its own, with no method or sheet after it.
+fn is_bare_item_word(text: &str) -> bool {
+    let t = text.trim();
+    t.eq_ignore_ascii_case("row") || t.eq_ignore_ascii_case("column")
+}
+
 /// The most nesting [`resolve_params`] walks into.
 const MAX_JSON_DEPTH: usize = 64;
 
@@ -159,13 +172,15 @@ fn plain_ref(t: &str, env: &Env) -> R<Place> {
 /// A defined name (by its formula) or a table (its data rows).
 fn named(name: &str, env: &Env) -> R<Place> {
     if let Some(n) = env.wb.name(name, env.active_sheet) {
-        let f = n.formula.trim().trim_start_matches('=').replace('$', "");
-        let (sheet, body) = crate::cmd::split_sheet(&f);
+        // The sheet part keeps its characters (a sheet may be called `US$`); only the reference
+        // loses its `$` anchors.
+        let f = n.formula.trim().trim_start_matches('=');
+        let (sheet, body) = crate::cmd::split_sheet(f);
         let si = match sheet {
             Some(s) => env.wb.sheet_index(&s),
             None => n.scope.or(Some(env.active_sheet)),
         };
-        if let (Some(sheet), Some(range)) = (si, RangeRef::parse(body)) {
+        if let (Some(sheet), Some(range)) = (si, RangeRef::parse(&body.replace('$', ""))) {
             return Ok(Place { sheet, range });
         }
         return bad(format!("The name '{name}' doesn't refer to a range."));
@@ -173,7 +188,12 @@ fn named(name: &str, env: &Env) -> R<Place> {
     if let Some((si, ti)) = env.wb.table(name)
         && let Some(t) = env.wb.sheet(si).and_then(|sh| sh.tables.get(ti))
     {
-        return Ok(Place { sheet: si, range: t.data_range().unwrap_or(t.range) });
+        // A table stands for its data rows; one with none (a header, perhaps a totals row) has
+        // nothing to give.
+        let Some(range) = t.data_range() else {
+            return bad(format!("The table '{name}' has no data rows."));
+        };
+        return Ok(Place { sheet: si, range });
     }
     bad(format!("There is no name or table called '{name}'."))
 }
@@ -244,19 +264,23 @@ pub fn resolve_token(text: &str, env: &Env) -> R<Place> {
                 RangeRef::new(r.start, shift(r.start, h - 1, w - 1, t)?)
             }
             ("data", []) => {
-                if header && r.height() > 1 {
+                if header {
+                    // A header row with nothing under it has no data rows to give.
+                    if r.height() < 2 {
+                        return bad(format!("'{t}': the range is only a header row, with no data under it."));
+                    }
                     RangeRef::new(CellRef::new(r.start.row + 1, r.start.col), r.end)
                 } else {
                     r
                 }
             }
             ("below", []) | ("below", [Arg::Int(_)]) => {
-                let n = arg_or_one(&args);
+                let n = count_arg(&args, t)?;
                 let top = shift(CellRef::new(r.end.row, r.start.col), 1, 0, t)?;
                 RangeRef::new(top, shift(CellRef::new(r.end.row, r.end.col), n, 0, t)?)
             }
             ("right", []) | ("right", [Arg::Int(_)]) => {
-                let n = arg_or_one(&args);
+                let n = count_arg(&args, t)?;
                 let left = shift(CellRef::new(r.start.row, r.end.col), 0, 1, t)?;
                 RangeRef::new(left, shift(r.end, 0, n, t)?)
             }
@@ -279,10 +303,12 @@ pub fn resolve_token(text: &str, env: &Env) -> R<Place> {
     Ok(place)
 }
 
-fn arg_or_one(args: &[Arg]) -> i64 {
+/// The count `below(n)` and `right(n)` take: 1 when left out, and never less than 1.
+fn count_arg(args: &[Arg], t: &str) -> R<i64> {
     match args.first() {
-        Some(Arg::Int(n)) => (*n).max(1),
-        _ => 1,
+        Some(Arg::Int(n)) if *n < 1 => bad(format!("'{t}': the count must be at least 1.")),
+        Some(Arg::Int(n)) => Ok(*n),
+        _ => Ok(1),
     }
 }
 
@@ -453,11 +479,9 @@ pub fn a1(place: Place, env: &Env) -> String {
 
 /// `Sheet1` or `'My Sheet'` (quotes doubled).
 pub fn quote_sheet(name: &str) -> String {
-    if !name.is_empty() && name.chars().all(|c| c.is_alphanumeric() || c == '_') && !name.starts_with(|c: char| c.is_ascii_digit()) {
-        name.to_string()
-    } else {
-        format!("'{}'", name.replace('\'', "''"))
-    }
+    // The engine's one rule: a name that reads as a cell reference, an R1C1 token or a boolean
+    // is quoted too, or `Q1!A1` would be read as a reference to cell Q1.
+    gridcraft_core::quote_sheet(name)
 }
 
 /// Step parameters with every token replaced by A1 text.
@@ -485,7 +509,7 @@ fn walk(v: &Json, key: Option<&str>, env: &Env, depth: usize) -> R<Json> {
         // Items of a list keep their key's kind (`ranges: ["Input", …]`).
         Json::Array(a) => Json::Array(a.iter().map(|x| walk(x, key, env, depth + 1)).collect::<R<Vec<_>>>()?),
         Json::String(s) => {
-            if key.is_some_and(is_ref_key) && is_token(s, env) {
+            if key.is_some_and(|k| is_ref_key(k) && !(is_general_key(k) && is_bare_item_word(s))) && is_token(s, env) {
                 Json::String(a1(resolve_token(s, env)?, env))
             } else {
                 Json::String(interpolate(s, env)?)
@@ -495,7 +519,8 @@ fn walk(v: &Json, key: Option<&str>, env: &Env, depth: usize) -> R<Json> {
     })
 }
 
-/// Replaces each `{{token}}` in `s`.
+/// Replaces each `{{token}}` in `s`. `{{{{` is a literal `{{`, for text that needs the braces
+/// themselves (`"Dear {{{{name}}"` writes `Dear {{name}}`).
 pub fn interpolate(s: &str, env: &Env) -> R<String> {
     if !s.contains("{{") {
         return Ok(s.to_string());
@@ -504,6 +529,11 @@ pub fn interpolate(s: &str, env: &Env) -> R<String> {
     let mut rest = s;
     while let Some(i) = rest.find("{{") {
         out.push_str(rest.get(..i).unwrap_or(""));
+        if rest.get(i..i + 4) == Some("{{{{") {
+            out.push_str("{{");
+            rest = rest.get(i + 4..).unwrap_or("");
+            continue;
+        }
         let after = rest.get(i + 2..).unwrap_or("");
         let Some(j) = after.find("}}") else {
             out.push_str(rest.get(i..).unwrap_or(""));
@@ -793,8 +823,107 @@ mod tests {
 
     #[test]
     fn sheet_names_are_quoted_when_needed() {
-        for (name, want) in [("Sheet1", "Sheet1"), ("My Data", "'My Data'"), ("O'Hara", "'O''Hara'"), ("2024", "'2024'"), ("", "''")] {
-            assert_eq!(quote_sheet(name), want);
+        // The engine's rule: a name that reads as a cell reference, an R1C1 token or a boolean
+        // is quoted too, and a period on its own is not a reason to quote.
+        for (name, want) in [
+            ("Sheet1", "Sheet1"),
+            ("My Data", "'My Data'"),
+            ("O'Hara", "'O''Hara'"),
+            ("2024", "'2024'"),
+            ("", "''"),
+            ("Q1", "'Q1'"),
+            ("R1C1", "'R1C1'"),
+            ("TRUE", "'TRUE'"),
+            ("Sales.Q1", "Sales.Q1"),
+        ] {
+            assert_eq!(quote_sheet(name), want, "{name}");
+        }
+    }
+
+    #[test]
+    fn a_bare_row_or_column_under_a_general_key_is_text() {
+        // `to` is a replacement word in Change Spelling and `area` is `row` or `column` in a
+        // pivot field move, so a bare `Row` or `Column` there stays text, inside a Repeat or not;
+        // the token forms still resolve there, and the bare word resolves under `range`.
+        let wb = wb();
+        let inputs = vec![("Input".to_string(), place("B2:D11"), true)];
+        for item in [None, Some((RepeatOf::Rows, place("B5:D5")))] {
+            let env = Env { wb: &wb, active_sheet: 0, inputs: &inputs, output: Some(place("F2")), item };
+            let p = json!({"word": "Colum", "to": "Column", "area": "row", "from": "Input", "at": "Output"});
+            let r = resolve_params(&p, &env).unwrap();
+            assert_eq!(r, json!({"word": "Colum", "to": "Column", "area": "row", "from": "B2:D11", "at": "F2"}), "{item:?}");
+        }
+        let env = Env { wb: &wb, active_sheet: 0, inputs: &inputs, output: None, item: Some((RepeatOf::Rows, place("B5:D5"))) };
+        let p = json!({"to": "Row.col(2)", "range": "Row", "area": {"$ref": "Row"}, "text": "{{Row}}"});
+        let r = resolve_params(&p, &env).unwrap();
+        assert_eq!(r, json!({"to": "C5", "range": "B5:D5", "area": "B5:D5", "text": "B5:D5"}));
+    }
+
+    #[test]
+    fn a_header_row_alone_and_a_table_without_data_rows_are_refused() {
+        let mut wb = wb();
+        let sh = wb.sheet_mut(0).unwrap();
+        sh.tables.push(gridcraft_model::Table {
+            id: 1,
+            name: "Empty".into(),
+            range: RangeRef::parse("H1:J1").unwrap(),
+            header_row: true,
+            totals_row: false,
+            columns: Vec::new(),
+            style: String::new(),
+            banded_rows: false,
+            banded_cols: false,
+            first_col: false,
+            last_col: false,
+            filter_button: false,
+            filter: Vec::new(),
+            table_type: None,
+            connection_id: None,
+        });
+        let inputs = vec![("Input".to_string(), place("B2:D2"), true), ("Plain".to_string(), place("B2:D2"), false)];
+        let env = Env { wb: &wb, active_sheet: 0, inputs: &inputs, output: None, item: None };
+        assert!(resolve_ref("Input.data", &env).unwrap_err().to_string().contains("only a header row"));
+        assert!(resolve_ref("Input.data.col(2)", &env).unwrap_err().to_string().contains("only a header row"));
+        check(&env, "Plain.data", "B2:D2");
+        check(&env, "Input.col(2)", "C2");
+        assert!(resolve_ref("Name:Empty", &env).unwrap_err().to_string().contains("no data rows"));
+    }
+
+    #[test]
+    fn doubled_braces_are_literal_braces() {
+        let wb = wb();
+        let inputs = vec![("Input".to_string(), place("B2:D11"), true)];
+        let env = Env { wb: &wb, active_sheet: 0, inputs: &inputs, output: None, item: None };
+        assert_eq!(interpolate("Dear {{{{name}},", &env).unwrap(), "Dear {{name}},");
+        assert_eq!(interpolate("{{{{ {{Input.cell(1,1)}} }}", &env).unwrap(), "{{ B2 }}");
+        assert!(interpolate("Dear {{name}},", &env).is_err(), "an unknown token is still an error");
+    }
+
+    #[test]
+    fn a_defined_name_on_a_sheet_with_a_dollar_sign_resolves() {
+        let mut wb = wb();
+        wb.sheets.push(std::sync::Arc::new(gridcraft_model::Sheet::new("US$")));
+        wb.names.push(gridcraft_model::DefinedName {
+            name: "Dollars".into(),
+            scope: None,
+            formula: "'US$'!$F$20".into(),
+            comment: String::new(),
+            hidden: false,
+        });
+        let env = Env { wb: &wb, active_sheet: 0, inputs: &[], output: None, item: None };
+        check(&env, "Name:Dollars", "'US$'!F20");
+    }
+
+    #[test]
+    fn below_and_right_refuse_a_count_under_one() {
+        let wb = wb();
+        let inputs = vec![("Input".to_string(), place("B2:D11"), true)];
+        let env = Env { wb: &wb, active_sheet: 0, inputs: &inputs, output: None, item: None };
+        check(&env, "Input.below", "B12:D12");
+        check(&env, "Input.below(2)", "B12:D13");
+        check(&env, "Input.right(1)", "E2:E11");
+        for bad in ["Input.below(0)", "Input.below(-3)", "Input.right(0)"] {
+            assert!(resolve_ref(bad, &env).unwrap_err().to_string().contains("at least 1"), "{bad}");
         }
     }
 }

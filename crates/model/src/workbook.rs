@@ -181,8 +181,8 @@ pub struct Workbook {
     pub csv_delimiter: Option<u8>,
     /// GridCraft macros (typed command lists, not VBA), in the order the macro list shows them.
     /// The JSON format keeps them as this field; xlsx keeps them in hidden defined names.
-    #[serde(default, skip_serializing_if = "Vec::is_empty", skip_deserializing)]
-    pub macros: Vec<crate::macros::Macro>,
+    #[serde(default, skip_serializing_if = "crate::macros::Macros::is_empty", skip_deserializing)]
+    pub macros: crate::macros::Macros,
     /// The `macros` entries of a JSON file as read, before the engine checks each one on its own
     /// and moves it into `macros`, so one damaged or newer macro doesn't stop the file opening.
     /// Never written.
@@ -234,7 +234,7 @@ impl Workbook {
             phonetics: vec![],
             vba_project: None,
             csv_delimiter: None,
-            macros: vec![],
+            macros: crate::macros::Macros::default(),
             macros_read: vec![],
             preserved: None,
             source_dir: None,
