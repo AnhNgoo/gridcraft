@@ -65,6 +65,8 @@ Actions made of many commands (macros, a debugger that runs one step per call) u
   every group it opened, as `group_rollback` does. `Session::abort_groups(doc)`, and the command
   `automate.stopAction` on the active workbook, roll back the groups left open on a document (a
   debugger the person abandons, a caller that dropped its token), so Undo works there again. The
+  command runs on its own: a step of a script or macro may not stop the action it is part of, and
+  a recording leaves it out, so playing the recording back never stops the run. The
   history limit is applied when the outermost command finishes; until then the steps made inside
   it are bounded on their own.
 - **Recording buffer** (`record.rs`). `Session::start_recording` collects each successful

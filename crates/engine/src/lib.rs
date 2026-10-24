@@ -623,7 +623,7 @@ impl Session {
             // file, `home.formatCells` with no style) is not recorded either: the dialog's own
             // call is, so playing the recording back runs the command once, with its parameters.
             let opened_dialog = self.ui_requests.get(requests_before..).is_some_and(|new| new.iter().any(|q| matches!(q, UiRequest::Dialog(..))));
-            if let Some((doc, sheet, sheet_name, selection)) = place.filter(|_| !opened_dialog)
+            if let Some((doc, sheet, sheet_name, selection)) = place.filter(|_| !opened_dialog && !record::NOT_RECORDED.contains(&id))
                 && let Some(rec) = self.recorder.as_mut()
             {
                 rec.push(record::RecordedStep { doc, sheet, sheet_name, selection, id: id.to_string(), params: cmd::journal_params(&params) });
@@ -868,6 +868,16 @@ impl Session {
     /// command run by a command, and so on.
     pub fn depth(&self) -> u32 {
         self.depth
+    }
+
+    /// Runs a command as a command in progress would (one level deeper), for tests of what a
+    /// nested call may do.
+    #[cfg(test)]
+    pub(crate) fn execute_nested(&mut self, id: &str, params: Json) -> Result<Json> {
+        self.depth = self.depth.saturating_add(1);
+        let r = self.execute(id, params);
+        self.depth = self.depth.saturating_sub(1);
+        r
     }
 
     /// Whether an undo group is open on the document with this uid.
