@@ -828,7 +828,12 @@ impl SheetApp {
             }
             // The macro step editor stays until it closes itself (its draft, overlays and debug
             // run go with it), so another dialog can't replace it.
-            _ if self.dialog.as_ref().is_some_and(|d| d.name == "macroEditor") => {}
+            _ if self.dialog.as_ref().is_some_and(|d| d.name == "macroEditor") => {
+                self.message = Some((
+                    "Macro".into(),
+                    "Close the macro step editor first: it keeps its window until it closes itself, so its steps and debug run are not lost.".into(),
+                ));
+            }
             other => self.dialog = dialogs::Dialog::open(self, other, params),
         }
     }

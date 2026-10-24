@@ -404,6 +404,18 @@ fn the_editor_works_only_on_the_workbook_it_opened_in() {
 }
 
 #[test]
+fn a_dialog_asked_for_over_the_editor_says_why_it_did_not_open() {
+    let mut h = harness();
+    three(&mut h);
+    // File › Close on a changed workbook asks about saving it, which can't replace the editor.
+    h.state_mut().run("cell.set", json!({"cell": "Z9", "input": "unsaved"})).unwrap();
+    h.state_mut().run("file.close", json!({})).unwrap();
+    h.run_steps(3);
+    assert_eq!(h.state().dialog.as_ref().map(|d| d.name()), Some("macroEditor"));
+    assert!(h.state().message.as_ref().is_some_and(|(_, m)| m.contains("Close the macro step editor")), "{:?}", h.state().message);
+}
+
+#[test]
 fn the_control_channels_cancel_closes_the_editor_as_its_own_close_does() {
     let mut h = harness();
     three(&mut h);
