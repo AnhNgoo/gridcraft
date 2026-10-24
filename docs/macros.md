@@ -202,8 +202,8 @@ letter that GridCraft or another macro uses, is refused before anything is recor
 name the macro is called `Macro1`, `Macro2` and so on. A `name` or `description` given when
 stopping wins over the one given when starting; a name that another macro has by then gets a
 suffix, such as `Tidy (2)`, so stopping never replaces a macro, and a shortcut another macro took
-meanwhile is left off. `cancel: true` ends a recording without saving it, the way out of one whose
-macro can't be saved. A parameter the call would ignore is refused: `relative` or `shortcut` when
+meanwhile is left off, which the result says in `shortcutDropped`. `cancel: true` ends a recording
+without saving it, the way out of one whose macro can't be saved. A parameter the call would ignore is refused: `relative` or `shortcut` when
 stopping, `stop: false` while recording, anything beside `cancel: true`, and one of the wrong kind.
 The macro is saved in the workbook where recording started, even if another one is active;
 if that workbook was closed, stopping ends the recording without saving it. When saving the
@@ -277,10 +277,10 @@ other macros open; a macro that was left out is not in the saved file.
 - **Macros dialog** (Automate › Macros, View › Macros, Alt+F8). It lists the workbook's macros
   (with their shortcuts), then its Automate scripts, and says when the file carries a VBA project.
   Scripts that came with an opened file stay disabled until Trust Scripts (`automate.trustScripts`)
-  trusts them for the session.
-  Run runs the selected macro on the selection or the selected script; Step Into, Edit and Create
-  open the step editor; Delete asks first; Options sets a macro's shortcut letter and description. The dialog keeps the result of `view.macros`,
-  as before macros existed.
+  trusts them for the session. Run runs the selected macro on the selection or the selected
+  script; Step Into, Edit and Create open the step editor; Delete asks first; Options sets a
+  macro's shortcut letter and description. The dialog keeps the result of `view.macros`, as before
+  macros existed.
 - **Step editor.** A resizable window that works on a draft and saves it with `macro.save`; in a
   narrow app window it is no larger than the window and its toolbar wraps onto a second row. The
   step list shows each step's number, a breakpoint dot in the gutter (click to set or clear), a
@@ -306,7 +306,8 @@ other macros open; a macro that was left out is not in the saved file.
   bar says "Debugging" with the macro's name, and Show reopens the editor.
 - **Questions.** A macro that needs approval offers Run; a macro whose output would land on data
   offers Overwrite, Shift Down and Shift Right. Each button runs the command again with
-  `approve: true` or the chosen `onConflict`.
+  `approve: true` or the chosen `onConflict`, in the workbook that asked: an answer given while
+  another workbook is active does nothing and says why.
 - **Shortcuts.** Ctrl+Shift+letter (⌘⇧letter on a Mac) on the grid runs the macro with that
   letter. The letters GridCraft uses itself keep their own meaning.
 
