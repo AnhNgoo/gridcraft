@@ -538,8 +538,8 @@ impl Session {
         let start = before.as_ref().and_then(|(uid, ..)| self.docs.iter().find(|d| d.uid == *uid).map(|d| (self.in_group(*uid), d.undo.len())));
         // A command that panics leaves the history as it found it: the steps commands nested in it
         // made or undid, and the redo history they cleared, come back. A length is not enough,
-        // because a nested `edit.undo` removes entries. A query runs no commands and leaves the
-        // history alone (`every_query_leaves_the_history_alone` runs each one), so it needs no
+        // because a nested `edit.undo` removes entries. A query runs nothing that changes the
+        // history (`every_query_leaves_the_history_alone` runs each one), so it needs no
         // copy; front ends run queries all the time.
         let query = !spec.journal && !spec.undoable;
         let history_before = before.as_ref().filter(|_| !query).and_then(|(uid, ..)| {
