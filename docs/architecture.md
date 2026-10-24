@@ -80,8 +80,10 @@ Actions made of many commands (macros, a debugger that runs one step per call) u
   per-session consent for stored `automate.*` scripts (`automate.trustScripts`).
 - **Workbook data in hidden names** (`cmd/stash.rs`). An item is split over hidden
   workbook-scope names `_gc_<key>_0`, `_gc_<key>_1`, … of string literals within Excel's 255- and
-  8,192-character limits, so it survives an xlsx round trip. The older single-name `_sc_<key>`
-  items are read as well.
+  8,192-character limits, so it survives an xlsx round trip. Characters XML can't carry (controls
+  other than tab, line feed and carriage return, U+FFFE, U+FFFF) are stored as the noncharacter
+  U+FDD0 and four hex digits, as is U+FDD0 itself, and read back as they were. The older
+  single-name `_sc_<key>` items are read as well.
 
 ## Agent control
 

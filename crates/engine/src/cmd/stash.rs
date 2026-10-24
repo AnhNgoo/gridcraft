@@ -7,8 +7,16 @@
 //! one that Excel accepts. Older items (custom views, scripts, the watch list and scenarios) keep
 //! one name each, `_sc_<key>`; reading accepts that form as well, so those items can move to this
 //! format later, and a write of the same key replaces it.
+//!
+//! XML can't carry every character (controls other than tab, line feed and carriage return, and
+//! U+FFFE and U+FFFF), and the xlsx writer drops those. In `_gc_` items each of them, and the
+//! marker itself, is written as [`ESCAPE`] followed by its code as four upper-case hex digits
+//! (`U+0001` becomes `\u{FDD0}0001`), and reading turns them back. The marker is a Unicode
+//! noncharacter, which XML carries but real text does not use, so the escape costs nothing on
+//! ordinary text. Legacy `_sc_` items are read as they are.
 
 use std::collections::BTreeMap;
+use std::fmt::Write as _;
 
 use gridcraft_model::{DefinedName, Workbook};
 use serde_json::Value as Json;
@@ -25,6 +33,11 @@ const FORMULA_UNITS: usize = 8_192;
 const MAX_KEY: usize = 200;
 /// The longest item: 4,194,304 characters.
 pub const MAX_ITEM_CHARS: usize = 4 * 1024 * 1024;
+/// The most bytes the stored (escaped) form of an item can take: an escaped one-byte character
+/// takes seven (the three-byte marker and four digits).
+const MAX_STORED_BYTES: usize = MAX_ITEM_CHARS * 7;
+/// Starts an escaped character in a `_gc_` item: U+FDD0, a noncharacter.
+pub const ESCAPE: char = '\u{FDD0}';
 
 /// The item text stored under `key`, or `None` when there is none (or it is over the size limit).
 pub fn get(wb: &Workbook, key: &str) -> Option<String> {
@@ -49,12 +62,45 @@ pub fn get(wb: &Workbook, key: &str) -> Option<String> {
                 break;
             }
             out.push_str(&string_literals(f));
-            if out.len() > MAX_ITEM_CHARS.saturating_mul(4) {
+            if out.len() > MAX_STORED_BYTES {
                 return None;
             }
         }
+        out = unescape(&out);
     }
     (out.chars().count() <= MAX_ITEM_CHARS).then_some(out)
+}
+
+/// Whether `c` is stored escaped: XML can't carry it, or it is the marker.
+fn needs_escape(c: char) -> bool {
+    c == ESCAPE || !matches!(c, '\t' | '\n' | '\r' | '\u{20}'..='\u{D7FF}' | '\u{E000}'..='\u{FFFD}' | '\u{10000}'..='\u{10FFFF}')
+}
+
+/// Turns [`ESCAPE`] and four hex digits back into the character. A marker not followed by four
+/// hex digits naming a character (a hand-made name) stays as it is.
+fn unescape(s: &str) -> String {
+    if !s.contains(ESCAPE) {
+        return s.to_string();
+    }
+    let mut out = String::with_capacity(s.len());
+    let mut rest = s;
+    while let Some(at) = rest.find(ESCAPE) {
+        out.push_str(rest.get(..at).unwrap_or(""));
+        let after = rest.get(at + ESCAPE.len_utf8()..).unwrap_or("");
+        let code = after.get(..4).filter(|h| h.bytes().all(|b| b.is_ascii_hexdigit())).and_then(|h| u32::from_str_radix(h, 16).ok());
+        match code.and_then(char::from_u32) {
+            Some(c) => {
+                out.push(c);
+                rest = after.get(4..).unwrap_or("");
+            }
+            None => {
+                out.push(ESCAPE);
+                rest = after;
+            }
+        }
+    }
+    out.push_str(rest);
+    out
 }
 
 /// Stores `text` under `key`, replacing what was there (in either format). Empty text removes it.
@@ -153,7 +199,8 @@ fn check_key(key: &str) -> Result<()> {
 }
 
 /// `text` as name formulas: string literals of at most 255 characters joined with `&`, each formula
-/// at most 8,192 characters. Concatenating [`string_literals`] of each gives `text` back.
+/// at most 8,192 characters, with the characters XML can't carry escaped (see [`ESCAPE`]).
+/// Concatenating [`string_literals`] of each and turning the escapes back gives `text` back.
 pub fn chunk_formulas(text: &str) -> Vec<String> {
     let mut formulas = Vec::new();
     let (mut formula, mut units) = (String::new(), 0usize);
@@ -175,14 +222,22 @@ pub fn chunk_formulas(text: &str) -> Vec<String> {
         *lit_units = 0;
     };
     for ch in text.chars() {
-        if lit_units + ch.len_utf16() > LITERAL_UNITS {
+        // An escaped character is the marker and four digits, kept in one literal.
+        let escaped = needs_escape(ch);
+        let cost = if escaped { ESCAPE.len_utf16() + 4 } else { ch.len_utf16() };
+        if lit_units + cost > LITERAL_UNITS {
             flush_literal(&mut literal, &mut lit_units, &mut formula, &mut units);
         }
-        lit_units += ch.len_utf16();
-        if ch == '"' {
-            literal.push('"');
+        lit_units += cost;
+        if escaped {
+            literal.push(ESCAPE);
+            let _ = write!(literal, "{:04X}", u32::from(ch));
+        } else {
+            if ch == '"' {
+                literal.push('"');
+            }
+            literal.push(ch);
         }
-        literal.push(ch);
     }
     if lit_units > 0 {
         flush_literal(&mut literal, &mut lit_units, &mut formula, &mut units);
@@ -403,5 +458,46 @@ mod tests {
         assert!(warnings.is_empty(), "{warnings:?}");
         assert_eq!(get(&back, "blob").as_deref(), Some(text.as_str()));
         assert_eq!(get_json(&back, "watch"), Some(serde_json::json!(["A1"])));
+
+        // Characters XML can't carry, and the escape marker itself, come back too, in text and
+        // in JSON (which leaves U+FFFE and U+FFFF unescaped).
+        let mut wb = Workbook::new();
+        let odd: String = (0u32..0x20).filter_map(char::from_u32).chain(['\u{FFFE}', '\u{FFFF}', ESCAPE, 'a', '\u{7F}', '\u{FDD1}']).collect();
+        let text: String = odd.chars().cycle().take(odd.chars().count() * 300).collect();
+        set(&mut wb, "odd", &text).unwrap();
+        excel_limits_hold(&wb);
+        let json = serde_json::json!({"s": "x\u{FFFF}y\u{1}z\u{FDD0}0041"});
+        set_json(&mut wb, "json", &json).unwrap();
+        // All escapes: each literal holds whole escapes, within the limits.
+        let controls = "\u{1}".repeat(9_000);
+        set(&mut wb, "controls", &controls).unwrap();
+        excel_limits_hold(&wb);
+        let bytes = gridcraft_xlsx::write_xlsx(&wb).unwrap();
+        let (back, warnings) = crate::io::open_bytes("data.xlsx", &bytes).unwrap();
+        assert!(warnings.is_empty(), "{warnings:?}");
+        assert_eq!(get(&back, "odd").as_deref(), Some(text.as_str()));
+        assert_eq!(get_json(&back, "json"), Some(json));
+        assert_eq!(get(&back, "controls").as_deref(), Some(controls.as_str()));
+    }
+
+    #[test]
+    fn escapes_count_against_the_limits_and_odd_markers_read_as_they_are() {
+        // Excel's limits hold however many characters are escaped, and the longest item of
+        // characters that all need escaping still reads.
+        for len in [1, 50, 51, 52, 1_638, 1_639, 5_000] {
+            let text = "\u{2}".repeat(len);
+            let fs = chunk_formulas(&text);
+            assert_eq!(unescape(&fs.iter().map(|f| string_literals(f)).collect::<String>()), text, "{len}");
+            assert!(fs.iter().all(|f| f.encode_utf16().count() <= FORMULA_UNITS), "{len}");
+        }
+        let mut wb = Workbook::new();
+        let longest = "\u{0}".repeat(MAX_ITEM_CHARS);
+        set(&mut wb, "longest", &longest).unwrap();
+        excel_limits_hold(&wb);
+        assert_eq!(get(&wb, "longest").map(|t| t.len()), Some(MAX_ITEM_CHARS));
+        // A marker in a hand-made name that is not an escape stays as it is.
+        let mut wb = Workbook::new();
+        wb.names.push(name("_gc_hand_0", "\"a\u{FDD0}zz\u{FDD0}D800\u{FDD0}004\u{FDD0}0041\u{FDD0}\""));
+        assert_eq!(get(&wb, "hand").as_deref(), Some("a\u{FDD0}zz\u{FDD0}D800\u{FDD0}004A\u{FDD0}"));
     }
 }
