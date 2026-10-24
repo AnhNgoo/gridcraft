@@ -96,8 +96,9 @@ refused rather than read as the header.
    are when the step runs. A macro that touches files, or that came with a workbook opened from
    a file, runs once the person approves it: the call fails with `approve: …` and runs with
    `approve: true`. Approval lasts for the session, until the macro changes.
-2. **Footprint.** The macro first runs in dry-run mode on the real workbook, and everything is put
-   back. Cells it would write outside its inputs that hold data, and sheets and objects it would
+2. **Footprint.** Unless the conflict rule is `overwrite`, the macro first runs in dry-run mode on
+   the real workbook, and everything is put back. Cells it would write outside its
+   inputs that hold data, and sheets and objects it would
    delete, are conflicts, handled by `onConflict` (or the macro's `output.onConflict`): `ask` (the
    call fails with `confirm: …`; `overwrite: true` answers it), `fail`, `overwrite`, `shiftDown` or
    `shiftRight` (Insert Cells makes room, then the footprint is checked again). Steps that touch
