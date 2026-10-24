@@ -1,6 +1,6 @@
 # Macros
 
-> **Last updated:** 2026-10-21 · **Change:** major (created: the macro format and storage)
+> **Last updated:** 2026-10-24 · **Change:** major (created: the macro format and storage)
 
 GridCraft macros are typed, declarative lists of commands, not VBA. Every step runs a GridCraft
 command (the same ids the ribbon, CLI and MCP use) or one of three bounded control steps. A macro
@@ -38,9 +38,8 @@ version.
   `{"command": "cell.set", "params": {…}}` is accepted for a command step.
 - **Inputs**: `kind` (`cell` or `range`), `rows` and `cols` as `[min, max]` (0 for no maximum;
   rows exclude the header), `header`, `colTypes` (`number`, `text`, `date`, `bool`, `any`),
-  `nonEmpty` and `defaultRef`. A run binds each input to the range it is given, its default, or
-  (for the first input) the selection, and refuses with messages that name the cells:
-  "Input column 2 (Amount) must hold numbers; C4 holds text."
+  `nonEmpty` and `defaultRef`. These declare what a range must look like for the macro to work
+  on it. This version stores and checks the declaration; it does not bind inputs or run macros.
 - **Limits**: 1,000 macros a workbook, 10,000 steps a macro, and Repeat and If nested 4 deep.
 
 ## Storage
