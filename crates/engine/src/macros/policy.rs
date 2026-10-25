@@ -1,6 +1,8 @@
-//! What a macro step may run. Macros run commands, so this is the one place that keeps a macro
-//! from saving, opening or closing files, driving the app, running other macros, or reading and
-//! writing files without the person knowing.
+//! What a macro step may run. Macros run commands, so this keeps a macro from saving, opening or
+//! closing files, driving the app, running other macros, or reading and writing files without the
+//! person knowing. It goes by command id and the `path` parameter; the runner also runs every
+//! step except an approved file step inside the scripts' file sandbox, so a command that touches a
+//! file under another parameter can't either.
 
 use serde_json::Value as Json;
 
@@ -46,6 +48,11 @@ const READS_FILES: &[&str] = &["data.getData", "data.fromTextCsv", "insert.pictu
 
 /// File commands that only produce bytes unless given a `path` (then they write a file).
 const EXPORTS: &[&str] = &["file.exportPdf", "file.exportCsv", "file.exportHtml", "file.print", "file.printPreview", "file.saveBytes"];
+
+/// Whether command `id` with `params` writes a file (an export or print given a `path`).
+pub fn writes_file(id: &str, params: &Json) -> bool {
+    EXPORTS.contains(&id) && params.get("path").is_some_and(|p| !p.is_null())
+}
 
 /// The policy for running command `id` with `params` as a macro step in a document with `trust`.
 ///

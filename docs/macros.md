@@ -60,8 +60,9 @@ macro interface.
   whole macro (4,194,304 characters of JSON). A macro read from a file that breaks any of these is
   left out with a warning; it is never changed to fit. When a macro runs, a Repeat whose range has
   more rows or columns than its `max` is refused, and a run executes at most 100,000 steps (each
-  pass through a Repeat counts) and takes at most 60 seconds (`timeLimit` to change the time;
-  the web build has no clock, so there only the step limit applies).
+  pass through a Repeat counts), passes its commands at most 256 MB of parameters, all steps
+  together, and takes at most 60 seconds (`timeLimit` to change the time; the web build has no
+  clock, so there only the step and parameter limits apply).
 
 ## Tokens
 
@@ -107,17 +108,23 @@ refused rather than read as the header.
    including a blank one and a token, and the policy is checked again on the parameters as they
    are when the step runs. A macro that touches files, or that came with a workbook opened from
    a file, runs once the person approves it: the call fails with `approve: …` and runs with
-   `approve: true`. Approval lasts for the session, until the macro changes.
+   `approve: true`. Approval lasts for the session, until the macro changes. Every step other
+   than an approved file step runs inside the file sandbox that scripts use, so no other
+   parameter reaches a file either.
 2. **Conflicts.** Unless the conflict rule is `overwrite`, each step is checked as it runs. A
    step that writes over cells outside the inputs that held data when the run started, or deletes
    sheets or objects that were there, stops the run, which rolls the workbook back (a file already
-   written stays). The rule is `onConflict` (or the macro's `output.onConflict`): `ask` (the call
+   written stays). Moving such cells, as inserting or deleting rows or cells above them does,
+   counts as writing over them: the check compares cells by place. The rule is `onConflict` (or the macro's `output.onConflict`): `ask` (the call
    fails with `confirm: …`; `overwrite: true` answers it), `fail` or `overwrite`. Shifting the
    data to make room (`shiftDown`, `shiftRight`) needs to know where the macro writes before it
    runs, which this version doesn't work out, so those rules stop the run as `fail` does.
 3. **Run.** One undo step, "Run Macro: Totals". Any error rolls the whole run back and names the
    step: `Step 3.1 (cell.set): …` (paths are 1-based; `2.1` is inside a Repeat, `4.then.1` inside
-   an If). When a step inserts, deletes or moves sheets, rows, columns or cells, the inputs, the
+   an If). The message ends "Nothing was changed.", or names the files the run already wrote,
+   which stay. An input the macro doesn't have, an input that isn't reference text, and
+   `onConflict`, `overwrite`, `approve` or `timeLimit` of the wrong kind are refused rather than
+   ignored. When a step inserts, deletes or moves sheets, rows, columns or cells, the inputs, the
    output and the range of a Repeat in progress move with their cells, as references in formulas
    do; a step that deletes one of them, or changes the size of a range a Repeat is going over,
    stops the run.

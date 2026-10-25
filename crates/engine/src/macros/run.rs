@@ -18,7 +18,7 @@
 //! The steps run on a small machine with an explicit frame stack, so the debugger can stop
 //! between any two steps and pick up again on a later frame.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeSet, HashMap};
 use std::sync::Arc;
 
 use gridcraft_core::{CellRef, RangeRef, Value};
@@ -27,7 +27,7 @@ use gridcraft_model::{Cell, CompareOp, InputKind, Macro, OnConflict, RepeatOf, S
 use serde::Serialize;
 use serde_json::{Value as Json, json};
 
-use super::policy::{Policy, macro_policy};
+use super::policy::{Policy, macro_policy, writes_file};
 use super::resolve::{self, Env, Place, ResolveError};
 use crate::{EngineError, Result, Session, Trust, UiRequest};
 
@@ -38,6 +38,9 @@ pub const MAX_EXECUTED_STEPS: u64 = 100_000;
 pub const DEFAULT_TIME_LIMIT_MS: f64 = 60_000.0;
 /// The most cells an input may have for its content to be checked.
 pub const MAX_INPUT_CELLS: u64 = 1_000_000;
+/// The most bytes of parameters one run passes to its commands, all steps together: on the web
+/// build, where there is no clock, this and the step limit bound the work a run does.
+pub const MAX_PARAM_BYTES: u64 = 256 * 1024 * 1024;
 /// The most ranges a list of cells gives per sheet (the counts stay exact).
 const MAX_LISTED_RANGES: usize = 500;
 
@@ -58,11 +61,22 @@ pub struct StepError {
     /// The step would write over data and the conflict rule is ask: overwriting answers it.
     #[serde(skip_serializing_if = "std::ops::Not::not")]
     pub confirm: bool,
+    /// Files the run wrote before the step failed ("step 1 (file.exportCsv)"): rolling back the
+    /// workbook leaves them written.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub wrote_files: Vec<String>,
 }
 
 impl StepError {
     fn new(step: &str, command: Option<&str>, message: impl Into<String>) -> StepError {
-        StepError { step: step.to_string(), command: command.map(str::to_string), message: message.into(), edge: false, confirm: false }
+        StepError {
+            step: step.to_string(),
+            command: command.map(str::to_string),
+            message: message.into(),
+            edge: false,
+            confirm: false,
+            wrote_files: Vec::new(),
+        }
     }
 
     fn resolve(step: &str, command: Option<&str>, e: ResolveError) -> StepError {
@@ -79,8 +93,27 @@ impl StepError {
     }
 
     pub fn into_engine(self, name: &str) -> EngineError {
-        let text = format!("Macro '{name}' stopped. {} Nothing was changed.", self.describe());
+        let text = format!("Macro '{name}' stopped. {} {}", self.describe(), rolled_back(&self.wrote_files));
         if self.confirm { EngineError::Confirm(text) } else { EngineError::Other(text) }
+    }
+}
+
+/// What a run that rolled back leaves: "Nothing was changed.", or the files it wrote before.
+pub fn rolled_back(wrote_files: &[String]) -> String {
+    match wrote_files {
+        [] => "Nothing was changed.".into(),
+        [one] => format!("The workbook was put back; the file {one} wrote stays."),
+        many => format!("The workbook was put back; the files {} wrote stay.", join_and(many)),
+    }
+}
+
+/// The size of `v` as JSON text, near enough to bound how much a run passes to its commands.
+fn json_bytes(v: &Json) -> u64 {
+    match v {
+        Json::String(t) => t.len() as u64 + 2,
+        Json::Array(a) => a.iter().map(json_bytes).fold(2, u64::saturating_add),
+        Json::Object(o) => o.iter().map(|(k, v)| (k.len() as u64 + 3).saturating_add(json_bytes(v))).fold(2, u64::saturating_add),
+        _ => 8,
     }
 }
 
@@ -426,6 +459,13 @@ pub struct Machine {
     pub stopped: Option<(String, bool)>,
     /// The last step's resolved parameters (for the debugger).
     pub last_params: Option<Json>,
+    /// Files the run wrote ("step 1 (file.exportCsv)"): rolling the run back doesn't take them back.
+    pub wrote_files: Vec<String>,
+    /// Repeat and If bodies by the path of their frame: a body is copied the first time its step
+    /// runs, not on every pass.
+    bodies: HashMap<String, Arc<Vec<Step>>>,
+    /// Bytes of parameters passed to commands so far, against [`MAX_PARAM_BYTES`].
+    param_bytes: u64,
     /// Set unless the macro may overwrite: each step is checked for writes over data as it runs.
     guard: Option<Guard>,
 }
@@ -518,6 +558,9 @@ impl Machine {
             time_limit_ms: DEFAULT_TIME_LIMIT_MS,
             stopped: None,
             last_params: None,
+            wrote_files: Vec::new(),
+            bodies: HashMap::new(),
+            param_bytes: 0,
             guard: None,
         };
         m.settle();
@@ -574,12 +617,15 @@ impl Machine {
 
     /// Runs the current step and moves to the next one.
     pub fn step(&mut self, s: &mut Session) -> std::result::Result<(), StepError> {
-        let Some((path, st)) = self.current().map(|(p, st)| (p, st.clone())) else { return Ok(()) };
+        // The frame's steps are shared, so the step (and its bodies) isn't copied to run it.
+        let Some((path, steps, i)) = self.frames.last().map(|f| (child_path(&f.prefix, f.next), Arc::clone(&f.steps), f.next)) else { return Ok(()) };
+        let Some(st) = steps.get(i) else { return Ok(()) };
         if let Some(f) = self.frames.last_mut() {
             f.next += 1;
         }
-        let r = self.exec(s, &path, &st);
-        if r.is_err() {
+        let mut r = self.exec(s, &path, st);
+        if let Err(e) = r.as_mut() {
+            e.wrote_files.clone_from(&self.wrote_files);
             self.frames.clear();
         }
         self.settle();
@@ -618,7 +664,8 @@ impl Machine {
                 }
                 if items > 0 && body.iter().any(|b| b.enabled) {
                     let repeat = Some(Loop { of: *of, over: place, at: 0, count: items });
-                    self.frames.push(Frame { steps: Arc::new(body.clone()), next: 0, prefix: path.to_string(), repeat });
+                    let steps = self.body(path.to_string(), body);
+                    self.frames.push(Frame { steps, next: 0, prefix: path.to_string(), repeat });
                 }
                 Ok(())
             }
@@ -634,7 +681,9 @@ impl Machine {
                 };
                 let (branch, name) = if compare(&v, *op, value) { (then, "then") } else { (otherwise, "else") };
                 if branch.iter().any(|b| b.enabled) {
-                    self.frames.push(Frame { steps: Arc::new(branch.clone()), next: 0, prefix: format!("{path}.{name}"), repeat: None });
+                    let prefix = format!("{path}.{name}");
+                    let steps = self.body(prefix.clone(), branch);
+                    self.frames.push(Frame { steps, next: 0, prefix, repeat: None });
                 }
                 Ok(())
             }
@@ -674,6 +723,11 @@ impl Machine {
         Ok(())
     }
 
+    /// The shared copy of the body that runs under `prefix`.
+    fn body(&mut self, prefix: String, body: &[Step]) -> Arc<Vec<Step>> {
+        Arc::clone(self.bodies.entry(prefix).or_insert_with(|| Arc::new(body.to_vec())))
+    }
+
     fn env<'a>(&'a self, wb: &'a Workbook) -> Env<'a> {
         Env { wb, active_sheet: wb.active_sheet, inputs: &self.inputs, output: self.output, item: self.item() }
     }
@@ -698,13 +752,26 @@ impl Machine {
             }
             (_, Policy::Allow | Policy::Ask(_)) => {}
         }
+        self.param_bytes = self.param_bytes.saturating_add(json_bytes(&resolved));
+        if self.param_bytes > MAX_PARAM_BYTES {
+            return Err(fail(format!(
+                "The macro passed more than {} MB of parameters to its steps and was stopped.",
+                MAX_PARAM_BYTES / (1024 * 1024)
+            )));
+        }
+        let file_step = matches!(macro_policy(id, &resolved, self.trust), Policy::NeedsPermission(_));
+        let writes = writes_file(id, &resolved);
         self.last_params = Some(resolved.clone());
         let prev = s.docs.iter_mut().find(|d| d.uid == self.doc).map(|d| {
             d.edits = Some(Vec::new());
             d.wb.clone()
         });
         let queued = s.ui_requests.len();
+        // Only an approved file step reaches the file system: any other step runs as a script's
+        // does, so a command that reads or writes a file under another parameter name can't.
+        let sandbox = (!file_step).then(crate::io::ScriptSandbox::enter);
         let r = s.execute(id, resolved);
+        drop(sandbox);
         let edits = s.docs.iter_mut().find(|d| d.uid == self.doc).and_then(|d| d.edits.take()).unwrap_or_default();
         // Macros never open dialogs or web pages, and never start editing a cell; messages for
         // the person stay queued.
@@ -719,6 +786,9 @@ impl Machine {
             }
         }
         r.map_err(|e| fail(e.to_string()))?;
+        if writes {
+            self.wrote_files.push(format!("step {path} ({id})"));
+        }
         if let Some(b) = blocked {
             return Err(fail(b));
         }
@@ -895,6 +965,7 @@ pub fn begin(s: &mut Session, name: &str, p: &Json) -> Result<Begun> {
         .and_then(|i| d.wb.macros.get(i))
         .cloned()
         .ok_or_else(|| EngineError::Other(format!("There is no macro called '{name}'.")))?;
+    check_params(p, &m)?;
     let asks = gate(&m, trust)?;
     approve(s, &m, doc, &asks, p.get("approve").and_then(Json::as_bool).unwrap_or(false))?;
     let prepared = prepare(s, &m, p.get("inputs"))?;
@@ -929,7 +1000,7 @@ pub fn run(s: &mut Session, name: &str, p: &Json) -> Result<Json> {
         let name = &b.mac.name;
         machine.run_to_end(s).map_err(|e| e.into_engine(name))?;
         match machine.stopped {
-            Some((msg, true)) => Err(EngineError::Other(format!("Macro '{name}' stopped: {msg} Nothing was changed."))),
+            Some((msg, true)) => Err(EngineError::Other(format!("Macro '{name}' stopped: {msg} {}", rolled_back(&machine.wrote_files)))),
             stopped => {
                 let mut out = json!({"macro": name, "ran": machine.executed, "inputs": b.inputs});
                 if let Some((msg, _)) = stopped {
@@ -939,6 +1010,47 @@ pub fn run(s: &mut Session, name: &str, p: &Json) -> Result<Json> {
             }
         }
     })
+}
+
+/// Refuses run parameters that would otherwise be ignored: an input the macro doesn't have, an
+/// input given as something other than reference text, and `onConflict`, `overwrite`, `approve`
+/// or `timeLimit` of the wrong kind (`null` counts as not given).
+pub fn check_params(p: &Json, m: &Macro) -> Result<()> {
+    let refuse = |msg: String| Err(EngineError::Other(format!("Macro '{}': {msg}", m.name)));
+    let names = || m.inputs.iter().map(|i| i.name.clone()).collect::<Vec<_>>().join(", ");
+    match p.get("inputs") {
+        None | Some(Json::Null) => {}
+        Some(Json::String(_)) if !m.inputs.is_empty() => {}
+        Some(Json::String(_)) => return refuse("it takes no inputs.".into()),
+        Some(Json::Object(o)) => {
+            for (k, v) in o {
+                if !m.inputs.iter().any(|i| i.name.eq_ignore_ascii_case(k)) {
+                    return refuse(if m.inputs.is_empty() {
+                        format!("it has no input called '{k}'; it takes no inputs.")
+                    } else {
+                        format!("it has no input called '{k}' (its inputs: {}).", names())
+                    });
+                }
+                if !v.is_string() {
+                    return refuse(format!("give the input {k} as reference text, such as \"B2:D9\"."));
+                }
+            }
+        }
+        Some(_) => return refuse("give `inputs` as reference text, such as \"B2:D9\", or as {\"Input\": \"B2:D9\"}.".into()),
+    }
+    let given = |k: &str| p.get(k).filter(|v| !v.is_null());
+    if given("onConflict").is_some_and(|v| !v.is_string()) {
+        return refuse("`onConflict` must be ask, fail, overwrite, shiftDown or shiftRight.".into());
+    }
+    for k in ["overwrite", "approve"] {
+        if given(k).is_some_and(|v| !v.is_boolean()) {
+            return refuse(format!("`{k}` must be true or false."));
+        }
+    }
+    if given("timeLimit").is_some_and(|v| !v.as_f64().is_some_and(|t| t > 0.0)) {
+        return refuse("`timeLimit` must be a number of seconds above 0.".into());
+    }
+    Ok(())
 }
 
 /// The run's `timeLimit` (seconds) in milliseconds, or the default.
