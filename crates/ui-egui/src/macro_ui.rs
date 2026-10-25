@@ -574,7 +574,8 @@ pub fn save_options(app: &mut SheetApp, name: &str, letter: Option<char>, descri
         };
         o.insert("description".into(), json!(description));
     }
-    match app.run("macro.save", json!({"macro": m})) {
+    // Macro Options changes a macro that exists, so the save replaces it.
+    match app.run("macro.save", json!({"macro": m, "replace": true})) {
         Ok(_) => true,
         Err(e) => {
             app.message = Some(("Macro Options".into(), crate::clean_error(&e)));
