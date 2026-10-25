@@ -41,9 +41,21 @@ version.
   `nonEmpty` and `defaultRef`. These declare what a range must look like for the macro to work
   on it. An input's name is letters, digits and `_`, starting with a letter, and is neither a
   token of its own (`Output`, `Row`, `Column`, `Name`) nor something that reads as a cell
-  reference (`Q1`), so a step written with plain A1 text keeps meaning the cell. This version
-  stores and checks the declaration; it does not bind inputs or run macros.
-- **Limits**: 1,000 macros a workbook, 10,000 steps a macro, and Repeat and If nested 4 deep.
+  reference (`Q1`), so a step written with plain A1 text keeps meaning the cell. The declaration
+  is checked as a whole: neither `rows` nor `cols` may have a least above its most, a `cell` input
+  has one row and one column (`[1, 1]`, or the default `[1, 0]`), no header and at most one column
+  type, and no input lists more column types than it allows columns. This version stores and
+  checks the declaration; it does not bind inputs or run macros.
+- **Limits**: 1,000 macros a workbook, 10,000 steps a macro, Repeat and If nested 4 deep, and 64
+  inputs a macro. Names (of macros and inputs) and command ids are at most 255 characters;
+  descriptions, step notes, Stop messages and If values (as JSON) 4,096; references and tokens
+  (`output.anchor`, `defaultRef`, a Repeat's `over`, an If's `cell`) 1,024; a shortcut 64. A
+  macro lists at most 256 permissions, each a command id, and an input at most 16,384 column
+  types. One-line fields hold no line breaks or other control characters, and a command id is
+  letters, digits, `.` and `_`. A command step's `params` are bounded only by the size of the
+  whole macro (4,194,304 characters of JSON). How many times a Repeat runs (`max`) is the
+  runner's to bound. A macro read from a file that breaks any of these is left out with a
+  warning; it is never changed to fit.
 
 ## Storage
 

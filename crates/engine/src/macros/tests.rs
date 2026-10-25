@@ -527,3 +527,103 @@ fn a_json_workbook_with_no_sheets_keeps_its_macros() {
     assert_eq!(back.sheets.len(), 1);
     assert_eq!(back.macros, wb.macros);
 }
+
+fn long(n: usize) -> String {
+    "x".repeat(n)
+}
+
+/// `sample_macro` as JSON with `change` made to it.
+fn changed(change: fn(&mut serde_json::Value)) -> serde_json::Value {
+    let mut v = macro_json(&sample_macro("T"));
+    change(&mut v);
+    v
+}
+
+#[test]
+fn every_field_a_file_sets_has_a_limit() {
+    // The sample's steps: 0 a command, 1 a Repeat whose body holds an If whose else holds a Stop.
+    let refused: [(&str, fn(&mut serde_json::Value)); 14] = [
+        ("shortcut", |v| v["shortcut"] = json!(long(MAX_MACRO_SHORTCUT + 1))),
+        ("shortcut line break", |v| v["shortcut"] = json!("Ctrl+\nM")),
+        ("permission count", |v| v["permissions"] = json!(vec!["data.getData"; MAX_MACRO_PERMISSIONS + 1])),
+        ("permission text", |v| v["permissions"] = json!(["data getData"])),
+        ("output anchor", |v| v["output"]["anchor"] = json!(long(MAX_MACRO_REF + 1))),
+        ("default range", |v| v["inputs"][0]["defaultRef"] = json!(long(MAX_MACRO_REF + 1))),
+        ("column types", |v| {
+            v["inputs"][0]["cols"] = json!([1, 0]);
+            v["inputs"][0]["colTypes"] = json!(vec!["any"; MAX_MACRO_COLUMNS + 1]);
+        }),
+        ("command id", |v| v["steps"][0]["id"] = json!("cell set")),
+        ("empty command id", |v| v["steps"][0]["id"] = json!("")),
+        ("Repeat range", |v| v["steps"][1]["over"] = json!(long(MAX_MACRO_REF + 1))),
+        ("If cell", |v| v["steps"][1]["body"][0]["cell"] = json!(long(MAX_MACRO_REF + 1))),
+        // As JSON the string takes its two quotes as well.
+        ("If value", |v| v["steps"][1]["body"][0]["value"] = json!(long(MAX_MACRO_TEXT - 1))),
+        ("Stop message", |v| v["steps"][1]["body"][0]["else"][0]["message"] = json!(long(MAX_MACRO_TEXT + 1))),
+        ("Stop message, nested", |v| v["steps"][1]["body"][0]["else"][0]["message"] = json!(long(MAX_MACRO_TEXT * 2))),
+    ];
+    for (what, change) in refused {
+        assert!(parse_macro(&changed(change)).is_err(), "{what} past its limit is refused");
+    }
+    let accepted: [(&str, fn(&mut serde_json::Value)); 9] = [
+        ("shortcut", |v| v["shortcut"] = json!(long(MAX_MACRO_SHORTCUT))),
+        ("permission count", |v| v["permissions"] = json!(vec!["data.getData"; MAX_MACRO_PERMISSIONS])),
+        ("output anchor", |v| v["output"]["anchor"] = json!(long(MAX_MACRO_REF))),
+        ("column types", |v| {
+            v["inputs"][0]["cols"] = json!([1, 0]);
+            v["inputs"][0]["colTypes"] = json!(vec!["any"; MAX_MACRO_COLUMNS]);
+        }),
+        ("If value", |v| v["steps"][1]["body"][0]["value"] = json!(long(MAX_MACRO_TEXT - 2))),
+        // Empty and NotEmpty ignore the value, which is then left out (null).
+        ("If with no value", |v| {
+            v["steps"][1]["body"][0]["op"] = json!("empty");
+            v["steps"][1]["body"][0].as_object_mut().unwrap().remove("value");
+        }),
+        // How many times a Repeat may run is the runner's to bound, not the format's.
+        ("Repeat max", |v| v["steps"][1]["max"] = json!(u32::MAX)),
+        ("Stop message", |v| v["steps"][1]["body"][0]["else"][0]["message"] = json!(long(MAX_MACRO_TEXT))),
+        ("no shortcut", |v| {
+            v.as_object_mut().unwrap().remove("shortcut");
+        }),
+    ];
+    for (what, change) in accepted {
+        assert!(parse_macro(&changed(change)).is_ok(), "{what} at its limit is accepted");
+    }
+    // Every command there is passes as a step and as a permission.
+    for spec in crate::command_specs() {
+        let m = json!({"name": "T", "steps": [{"command": spec.id}], "permissions": [spec.id]});
+        assert!(parse_macro(&m).is_ok(), "{}", spec.id);
+    }
+}
+
+#[test]
+fn an_input_declaration_is_checked_as_a_whole() {
+    let input = |i: serde_json::Value| json!({"name": "T", "inputs": [i]});
+    for i in [
+        json!({"name": "Input", "rows": [5, 2]}),
+        json!({"name": "Input", "cols": [3, 2]}),
+        json!({"name": "Input", "kind": "cell", "cols": [2, 5]}),
+        json!({"name": "Input", "kind": "cell", "rows": [0, 0]}),
+        json!({"name": "Input", "kind": "cell", "header": true}),
+        json!({"name": "Input", "kind": "cell", "colTypes": ["number", "text"]}),
+        json!({"name": "Input", "cols": [2, 2], "colTypes": ["number", "text", "any"]}),
+    ] {
+        assert!(parse_macro(&input(i.clone())).is_err(), "{i}");
+    }
+    for i in [
+        json!({"name": "Input", "rows": [5, 0]}),
+        json!({"name": "Input", "rows": [2, 2], "cols": [0, 3]}),
+        json!({"name": "Input", "kind": "cell"}),
+        json!({"name": "Input", "kind": "cell", "rows": [1, 1], "cols": [1, 1], "colTypes": ["number"]}),
+        json!({"name": "Input", "cols": [1, 2], "colTypes": ["number", "text"]}),
+    ] {
+        assert!(parse_macro(&input(i.clone())).is_ok(), "{i}");
+    }
+    // From a file, a macro whose declaration fails is left out with the usual warning, and the
+    // workbook's other macros open.
+    let mut file: serde_json::Value = serde_json::from_slice(&crate::io::save_bytes(&Workbook::new(), "book.json").unwrap()).unwrap();
+    file["macros"] = json!([input(json!({"name": "Input", "rows": [5, 2]})), {"name": "Fine"}]);
+    let (wb, warnings) = crate::io::open_bytes("book.json", file.to_string().as_bytes()).unwrap();
+    assert_eq!(wb.macros.iter().map(|m| m.name.as_str()).collect::<Vec<_>>(), ["Fine"]);
+    assert_eq!(warnings.len(), 1, "{warnings:?}");
+}
