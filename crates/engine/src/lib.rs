@@ -920,7 +920,7 @@ impl Session {
         // The steps recorded while the group was open go with their edits (all of them when the
         // recording started inside the group).
         if let Some(rec) = self.recorder.as_mut() {
-            rec.cut_back(g.recorded.unwrap_or((0, 0)));
+            rec.cut_back(g.recorded.unwrap_or((0, 0)), g.doc);
         }
         // The record of the last group step stays when the document is back exactly where that
         // step left it (this group began there); otherwise the rollback is where the group ended.
