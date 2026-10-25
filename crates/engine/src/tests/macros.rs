@@ -2400,7 +2400,9 @@ fn shortcuts_parse_to_one_letter_and_avoid_reserved_and_taken_ones() {
     assert_eq!(parse_shortcut("Ctrl+Shift+M"), Some('M'));
     assert_eq!(parse_shortcut("⌘⇧k"), Some('K'));
     assert_eq!(parse_shortcut(" q "), Some('Q'));
-    for bad in ["Ctrl+Shift+F5", "Ctrl+Shift+", "", "Ctrl+Shift+é"] {
+    assert_eq!(parse_shortcut("cmd+shift+r"), Some('R'));
+    // Other modifiers are refused, not read as Ctrl+Shift.
+    for bad in ["Ctrl+Shift+F5", "Ctrl+Shift+", "", "Ctrl+Shift+é", "Ctrl+Alt+M", "Shift+M", "Alt+M", "Ctrl+M"] {
         assert_eq!(parse_shortcut(bad), None, "{bad}");
     }
     assert_eq!(shortcut_text('m'), "Ctrl+Shift+M");

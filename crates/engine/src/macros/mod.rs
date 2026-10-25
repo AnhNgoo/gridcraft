@@ -435,15 +435,19 @@ pub const RESERVED_SHORTCUTS: &[(char, &str)] = &[
     ('Z', "Redo"),
 ];
 
-/// The letter of a macro shortcut: `"Ctrl+Shift+M"`, `"⌘⇧M"` and `"m"` all give `'M'`. `None`
-/// when it is not one letter from A to Z.
+/// The letter of a macro shortcut: `"Ctrl+Shift+M"`, `"Cmd+Shift+M"`, `"⌘⇧M"` and `"m"` all give
+/// `'M'`. `None` when it is not one letter from A to Z, alone or after Ctrl+Shift (Cmd+Shift):
+/// other modifiers (`"Ctrl+Alt+M"`) are refused rather than read as Ctrl+Shift.
 pub fn parse_shortcut(s: &str) -> Option<char> {
-    let last = s.trim().rsplit(['+', '⇧', '⌘']).next()?.trim();
-    let mut chars = last.chars();
-    match (chars.next(), chars.next()) {
-        (Some(c), None) if c.is_ascii_alphabetic() => Some(c.to_ascii_uppercase()),
-        _ => None,
-    }
+    let letter = |t: &str| {
+        let mut chars = t.trim().chars();
+        match (chars.next(), chars.next()) {
+            (Some(c), None) if c.is_ascii_alphabetic() => Some(c.to_ascii_uppercase()),
+            _ => None,
+        }
+    };
+    let t = s.trim().to_ascii_lowercase();
+    ["ctrl+shift+", "cmd+shift+", "⌘⇧"].iter().find_map(|p| t.strip_prefix(p)).map_or_else(|| letter(&t), letter)
 }
 
 /// How a shortcut is stored and shown: `Ctrl+Shift+M`.
