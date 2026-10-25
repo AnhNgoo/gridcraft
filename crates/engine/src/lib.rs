@@ -206,9 +206,6 @@ pub struct DocState {
     /// workbook is opened from a file, carried by content pasted from such a workbook, and never
     /// changed by a trust decision.
     pub trust: Trust,
-    /// While a macro's footprint is measured: every cell a command wrote, by sheet name, even
-    /// where it wrote what was already there.
-    pub touched: Option<Vec<(String, CellRef)>>,
     /// The references `edit.goTo` with `record: true` went to in this document, newest first,
     /// without names, each area written with its sheet (`Sheet1!B14:C22,Sheet1!F19:G30`).
     pub go_to_recent: Vec<String>,
@@ -302,7 +299,6 @@ impl DocState {
             content_kind: None,
             scripts_trusted,
             trust,
-            touched: None,
             go_to_recent: vec![],
         }
     }
@@ -438,9 +434,6 @@ pub struct Session {
     /// Serialized size of each journal entry, measured once when it is pushed, and their sum.
     journal_sizes: Vec<usize>,
     journal_bytes: usize,
-    /// Entries the journal has dropped from its front to stay within its limits, ever; a dry run
-    /// that puts the journal back needs to know how many went while it ran.
-    journal_dropped: u64,
     pub ui_requests: Vec<UiRequest>,
     /// Format painter source style (sticky when double-clicked).
     pub format_painter: Option<(Arc<Workbook>, usize, RangeRef, bool)>,
@@ -565,24 +558,8 @@ impl Session {
             self.journal.drain(..n);
             self.journal_sizes.drain(..n);
             self.journal_bytes = kept;
-            self.journal_dropped = self.journal_dropped.saturating_add(n as u64);
             self.recording = self.recording.map(|r| r.saturating_sub(n));
         }
-    }
-
-    /// Entries dropped from the journal's front so far, for a caller that puts the journal back.
-    pub(crate) fn journal_dropped(&self) -> u64 {
-        self.journal_dropped
-    }
-
-    /// Cuts the journal back to its first `keep` entries, with its size bookkeeping.
-    pub(crate) fn truncate_journal(&mut self, keep: usize) {
-        if self.journal_sizes.len() == self.journal.len() {
-            self.journal_sizes.truncate(keep);
-            self.journal_bytes = self.journal_sizes.iter().sum();
-        }
-        self.journal.truncate(keep);
-        self.recording = self.recording.map(|r| r.min(self.journal.len()));
     }
 
     pub fn commands(&self) -> Vec<CommandInfo> {

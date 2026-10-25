@@ -1,16 +1,17 @@
 # Macros
 
-> **Last updated:** 2026-10-24 · **Change:** minor (running and checking macros: `macro.run`, `macro.check`)
+> **Last updated:** 2026-10-25 · **Change:** minor (running macros: `macro.run`)
 
 GridCraft macros are typed, declarative lists of commands, not VBA. Every step runs a GridCraft
 command (the same ids the ribbon, CLI and MCP use) or one of three bounded control steps. A macro
 declares the inputs it works on, runs as one undo step, rolls all workbook changes back on an
-error (a file it already wrote stays), checks where its results will land before it writes them,
-and does not touch files without permission.
+error (a file it already wrote stays), stops before it writes over data it may not, and does not
+touch files without permission.
 Agents run macros with `macro.run` like any other command.
 
-This page describes the macro format, its tokens, and running and checking macros. The engine has
-no macro debugger, recorder or management commands in this version, and no macro interface.
+This page describes the macro format, its tokens, and running macros. The engine has no check of a
+macro before it runs, no macro debugger, recorder or management commands in this version, and no
+macro interface.
 
 ## A macro
 
@@ -59,9 +60,8 @@ no macro debugger, recorder or management commands in this version, and no macro
   whole macro (4,194,304 characters of JSON). A macro read from a file that breaks any of these is
   left out with a warning; it is never changed to fit. When a macro runs, a Repeat whose range has
   more rows or columns than its `max` is refused, and a run executes at most 100,000 steps (each
-  pass through a Repeat counts) and takes at most 60 seconds, both shared by the footprint dry
-  runs and the run itself (`timeLimit` to change the time; the web build has no clock, so there
-  only the step limit applies).
+  pass through a Repeat counts) and takes at most 60 seconds (`timeLimit` to change the time;
+  the web build has no clock, so there only the step limit applies).
 
 ## Tokens
 
@@ -108,23 +108,16 @@ refused rather than read as the header.
    are when the step runs. A macro that touches files, or that came with a workbook opened from
    a file, runs once the person approves it: the call fails with `approve: …` and runs with
    `approve: true`. Approval lasts for the session, until the macro changes.
-2. **Footprint.** Unless the conflict rule is `overwrite`, the macro first runs in dry-run mode on
-   the real workbook, and everything is put back. Cells it would write outside its
-   inputs that hold data, and sheets and objects it would
-   delete, are conflicts, handled by `onConflict` (or the macro's `output.onConflict`): `ask` (the
-   call fails with `confirm: …`; `overwrite: true` answers it), `fail`, `overwrite`, `shiftDown` or
-   `shiftRight` (Insert Cells makes room, then the footprint is checked again). Steps that touch
-   files, and Solver, end the dry run early; the footprint then says it is partial, and unless
-   the rule is `overwrite`, the run checks every step as it goes. A step that writes over cells,
-   sheets or objects that held data when the run started stops the run and rolls the workbook
-   back (a file already written stays): it asks (`confirm: …`) under `ask` and fails otherwise,
-   since shifting can't make room that late.
+2. **Conflicts.** Unless the conflict rule is `overwrite`, each step is checked as it runs. A
+   step that writes over cells outside the inputs that held data when the run started, or deletes
+   sheets or objects that were there, stops the run, which rolls the workbook back (a file already
+   written stays). The rule is `onConflict` (or the macro's `output.onConflict`): `ask` (the call
+   fails with `confirm: …`; `overwrite: true` answers it), `fail` or `overwrite`. Shifting the
+   data to make room (`shiftDown`, `shiftRight`) needs to know where the macro writes before it
+   runs, which this version doesn't work out, so those rules stop the run as `fail` does.
 3. **Run.** One undo step, "Run Macro: Totals". Any error rolls the whole run back and names the
    step: `Step 3.1 (cell.set): …` (paths are 1-based; `2.1` is inside a Repeat, `4.then.1` inside
    an If).
-
-`macro.check {name, inputs?, timeLimit?}` reports the bound inputs, the output anchor, any
-approval needed and the footprint, without changing anything.
 
 ## Storage
 
