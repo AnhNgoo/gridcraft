@@ -414,7 +414,6 @@ pub(crate) fn commit<R>(d: &mut DocState, f: impl FnOnce(&mut Ctx) -> Result<R>)
     Ok(r)
 }
 
-/// The most written cells a macro's footprint check records.
 /// The most cells a dry run's touch log keeps; a footprint whose log is full may be missing writes
 /// that kept a cell's value, so a shift is refused then.
 pub(crate) const TOUCH_LOG_LIMIT: usize = 1_000_000;

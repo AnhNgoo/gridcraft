@@ -911,9 +911,15 @@ fn compare(v: &Value, op: CompareOp, want: &Json) -> bool {
 #[derive(Clone, Debug, Default, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Footprint {
-    /// Steps executed by the end of the dry run that made this footprint (the run's one budget).
+    /// Steps executed and bytes of parameters passed by the end of the dry run that made this
+    /// footprint (the run's one budget).
     #[serde(skip)]
     pub executed: u64,
+    #[serde(skip)]
+    pub param_bytes: u64,
+    /// The Stop step that ended the dry run asks for the run to be rolled back.
+    #[serde(skip)]
+    pub rolls_back: bool,
     /// The dry run wrote more cells than the touch log keeps, so writes that kept a cell's value
     /// may be missing from `cells`: a shift cannot trust the block.
     #[serde(skip_serializing_if = "std::ops::Not::not")]
@@ -994,6 +1000,7 @@ struct Saved {
     sheet_selections: Vec<Selection>,
     unlocked_ranges: Vec<(String, String)>,
     trust: Trust,
+    go_to_recent: Vec<String>,
     clipboard: Option<crate::Clipboard>,
     prefs: crate::Prefs,
     mode: crate::Mode,
@@ -1022,6 +1029,7 @@ impl Saved {
             sheet_selections: d.map(|d| d.sheet_selections.clone()).unwrap_or_default(),
             unlocked_ranges: d.map(|d| d.unlocked_ranges.clone()).unwrap_or_default(),
             trust: d.map_or(Trust::Local, |d| d.trust),
+            go_to_recent: d.map(|d| d.go_to_recent.clone()).unwrap_or_default(),
             clipboard: s.clipboard.clone(),
             prefs: s.prefs.clone(),
             mode: s.mode,
@@ -1048,6 +1056,7 @@ impl Saved {
             d.sheet_selections = self.sheet_selections;
             d.unlocked_ranges = self.unlocked_ranges;
             d.trust = self.trust;
+            d.go_to_recent = self.go_to_recent;
         }
         s.active = self.active.min(s.docs.len().saturating_sub(1));
         s.clipboard = self.clipboard;
@@ -1070,8 +1079,9 @@ impl Saved {
 }
 
 /// Runs the macro in dry-run mode on its workbook, puts everything back, and says what it would
-/// change. The dry run stops once `time_limit_ms` has passed on `clock`.
-pub fn footprint(s: &mut Session, p: &Prepared, clock: Stopwatch, time_limit_ms: f64, executed: u64) -> Result<Footprint> {
+/// change. The dry run spends from `run`'s budget: its clock and time limit, its steps and the
+/// bytes of parameters it passed.
+pub fn footprint(s: &mut Session, p: &Prepared, run: &Machine) -> Result<Footprint> {
     let i = s.docs.iter().position(|d| d.uid == p.doc).ok_or(EngineError::NoDocument)?;
     s.set_active(i);
     let saved = Saved::take(s, p.doc);
@@ -1081,7 +1091,7 @@ pub fn footprint(s: &mut Session, p: &Prepared, clock: Stopwatch, time_limit_ms:
         d.touched = Some(Vec::new());
     }
     let mut m = Machine::new(p, true);
-    (m.clock, m.time_limit_ms, m.executed) = (clock, time_limit_ms, executed);
+    (m.clock, m.time_limit_ms, m.executed, m.param_bytes) = (run.clock, run.time_limit_ms, run.executed, run.param_bytes);
     let outcome = m.run_to_end(s);
     let (after, touched) = match s.docs.iter_mut().find(|d| d.uid == p.doc) {
         Some(d) => (d.wb.clone(), d.touched.take().unwrap_or_default()),
@@ -1093,7 +1103,8 @@ pub fn footprint(s: &mut Session, p: &Prepared, clock: Stopwatch, time_limit_ms:
     let (after, touched) = if matches!(m.stopped, Some((_, true))) { (before.clone(), Vec::new()) } else { (after, touched) };
     let mut fp = diff(&before, &after, &p.inputs, &touched);
     fp.log_full = touched.len() >= crate::cmd::TOUCH_LOG_LIMIT;
-    fp.executed = m.executed;
+    (fp.executed, fp.param_bytes) = (m.executed, m.param_bytes);
+    fp.rolls_back = matches!(m.stopped, Some((_, true)));
     fp.error = outcome.err();
     fp.stopped = m.stopped.map(|(msg, _)| msg);
     fp.partial = m.partial.map(|(step, reason)| json!({"step": step, "reason": reason}));
@@ -1104,6 +1115,11 @@ pub fn footprint(s: &mut Session, p: &Prepared, clock: Stopwatch, time_limit_ms:
 /// without changing them (a formula written again), so a shift moves everything the macro writes.
 fn diff(before: &Workbook, after: &Workbook, inputs: &[Bound], touched: &[(String, CellRef)]) -> Footprint {
     let mut fp = Footprint::default();
+    // One pass over the touch log (up to a million writes), not one per sheet.
+    let mut by_sheet: HashMap<&str, BTreeSet<CellRef>> = HashMap::new();
+    for (n, c) in touched {
+        by_sheet.entry(n.as_str()).or_default().insert(*c);
+    }
     let (pairs, added) = pair_sheets(before, after);
     fp.sheets_added = added.into_iter().filter_map(|a| after.sheet(a).map(|s| s.name.clone())).collect();
     for (bi, ai) in pairs {
@@ -1113,7 +1129,7 @@ fn diff(before: &Workbook, after: &Workbook, inputs: &[Bound], touched: &[(Strin
             continue;
         };
         let Some(after_sheet) = after.sheets.get(ai) else { continue };
-        let rewritten: BTreeSet<CellRef> = touched.iter().filter(|(n, _)| *n == after_sheet.name).map(|(_, c)| *c).collect();
+        let rewritten = by_sheet.remove(after_sheet.name.as_str()).unwrap_or_default();
         if Arc::ptr_eq(bs, after_sheet) && rewritten.is_empty() {
             continue;
         }
@@ -1238,15 +1254,33 @@ pub(crate) fn ranges(cells: &mut [CellRef]) -> Vec<String> {
 /// stays together. A shift that would move one of the macro's inputs is refused: the inputs were
 /// checked and bound where they are, and only the block's columns (or rows) would move.
 fn make_room(s: &mut Session, fp: &Footprint, p: &Prepared, down: bool) -> Result<()> {
+    let wb = s.doc()?.wb.clone();
+    if let Some(why) = shift_refusal(&wb, fp, p, down) {
+        return Err(EngineError::Other(why));
+    }
+    let env = Env { wb: &wb, active_sheet: usize::MAX, inputs: &[], output: None, item: None };
+    let moves: Vec<String> = fp
+        .sheets
+        .iter()
+        .filter(|s| s.conflict_count > 0)
+        .filter_map(|sh| sh.bounds_range.map(|block| resolve::a1(Place { sheet: sh.index, range: block }, &env)))
+        .collect();
+    for range in moves {
+        s.execute("home.insertCells", json!({"range": range, "shift": if down { "down" } else { "right" }}))?;
+    }
+    Ok(())
+}
+
+/// Why shifting the data can't make room for `fp`, or `None`: the macro deletes sheets or
+/// objects, the footprint couldn't follow every write, or the shift would move an input.
+fn shift_refusal(wb: &Workbook, fp: &Footprint, p: &Prepared, down: bool) -> Option<String> {
     if !fp.sheets_removed.is_empty() || fp.objects_removed > 0 {
-        return Err(EngineError::Other("Shifting can't make room: the macro deletes sheets or objects.".into()));
+        return Some("Shifting can't make room: the macro deletes sheets or objects.".into());
     }
     if fp.log_full {
-        return Err(EngineError::Other("Shifting can't make room: the macro writes more cells than the footprint can follow.".into()));
+        return Some("Shifting can't make room: the macro writes more cells than the footprint can follow.".into());
     }
-    let wb = s.doc()?.wb.clone();
-    let env = Env { wb: &wb, active_sheet: usize::MAX, inputs: &[], output: None, item: None };
-    let mut moves = Vec::new();
+    let env = Env { wb, active_sheet: usize::MAX, inputs: &[], output: None, item: None };
     for sh in fp.sheets.iter().filter(|s| s.conflict_count > 0) {
         let Some(block) = sh.bounds_range else { continue };
         // What the insertion moves: the block's columns from its top row down, or its rows from
@@ -1261,17 +1295,13 @@ fn make_room(s: &mut Session, fp: &Footprint, p: &Prepared, down: bool) -> Resul
         // The output is where the macro writes, so moving what is there is the point; the second
         // footprint catches data the shift moved into it.
         if let Some((name, pl)) = p.inputs.iter().map(|(n, pl, _)| (n.as_str(), *pl)).find(|(_, pl)| pl.sheet == sh.index && moved(&pl.range)) {
-            return Err(EngineError::Other(format!(
+            return Some(format!(
                 "Shifting the data would move {name} ({}). Run with onConflict overwrite or fail, or make room first.",
                 resolve::a1(pl, &env)
-            )));
+            ));
         }
-        moves.push(resolve::a1(Place { sheet: sh.index, range: block }, &env));
     }
-    for range in moves {
-        s.execute("home.insertCells", json!({"range": range, "shift": if down { "down" } else { "right" }}))?;
-    }
-    Ok(())
+    None
 }
 
 // ---------------------------------------------------------------- run
@@ -1319,9 +1349,9 @@ pub fn make_way(s: &mut Session, b: &Begun) -> Result<(Machine, bool)> {
     if rule == OnConflict::Overwrite {
         return Ok((machine, false));
     }
-    // The dry runs and the run share one step budget as they share one clock.
-    let mut fp = footprint(s, &b.prepared, machine.clock, b.time_limit_ms, machine.executed)?;
-    machine.executed = fp.executed;
+    // The dry runs and the run share one budget (steps, parameters) as they share one clock.
+    let mut fp = footprint(s, &b.prepared, &machine)?;
+    (machine.executed, machine.param_bytes) = (fp.executed, fp.param_bytes);
     if let Some(e) = fp.error.take() {
         return Err(e.into_engine(&m.name));
     }
@@ -1330,8 +1360,17 @@ pub fn make_way(s: &mut Session, b: &Begun) -> Result<(Machine, bool)> {
         let what = fp.describe_conflicts();
         match rule {
             OnConflict::Ask => {
+                // Overwriting answers for every step, also the ones a partial footprint didn't reach.
+                let unseen = fp.partial.as_ref().map_or(String::new(), |p| {
+                    let text = |k: &str| p.get(k).and_then(Json::as_str).unwrap_or_default().to_string();
+                    format!(
+                        " The check stopped at step {} ({}), so overwriting also lets the steps after it write over data unchecked.",
+                        text("step"),
+                        text("reason")
+                    )
+                });
                 return Err(EngineError::Confirm(format!(
-                    "Macro '{}' would write over cells that hold data ({what}). Overwrite them, or run again with onConflict shiftDown, shiftRight or fail",
+                    "Macro '{}' would write over cells that hold data ({what}).{unseen} Overwrite them, or run again with onConflict shiftDown, shiftRight or fail",
                     m.name
                 )));
             }
@@ -1340,8 +1379,8 @@ pub fn make_way(s: &mut Session, b: &Begun) -> Result<(Machine, bool)> {
             }
             OnConflict::ShiftDown | OnConflict::ShiftRight => {
                 make_room(s, &fp, &b.prepared, rule == OnConflict::ShiftDown)?;
-                fp = footprint(s, &b.prepared, machine.clock, b.time_limit_ms, machine.executed)?;
-                machine.executed = fp.executed;
+                fp = footprint(s, &b.prepared, &machine)?;
+                (machine.executed, machine.param_bytes) = (fp.executed, fp.param_bytes);
                 if let Some(e) = fp.error.take() {
                     return Err(e.into_engine(&m.name));
                 }
@@ -1457,12 +1496,21 @@ pub fn check(s: &mut Session, name: &str, p: &Json) -> Result<Json> {
         .cloned()
         .ok_or_else(|| EngineError::Other(format!("There is no macro called '{name}'.")))?;
     let mut out = json!({"macro": m.name, "ok": false, "onConflict": m.output.on_conflict.name()});
+    let refused = |mut out: Json, e: String| {
+        out["errors"] = json!([e]);
+        Ok(out)
+    };
+    if let Err(e) = check_params(p, &m) {
+        return refused(out, e.to_string());
+    }
+    let rule = match conflict_rule(p, &m) {
+        Ok(r) => r,
+        Err(e) => return refused(out, e.to_string()),
+    };
+    out["onConflict"] = json!(rule.name());
     let asks = match gate(&m, trust) {
         Ok(a) => a,
-        Err(e) => {
-            out["errors"] = json!([e.to_string()]);
-            return Ok(out);
-        }
+        Err(e) => return refused(out, e.to_string()),
     };
     let approved = s.macro_approvals.contains(&(doc, super::fingerprint(&m)));
     if !asks.is_empty() && !approved {
@@ -1471,10 +1519,7 @@ pub fn check(s: &mut Session, name: &str, p: &Json) -> Result<Json> {
     }
     let prepared = match prepare(s, &m, p.get("inputs")) {
         Ok(pr) => pr,
-        Err(e) => {
-            out["errors"] = json!([e.to_string()]);
-            return Ok(out);
-        }
+        Err(e) => return refused(out, e.to_string()),
     };
     out["inputs"] = prepared.inputs_json(&s.doc()?.wb);
     if let Some(o) = prepared.output {
@@ -1484,11 +1529,47 @@ pub fn check(s: &mut Session, name: &str, p: &Json) -> Result<Json> {
     if !asks.is_empty() && !approved {
         return Ok(out);
     }
-    let fp = footprint(s, &prepared, Stopwatch::start(), time_limit(p), 0)?;
-    out["ok"] = json!(fp.error.is_none());
-    out["conflicts"] = json!(fp.conflict_count());
+    let mut budget = Machine::new(&prepared, false);
+    budget.time_limit_ms = time_limit(p);
+    let fp = footprint(s, &prepared, &budget)?;
+    // `ok`: the run would go ahead with this rule, without a question.
+    let mut problems = Vec::new();
     if let Some(e) = &fp.error {
-        out["errors"] = json!([e.describe()]);
+        problems.push(e.describe());
+    }
+    if let (true, Some(msg)) = (fp.rolls_back, &fp.stopped) {
+        problems.push(format!("A Stop step ends the run and rolls it back: {msg}"));
+    }
+    let shifts = matches!(rule, OnConflict::ShiftDown | OnConflict::ShiftRight);
+    if fp.conflict_count() > 0 {
+        let what = fp.describe_conflicts();
+        match rule {
+            OnConflict::Ask => problems.push(format!("It would write over cells that hold data ({what}); the run asks first.")),
+            OnConflict::Fail => problems.push(format!("It would write over cells that hold data ({what}).")),
+            OnConflict::Overwrite => {}
+            OnConflict::ShiftDown | OnConflict::ShiftRight => {
+                if let Some(why) = shift_refusal(&s.doc()?.wb, &fp, &prepared, rule == OnConflict::ShiftDown) {
+                    problems.push(why);
+                }
+            }
+        }
+    }
+    // The run spends its budget on the dry runs before it too: one, or two when it shifts.
+    let passes: u64 = match rule {
+        OnConflict::Overwrite => 1,
+        _ if shifts && fp.conflict_count() > 0 => 3,
+        _ => 2,
+    };
+    if fp.executed.saturating_mul(passes) > MAX_EXECUTED_STEPS {
+        problems.push(format!("The run would execute more than {MAX_EXECUTED_STEPS} steps, counting the check before it ({} here).", fp.executed));
+    }
+    if fp.param_bytes.saturating_mul(passes) > MAX_PARAM_BYTES {
+        problems.push(format!("The run would pass more than {} MB of parameters, counting the check before it.", MAX_PARAM_BYTES / (1024 * 1024)));
+    }
+    out["ok"] = json!(problems.is_empty());
+    out["conflicts"] = json!(fp.conflict_count());
+    if !problems.is_empty() {
+        out["errors"] = json!(problems);
     }
     out["footprint"] = serde_json::to_value(&fp).unwrap_or(Json::Null);
     Ok(out)

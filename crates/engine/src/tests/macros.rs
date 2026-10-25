@@ -168,13 +168,22 @@ fn conflicts_ask_fail_or_overwrite() {
     let journal = s.journal.len();
     let sel = s.doc().unwrap().selection.clone();
     let c = s.execute("macro.check", json!({"name": "Totals", "inputs": "B2:C5"})).unwrap();
-    assert_eq!(c["ok"], true);
+    // Under ask the run would ask first, so it wouldn't go ahead as it is.
+    assert_eq!((&c["ok"], &c["onConflict"]), (&json!(false), &json!("ask")));
+    assert_eq!(c["errors"], json!(["It would write over cells that hold data (E3 on Sheet1); the run asks first."]));
     assert_eq!(c["conflicts"], 1);
     assert_eq!(c["output"], "E2");
     assert_eq!(c["footprint"]["sheets"][0]["cells"], json!(["E2:E3"]));
     assert_eq!(c["footprint"]["sheets"][0]["conflicts"], json!(["E3"]));
     assert!(Arc::ptr_eq(&s.doc().unwrap().wb, &start));
     assert_eq!((s.journal.len(), &s.doc().unwrap().selection), (journal, &sel));
+    // With the answer given, or with the rule overwrite, it would.
+    for p in [json!({"overwrite": true}), json!({"onConflict": "overwrite"})] {
+        let mut p = p;
+        (p["name"], p["inputs"]) = (json!("Totals"), json!("B2:C5"));
+        let c = s.execute("macro.check", p.clone()).unwrap();
+        assert_eq!((&c["ok"], &c["onConflict"], c.get("errors")), (&json!(true), &json!("overwrite"), None), "{p}");
+    }
 
     // The answer to the question overwrites.
     s.execute("macro.run", json!({"name": "Totals", "inputs": "B2:C5", "overwrite": true})).unwrap();
@@ -520,6 +529,74 @@ fn a_run_passes_a_bounded_amount_of_parameters() {
     put(&mut s, json!({"name": "Big", "output": {"onConflict": "overwrite"}, "steps": [{"type": "repeat", "over": "A1:A100", "body": body}]}));
     let err = s.execute("macro.run", json!({"name": "Big"})).unwrap_err().to_string();
     assert!(err.contains("passed more than 256 MB of parameters to its steps"), "{err}");
+    // 50 rows are 150 MB: the run alone stays under the limit, the dry run and the run together
+    // go past it, as they share the step budget.
+    let body = json!([{"command": "home.bold", "params": {"range": "A1", "note": "x".repeat(3_000_000)}}]);
+    for (rule, ok) in [("overwrite", true), ("fail", false)] {
+        let repeat = json!({"type": "repeat", "over": "A1:A50", "body": body});
+        put(&mut s, json!({"name": "Half", "output": {"onConflict": rule}, "steps": [repeat]}));
+        assert_eq!(s.execute("macro.run", json!({"name": "Half"})).is_ok(), ok, "{rule}");
+    }
+}
+
+#[test]
+fn the_check_says_whether_the_run_would_go_ahead() {
+    let mut s = s();
+    // A Stop step that rolls the run back.
+    put(&mut s, json!({"name": "Halt", "output": {"onConflict": "fail"}, "steps": [{"type": "stop", "message": "Not today.", "rollback": true}]}));
+    let c = s.execute("macro.check", json!({"name": "Halt"})).unwrap();
+    assert_eq!((&c["ok"], &c["errors"]), (&json!(false), &json!(["A Stop step ends the run and rolls it back: Not today."])));
+    // A shift that would move an input.
+    set(&mut s, "B1", "taken");
+    set(&mut s, "B3", "in");
+    let step = json!({"command": "cell.set", "params": {"cell": "B1", "input": "new"}});
+    put(&mut s, json!({"name": "Move", "inputs": [{"name": "Input", "kind": "cell"}], "output": {"onConflict": "shiftDown"}, "steps": [step]}));
+    let c = s.execute("macro.check", json!({"name": "Move", "inputs": "B3"})).unwrap();
+    assert_eq!(c["ok"], false);
+    assert!(c["errors"][0].as_str().unwrap().starts_with("Shifting the data would move Input (Sheet1!B3)."), "{c}");
+    // A macro whose dry run takes 90,000 steps passes its own dry run, but the run spends the
+    // budget twice under fail, so the check says it wouldn't finish.
+    let spin = json!([{"type": "repeat", "over": "A1:A300", "body": [{"type": "repeat", "over": "A1:A300", "body": [{"type": "if", "cell": "A1", "op": "empty"}]}]}]);
+    for (rule, ok) in [("fail", false), ("overwrite", true)] {
+        put(&mut s, json!({"name": "Spin", "output": {"onConflict": rule}, "steps": spin}));
+        let c = s.execute("macro.check", json!({"name": "Spin"})).unwrap();
+        assert_eq!(c["ok"], ok, "{rule}: {c}");
+        assert_eq!(s.execute("macro.run", json!({"name": "Spin"})).is_ok(), ok, "{rule}: the run agrees");
+    }
+    let c = s.execute("macro.check", json!({"name": "Spin", "onConflict": "fail"})).unwrap();
+    assert!(c["errors"][0].as_str().unwrap().starts_with("The run would execute more than 100000 steps, counting the check before it"), "{c}");
+    // Parameters the run would refuse, the check reports.
+    let c = s.execute("macro.check", json!({"name": "Spin", "onConflict": 5})).unwrap();
+    assert!(c["errors"][0].as_str().unwrap().contains("`onConflict` must be"), "{c}");
+}
+
+#[test]
+fn the_question_after_a_partial_footprint_says_what_the_answer_covers() {
+    let dir = std::env::temp_dir().join(format!("gc-macro-unseen-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let csv = dir.join("out.csv").to_string_lossy().to_string();
+    let mut s = s();
+    set(&mut s, "B1", "keep");
+    set(&mut s, "C1", "also");
+    let steps = json!([
+        {"command": "cell.set", "params": {"cell": "B1", "input": "over"}},
+        {"command": "file.exportCsv", "params": {"path": csv}},
+        {"command": "cell.set", "params": {"cell": "C1", "input": "over"}}
+    ]);
+    put(&mut s, json!({"name": "Two", "permissions": ["file.exportCsv"], "steps": steps}));
+    let r = s.execute("macro.run", json!({"name": "Two", "approve": true}));
+    let Err(EngineError::Confirm(q)) = r else { panic!("{r:?}") };
+    assert!(q.contains("(B1 on Sheet1). The check stopped at step 2 (file.exportCsv writes a file), so overwriting also lets the steps after it write over data unchecked."), "{q}");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn a_dry_run_puts_back_the_go_to_list() {
+    let mut s = s();
+    let step = json!({"command": "edit.goTo", "params": {"reference": "D4", "record": true}});
+    put(&mut s, json!({"name": "Go", "steps": [step]}));
+    s.execute("macro.check", json!({"name": "Go"})).unwrap();
+    assert_eq!(s.doc().unwrap().go_to_recent, Vec::<String>::new());
 }
 
 #[test]
