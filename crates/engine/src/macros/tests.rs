@@ -261,6 +261,19 @@ fn a_huge_visible_index_takes_no_part_in_numbering() {
 }
 
 #[test]
+fn a_visible_legacy_name_of_the_storage_shape_is_kept() {
+    // The stash reads a legacy `_sc_<key>` name as data whether or not it is hidden, so writing
+    // key `macro_0` would remove a person's visible `_sc_macro_0`. That key is stepped around too.
+    let mut wb = Workbook::new();
+    wb.macros.push(sample_macro("A"));
+    wb.names.push(visible("_sc_macro_0"));
+    let (raw, back) = xlsx_round_trip(&wb);
+    assert_eq!(raw, ["_sc_macro_0", "_gc_macro_1_0"]);
+    assert_eq!(back.macros, wb.macros);
+    assert_eq!(back.names, vec![visible("_sc_macro_0")]);
+}
+
+#[test]
 fn a_name_defined_after_opening_does_not_block_the_next_save() {
     // Once a file is open its macros are out of the names, so Define Name accepts a visible
     // `_gc_macro_0_0`; the next save steps around it.
