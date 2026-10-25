@@ -73,6 +73,12 @@ pub fn macro_policy(id: &str, params: &Json, trust: Trust) -> Policy {
     }
 }
 
+/// Whether the footprint dry run can preview a command. Solver can take long, so a dry run stops
+/// before it and reports the footprint as partial.
+pub fn previewable(id: &str) -> bool {
+    id != "data.solver"
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -123,6 +129,7 @@ mod tests {
             assert_eq!(macro_policy(id, &none, Trust::Local), Policy::Allow, "{id}");
             assert!(matches!(macro_policy(id, &none, Trust::FromFile), Policy::Ask(_)), "{id}");
         }
+        assert!(!previewable("data.solver") && previewable("cell.set"));
     }
 
     #[test]
