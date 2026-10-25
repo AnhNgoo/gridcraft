@@ -607,18 +607,19 @@ impl Session {
         if let Err(why) = (spec.enabled)(self) {
             return Err(EngineError::Disabled(id.to_string(), why));
         }
-        // While a macro is being debugged its undo group is open: other edits of the workbooks it
-        // touched wait, also when another command runs them (a script, or a recording that stops
-        // and saves). Only the run's own steps go ahead. Other workbooks stay editable.
+        // A debugger whose undo group something else ended locks nothing any more (`macro.debug`
+        // itself says that the run had ended).
+        if id != "macro.debug" {
+            macros::debug::drop_if_ended(self);
+        }
+        let query = !spec.journal && !spec.undoable;
+        // While a macro is being debugged its undo group is open, and its workbook is locked:
+        // between steps only the debugger, queries and commands that look around run there
+        // (`macros::debug::LOOKS_AROUND`). Anything else waits, undoable or not (saving, view
+        // modes, stopping Record Actions, which saves a script), also when another command runs
+        // it. Only the run's own steps go ahead. Other workbooks stay editable.
         let locked = self.active().is_some_and(|d| self.macro_debug.as_ref().is_some_and(|m| m.locks(d.uid) && !m.stepping()));
-        // Stopping Record Actions saves a script into the workbook; refuse it before it takes the
-        // recording, so stopping again after the run keeps what was recorded.
-        let stops_record_actions =
-            id == "automate.recordActions" && (params.get("stop").and_then(Json::as_bool) == Some(true) || self.recording.is_some());
-        // Stop Action rolls back the open groups, the debugger's among them, and would leave the
-        // debugger pointing at a group that is gone: stopping the macro is the debugger's own.
-        let stops_groups = id == "automate.stopAction";
-        if (spec.undoable || stops_record_actions || stops_groups) && id != "macro.debug" && locked {
+        if locked && !macros::debug::runs_while_locked(id, query) {
             return Err(EngineError::Disabled(id.to_string(), macros::debug::BUSY.into()));
         }
         let before = self.active().map(|d| (d.uid, d.wb.clone(), d.selection.clone()));
@@ -631,7 +632,6 @@ impl Session {
         // because a nested `edit.undo` removes entries. A query runs nothing that changes the
         // history (`every_query_leaves_the_history_alone` runs each one), so it needs no
         // copy; front ends run queries all the time.
-        let query = !spec.journal && !spec.undoable;
         let history_before = before.as_ref().filter(|_| !query).and_then(|(uid, ..)| {
             #[cfg(test)]
             tests::HISTORY_COPIES.with(|n| n.set(n.get().saturating_add(1)));
@@ -689,8 +689,10 @@ impl Session {
                     }
                     d.calc.rebuild(&d.wb);
                 }
-                macros::debug::recover(self);
                 if self.depth == 0 {
+                    // Only the `macro.debug` call itself can lose the run's place: a command nested
+                    // in a step that panics is an error of that step, which the run handles.
+                    macros::debug::recover(self);
                     self.trim_history();
                     self.group_step = None;
                 }
@@ -968,6 +970,11 @@ impl Session {
         let r = self.execute(id, params);
         self.depth = self.depth.saturating_sub(1);
         r
+    }
+
+    /// Whether the token's undo group is still open (nothing has ended or rolled it back).
+    pub fn group_is_open(&self, token: &GroupToken) -> bool {
+        self.groups.iter().any(|g| g.id == token.id)
     }
 
     /// Whether an undo group is open on the document with this uid.

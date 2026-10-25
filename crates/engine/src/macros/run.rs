@@ -631,7 +631,9 @@ impl Machine {
             }
             StepKind::Repeat { over, of, .. } => {
                 out["kind"] = json!("repeat");
-                out["over"] = json!(resolve::resolve_ref(over, &env).map(|p| resolve::a1(p, &env)).unwrap_or_else(|e| e.message().to_string()));
+                // Whole rows or columns shrink to the part in use, as when the Repeat runs.
+                out["over"] =
+                    json!(resolve::resolve_ref(over, &env).map(|p| resolve::a1(trim(wb, p), &env)).unwrap_or_else(|e| e.message().to_string()));
                 out["of"] = json!(if *of == RepeatOf::Rows { "rows" } else { "columns" });
             }
             StepKind::If { cell, .. } => {
@@ -1217,7 +1219,7 @@ fn diff(before: &Workbook, after: &Workbook, inputs: &[Bound], touched: &[(Strin
 /// Each sheet of `before` with its index in `after` (`None` when deleted), and the sheets of
 /// `after` that are new. Sheets are matched by name; what's left is matched in order (a renamed
 /// sheet).
-fn pair_sheets(before: &Workbook, after: &Workbook) -> (Vec<(usize, Option<usize>)>, Vec<usize>) {
+pub(crate) fn pair_sheets(before: &Workbook, after: &Workbook) -> (Vec<(usize, Option<usize>)>, Vec<usize>) {
     let mut pairs: Vec<(usize, Option<usize>)> = before.sheets.iter().enumerate().map(|(bi, sh)| (bi, after.sheet_index(&sh.name))).collect();
     let matched: BTreeSet<usize> = pairs.iter().filter_map(|(_, a)| *a).collect();
     let mut spare = (0..after.sheets.len()).filter(|a| !matched.contains(a));
