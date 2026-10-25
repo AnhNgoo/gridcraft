@@ -418,6 +418,27 @@ fn a_dry_run_leaves_a_clean_workbook_clean() {
 }
 
 #[test]
+fn a_dry_run_cut_short_by_a_panic_leaves_journaling_on() {
+    // A panic inside a command that started a dry run, nested in another command: the panic
+    // guard of the nested call puts the pause and the touch log back, so the session journals
+    // the person's commands again.
+    crate::cmd::register_undoable_test_command("test.dryRunThenPanic", |s, _| {
+        s.journal_paused = s.journal_paused.saturating_add(1);
+        if let Ok(d) = s.doc_mut() {
+            d.touched = Some(Vec::new());
+        }
+        panic!("in a dry run");
+    });
+    let mut s = s();
+    let err = s.execute_nested("test.dryRunThenPanic", json!({})).unwrap_err().to_string();
+    assert!(err.contains("in a dry run"), "{err}");
+    assert_eq!((s.journal_paused, s.doc().unwrap().touched.is_none()), (0, true));
+    let n = s.journal.len();
+    s.execute("selection.set", json!({"range": "B2"})).unwrap();
+    assert_eq!(s.journal.len(), n + 1, "journaled again");
+}
+
+#[test]
 fn a_dry_run_leaves_the_journal_and_the_recording_start_as_they_were() {
     // A dry run journals nothing: journaling its nested commands would push a full journal past
     // its limit and evict the person's own oldest entries, and move Record Actions' start.

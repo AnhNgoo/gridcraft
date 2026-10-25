@@ -599,6 +599,9 @@ impl Session {
             return Err(EngineError::Disabled(id.to_string(), why));
         }
         let before = self.active().map(|d| (d.uid, d.wb.clone(), d.selection.clone()));
+        // A dry run inside this command that a panic cuts short leaves journaling paused and its
+        // touch log open; the panic branch puts both back.
+        let paused_before = self.journal_paused;
         let params = if params.is_null() { Json::Object(Default::default()) } else { params };
         let (first_group, group_epoch) = (self.next_group, self.group_epoch);
         // Whether a group was open on the document before the command, and how long its history was.
@@ -666,11 +669,15 @@ impl Session {
                     }
                     d.calc.rebuild(&d.wb);
                 }
+                if self.journal_paused != paused_before {
+                    self.journal_paused = paused_before;
+                    for d in self.docs.iter_mut() {
+                        d.touched = None;
+                    }
+                }
                 if self.depth == 0 {
                     self.trim_history();
                     self.group_step = None;
-                    // A dry run the panic cut short never put journaling back on.
-                    self.journal_paused = 0;
                 }
                 return Err(EngineError::Internal(id.to_string(), msg));
             }
