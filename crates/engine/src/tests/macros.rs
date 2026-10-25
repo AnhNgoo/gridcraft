@@ -304,12 +304,14 @@ fn shifting_makes_room_and_is_checked_again() {
     let err = s.execute("macro.run", json!({"name": "Named"})).unwrap_err().to_string();
     assert!(err.contains("shifting the data didn't make room (E3 on Sheet1)"), "{err}");
     assert!(Arc::ptr_eq(&s.doc().unwrap().wb, &start));
-    // The check shifts and checks again as the run does, and puts everything back.
+    // The check shifts and checks again as the run does, and puts everything back, the document's
+    // revision included.
     let journal = s.journal.len();
+    let revision = s.doc().unwrap().revision;
     let c = s.execute("macro.check", json!({"name": "Named"})).unwrap();
     assert_eq!((&c["ok"], &c["errors"]), (&json!(false), &json!(["Shifting the data doesn't make room (E3 on Sheet1)."])), "{c}");
     assert!(Arc::ptr_eq(&s.doc().unwrap().wb, &start));
-    assert_eq!(s.journal.len(), journal);
+    assert_eq!((s.journal.len(), s.doc().unwrap().revision), (journal, revision));
     // Where the shift does make room, the check says the run would go ahead.
     let mut s = super::s();
     data(&mut s);
