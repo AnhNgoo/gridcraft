@@ -40,8 +40,11 @@ pub struct RecordedStep {
     pub params: Json,
 }
 
+/// Numbers each recording, so an undo group's mark from an earlier one isn't read as this one's.
+static NEXT_RECORDING: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+
 /// The steps recorded since recording started.
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Debug)]
 pub struct Recorder {
     pub steps: Vec<RecordedStep>,
     /// Steps not kept because the recording reached [`RECORD_LIMIT`] or [`RECORD_MAX_BYTES`].
@@ -55,6 +58,18 @@ pub struct Recorder {
     /// keeps them even when the script or macro is edited or deleted before the recording stops.
     /// A run without an entry is left out when the recording is used.
     pub ran: BTreeMap<usize, Vec<(String, Json)>>,
+    /// Which recording this is, and the number the next kept step gets: each step's number is in
+    /// `seqs`, beside it, so a mark stays right however many steps rollbacks take out.
+    generation: u64,
+    next_seq: u64,
+    seqs: Vec<u64>,
+}
+
+impl Default for Recorder {
+    fn default() -> Self {
+        let generation = NEXT_RECORDING.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        Recorder { steps: Vec::new(), dropped: 0, bytes: 0, ran: BTreeMap::new(), generation, next_seq: 0, seqs: Vec::new() }
+    }
 }
 
 /// `params` with the state a toggle set (Bold's `on`, from the command's result), as Excel
@@ -86,6 +101,8 @@ impl Recorder {
         if self.bytes.saturating_add(size) <= RECORD_MAX_BYTES {
             self.bytes = self.bytes.saturating_add(size);
             self.steps.push(step);
+            self.seqs.push(self.next_seq);
+            self.next_seq = self.next_seq.saturating_add(1);
             true
         } else {
             self.dropped = self.dropped.saturating_add(1);
@@ -104,32 +121,37 @@ impl Recorder {
         }
     }
 
-    /// Where the recording is now, for [`Recorder::cut_back`].
-    pub(crate) fn mark(&self) -> (usize, usize) {
-        (self.steps.len(), self.dropped)
+    /// Where the recording is now, for [`Recorder::cut_back`]: this recording and the number its
+    /// next step gets.
+    pub(crate) fn mark(&self) -> (u64, u64) {
+        (self.generation, self.next_seq)
     }
 
     /// Takes back the steps recorded in the document with uid `doc` since `mark` (an undo group
     /// on it was rolled back, so playing them back would make edits it no longer has). Steps in
     /// other documents stay: their edits do too. Steps the buffer dropped stay counted.
     /// What a step ran ([`Recorder::ran`]) goes with its step, and stays with a kept one under its
-    /// new index.
-    pub(crate) fn cut_back(&mut self, (len, _): (usize, usize), doc: u64) {
-        if !self.steps.iter().skip(len).any(|s| s.doc == doc) {
+    /// new index. A mark from another recording (the recording started again inside the group)
+    /// means every step of this one came after it.
+    pub(crate) fn cut_back(&mut self, (generation, seq): (u64, u64), doc: u64) {
+        let from = if generation == self.generation { seq } else { 0 };
+        let gone = |i: usize, step: &RecordedStep| step.doc == doc && self.seqs.get(i).is_some_and(|&n| n >= from);
+        if !self.steps.iter().enumerate().any(|(i, s)| gone(i, s)) {
             return;
         }
         let mut ran = std::mem::take(&mut self.ran);
-        let mut steps = Vec::with_capacity(self.steps.len());
-        for (i, step) in std::mem::take(&mut self.steps).into_iter().enumerate() {
-            if i >= len && step.doc == doc {
+        let (mut steps, mut seqs) = (Vec::with_capacity(self.steps.len()), Vec::with_capacity(self.seqs.len()));
+        for (i, step) in self.steps.iter().enumerate() {
+            if gone(i, step) {
                 continue;
             }
             if let Some(r) = ran.remove(&i) {
                 self.ran.insert(steps.len(), r);
             }
-            steps.push(step);
+            steps.push(step.clone());
+            seqs.push(self.seqs.get(i).copied().unwrap_or(0));
         }
-        self.steps = steps;
+        (self.steps, self.seqs) = (steps, seqs);
         let size = |v: Result<Vec<u8>, serde_json::Error>| v.map_or(0, |v| v.len());
         self.bytes = self.steps.iter().map(|s| size(serde_json::to_vec(s))).sum::<usize>()
             + self.ran.values().map(|r| size(serde_json::to_vec(r))).sum::<usize>();
