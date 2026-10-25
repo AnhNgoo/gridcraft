@@ -10,7 +10,10 @@ and does not touch files without permission.
 Agents run macros with `macro.run` like any other command.
 
 This page describes the macro format, its tokens, and running, checking and debugging macros.
-The engine has no macro recorder or management commands in this version, and no macro interface.
+`macro.run` checks the macro, its inputs, its parameters and the policy before it runs, works
+out where it writes, and checks each step as it runs; `macro.check` reports what a run would do
+without running it. The engine has no macro recorder or management commands in this version,
+and no macro interface.
 
 ## A macro
 
@@ -123,8 +126,9 @@ refused rather than read as the header.
    or objects that held data when the run started stops the run and rolls the workbook back (a
    file already written stays): it asks (`confirm: …`) under `ask` and fails otherwise, since
    shifting can't make room that late. Moving cells that hold data, as inserting or deleting rows
-   or cells above them does, counts as writing over them, in the footprint and in this check:
-   both compare cells by place.
+   or cells above them does, counts as writing over them, in the footprint and in this check, and
+   so does a formula whose references such a move rewrites: both compare cells by place, so they
+   may ask about data that only moved, never the other way.
 3. **Run.** One undo step, "Run Macro: Totals". Any error rolls the whole run back and names the
    step: `Step 3.1 (cell.set): …` (paths are 1-based; `2.1` is inside a Repeat, `4.then.1` inside
    an If). The message ends "Nothing was changed.", or names the files the run already wrote,
@@ -139,7 +143,8 @@ refused rather than read as the header.
 output anchor, any approval needed and the footprint, and puts back everything the dry run
 changed. `ok` says whether `macro.run` with the same parameters would go ahead without a question;
 when it wouldn't, `errors` says why: the run would fail at a step, a Stop step rolls it back, it
-would write over data under `ask` or `fail`, shifting can't make room, or the run would go past
+would write over data under `ask` or `fail`, shifting can't make room (the check shifts and
+checks again, then puts everything back), or the run would go past
 the step or parameter limit counting the dry runs before it. The random numbers RAND gives move
 on, as after any recalculation.
 

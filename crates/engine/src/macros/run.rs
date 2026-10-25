@@ -520,7 +520,8 @@ impl Guard {
             if Arc::ptr_eq(ps, sa) {
                 continue;
             }
-            let in_input = |c: CellRef| inputs.iter().any(|(_, p, _)| p.sheet == si && p.range.contains(c));
+            // The inputs have followed their cells, so they are on the sheet's index now.
+            let in_input = |c: CellRef| inputs.iter().any(|(_, p, _)| p.sheet == ai && p.range.contains(c));
             let mut hit: Vec<CellRef> = ps
                 .cells
                 .diff(&sa.cells)
@@ -1532,6 +1533,27 @@ fn conflict_rule(p: &Json, m: &Macro) -> Result<OnConflict> {
     Ok(rule)
 }
 
+/// For `macro.check`, as the run would: shifts the data, checks the footprint again, and puts
+/// everything back. What still stands in the way, or `None`.
+fn shifted_conflicts(s: &mut Session, fp: &Footprint, p: &Prepared, budget: &Machine, down: bool) -> Result<Option<String>> {
+    let saved = Saved::take(s, p.doc);
+    let token = s.group_begin("Check Macro")?;
+    let mut spent = budget.clone();
+    (spent.executed, spent.param_bytes) = (fp.executed, fp.param_bytes);
+    let again = make_room(s, fp, p, down).and_then(|()| footprint(s, p, &spent));
+    let rolled = s.group_rollback(token);
+    saved.restore(s, p.doc);
+    rolled?;
+    Ok(match again {
+        Err(e) => Some(e.to_string()),
+        Ok(again) => match (&again.error, again.conflict_count()) {
+            (Some(e), _) => Some(e.describe()),
+            (None, 0) => None,
+            (None, _) => Some(format!("Shifting the data doesn't make room ({}).", again.describe_conflicts())),
+        },
+    })
+}
+
 /// `macro.check`: what running the macro would do, without changing anything.
 pub fn check(s: &mut Session, name: &str, p: &Json) -> Result<Json> {
     let d = s.doc()?;
@@ -1593,7 +1615,10 @@ pub fn check(s: &mut Session, name: &str, p: &Json) -> Result<Json> {
             OnConflict::Fail => problems.push(format!("It would write over cells that hold data ({what}).")),
             OnConflict::Overwrite => {}
             OnConflict::ShiftDown | OnConflict::ShiftRight => {
-                if let Some(why) = shift_refusal(&s.doc()?.wb, &fp, &prepared, rule == OnConflict::ShiftDown) {
+                let down = rule == OnConflict::ShiftDown;
+                if let Some(why) = shift_refusal(&s.doc()?.wb, &fp, &prepared, down) {
+                    problems.push(why);
+                } else if let Some(why) = shifted_conflicts(s, &fp, &prepared, &budget, down)? {
                     problems.push(why);
                 }
             }
