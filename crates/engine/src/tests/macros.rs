@@ -3,6 +3,7 @@
 
 use std::sync::Arc;
 
+use gridcraft_core::CellRef;
 use serde_json::{Value as Json, json};
 
 use super::{s, v};
@@ -174,6 +175,58 @@ fn conflicts_ask_fail_or_overwrite() {
     s.execute("macro.run", json!({"name": "Totals", "inputs": "B2:C5", "overwrite": true})).unwrap();
     assert_eq!(v(&s, "E3").display(), "400");
     assert_eq!(v(&s, "H1").display(), "400");
+}
+
+/// The value of `cell` on the sheet called `sheet`.
+fn on(s: &Session, sheet: &str, cell: &str) -> String {
+    let wb = &s.doc().unwrap().wb;
+    wb.sheet(wb.sheet_index(sheet).unwrap()).unwrap().value(CellRef::parse(cell).unwrap()).display()
+}
+
+#[test]
+fn inputs_and_the_output_follow_their_cells_when_a_step_moves_them() {
+    // A sheet inserted in front: the input is still on Sheet1, not on whatever sheet is first now.
+    let mut s = s();
+    let steps = json!([
+        {"command": "home.insertSheet", "params": {"name": "Summary", "before": 0}},
+        {"command": "cell.set", "params": {"cell": "Input", "input": "x"}}
+    ]);
+    put(&mut s, json!({"name": "Front", "inputs": [{"name": "Input", "kind": "cell"}], "output": {"onConflict": "overwrite"}, "steps": steps}));
+    s.execute("macro.run", json!({"name": "Front", "inputs": "Sheet1!B2"})).unwrap();
+    assert_eq!((on(&s, "Sheet1", "B2"), on(&s, "Summary", "B2")), ("x".into(), "".into()));
+
+    // Rows inserted above: the input and the output move down with their cells.
+    let mut s = super::s();
+    set(&mut s, "B5", "in");
+    let steps = json!([
+        {"command": "home.insertRows", "params": {"rows": "2:3"}},
+        {"command": "cell.set", "params": {"cell": "Input", "input": "x"}},
+        {"command": "cell.set", "params": {"cell": "Output", "input": "y"}}
+    ]);
+    put(
+        &mut s,
+        json!({"name": "Down", "inputs": [{"name": "Input", "kind": "cell"}], "output": {"anchor": "D5", "onConflict": "overwrite"}, "steps": steps}),
+    );
+    s.execute("macro.run", json!({"name": "Down", "inputs": "B5"})).unwrap();
+    assert_eq!((v(&s, "B7").display(), v(&s, "D7").display()), ("x".into(), "y".into()));
+    assert_eq!((v(&s, "B5").display(), v(&s, "D5").display()), ("".into(), "".into()));
+
+    // A step that deletes an input's cells stops the run.
+    let mut s = super::s();
+    set(&mut s, "B5", "in");
+    let steps = json!([{"command": "home.deleteRows", "params": {"rows": "5"}}, {"command": "cell.set", "params": {"cell": "Input", "input": "x"}}]);
+    put(&mut s, json!({"name": "Gone", "inputs": [{"name": "Input", "kind": "cell"}], "output": {"onConflict": "overwrite"}, "steps": steps}));
+    let start = s.doc().unwrap().wb.clone();
+    let err = s.execute("macro.run", json!({"name": "Gone", "inputs": "B5"})).unwrap_err().to_string();
+    assert!(err.contains("Step 1 (home.deleteRows): It deleted the cells of Input."), "{err}");
+    assert!(Arc::ptr_eq(&s.doc().unwrap().wb, &start));
+
+    // A step inside a Repeat that changes the size of the range it goes over stops the run.
+    let mut s = super::s();
+    let body = json!([{"command": "home.insertRows", "params": {"rows": "2"}}]);
+    put(&mut s, json!({"name": "Grow", "output": {"onConflict": "overwrite"}, "steps": [{"type": "repeat", "over": "A1:A3", "body": body}]}));
+    let err = s.execute("macro.run", json!({"name": "Grow"})).unwrap_err().to_string();
+    assert!(err.contains("Step 1.1 (home.insertRows): It changed the size of the range Repeat 1 goes over."), "{err}");
 }
 
 #[test]

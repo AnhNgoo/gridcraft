@@ -22,6 +22,7 @@ use std::collections::BTreeSet;
 use std::sync::Arc;
 
 use gridcraft_core::{CellRef, RangeRef, Value};
+use gridcraft_formula::adjust::Edit;
 use gridcraft_model::{Cell, CompareOp, InputKind, Macro, OnConflict, RepeatOf, Sheet, Step, StepKind, Workbook};
 use serde::Serialize;
 use serde_json::{Value as Json, json};
@@ -645,6 +646,34 @@ impl Machine {
         }
     }
 
+    /// After a step that inserted, deleted or moved sheets, rows, columns or cells, moves the
+    /// inputs, the output and the ranges of the Repeats in progress with their cells, as the
+    /// references in formulas move. A step that deletes one of them, or changes the size of a
+    /// range a Repeat is going over, stops the run.
+    fn follow(&mut self, before: &Workbook, after: &Workbook, edits: &[(String, Edit)]) -> std::result::Result<(), String> {
+        let same_sheets = before.sheets.len() == after.sheets.len() && before.sheets.iter().zip(&after.sheets).all(|(b, a)| b.name == a.name);
+        if same_sheets && edits.is_empty() {
+            return Ok(());
+        }
+        let (pairs, _) = pair_sheets(before, after);
+        let follow = |what: &str, p: Place| follow_place(before, after, &pairs, edits, p).ok_or_else(|| format!("It deleted the cells of {what}."));
+        for (name, place, _) in self.inputs.iter_mut() {
+            *place = follow(name, *place)?;
+        }
+        if let Some(o) = self.output {
+            self.output = Some(follow("the output anchor", o)?);
+        }
+        for f in self.frames.iter_mut() {
+            let Some(l) = f.repeat.as_mut() else { continue };
+            let over = follow(&format!("the range Repeat {} goes over", f.prefix), l.over)?;
+            if (over.range.height(), over.range.width()) != (l.over.range.height(), l.over.range.width()) {
+                return Err(format!("It changed the size of the range Repeat {} goes over.", f.prefix));
+            }
+            l.over = over;
+        }
+        Ok(())
+    }
+
     fn env<'a>(&'a self, wb: &'a Workbook) -> Env<'a> {
         Env { wb, active_sheet: wb.active_sheet, inputs: &self.inputs, output: self.output, item: self.item() }
     }
@@ -670,9 +699,13 @@ impl Machine {
             (_, Policy::Allow | Policy::Ask(_)) => {}
         }
         self.last_params = Some(resolved.clone());
-        let prev = self.guard.as_ref().and_then(|_| s.docs.iter().find(|d| d.uid == self.doc)).map(|d| d.wb.clone());
+        let prev = s.docs.iter_mut().find(|d| d.uid == self.doc).map(|d| {
+            d.edits = Some(Vec::new());
+            d.wb.clone()
+        });
         let queued = s.ui_requests.len();
         let r = s.execute(id, resolved);
+        let edits = s.docs.iter_mut().find(|d| d.uid == self.doc).and_then(|d| d.edits.take()).unwrap_or_default();
         // Macros never open dialogs or web pages, and never start editing a cell; messages for
         // the person stay queued.
         let mut blocked = None;
@@ -689,8 +722,11 @@ impl Machine {
         if let Some(b) = blocked {
             return Err(fail(b));
         }
+        let after = s.docs.iter().find(|d| d.uid == self.doc).map(|d| d.wb.clone()).ok_or_else(|| fail("The workbook was closed.".into()))?;
+        if let Some(prev) = &prev {
+            self.follow(prev, &after, &edits).map_err(fail)?;
+        }
         if let (Some(g), Some(prev)) = (self.guard.as_mut(), prev) {
-            let after = s.docs.iter().find(|d| d.uid == self.doc).map(|d| d.wb.clone()).ok_or_else(|| fail("The workbook was closed.".into()))?;
             let what = g.check(&prev, &after, &self.inputs);
             if !what.is_empty() {
                 let msg = format!("It would write over data ({what}).");
@@ -699,6 +735,34 @@ impl Machine {
         }
         Ok(())
     }
+}
+
+/// Where the cells of `p` are after a step: on the same sheet wherever it moved (`pairs`, from
+/// [`pair_sheets`]), and moved by each structural edit the step made there, or `None` when the
+/// step deleted them (or their sheet).
+fn follow_place(before: &Workbook, after: &Workbook, pairs: &[(usize, Option<usize>)], edits: &[(String, Edit)], p: Place) -> Option<Place> {
+    let sheet = pairs.iter().find(|(b, _)| *b == p.sheet).and_then(|(_, a)| *a)?;
+    let mut name = after.sheet(sheet)?.name.clone();
+    let old_name = before.sheet(p.sheet).map(|s| s.name.as_str()).unwrap_or_default();
+    let mut text = format!("{}!{}", resolve::quote_sheet(&name), p.range.a1());
+    for (target, e) in edits {
+        if target != &name && target != old_name {
+            continue;
+        }
+        let expr = gridcraft_formula::parse(&text).ok()?;
+        text = gridcraft_formula::print(&gridcraft_formula::adjust::adjust(expr, target, target, e));
+        if text.contains("#REF!") {
+            return None;
+        }
+        // A cut and paste can take the cells to another sheet.
+        let env = Env { wb: after, active_sheet: usize::MAX, inputs: &[], output: None, item: None };
+        name = after.sheet(resolve::resolve_ref(&text, &env).ok()?.sheet)?.name.clone();
+    }
+    let env = Env { wb: after, active_sheet: usize::MAX, inputs: &[], output: None, item: None };
+    if text.contains('$') {
+        text = text.replace('$', "");
+    }
+    resolve::resolve_ref(&text, &env).ok()
 }
 
 /// If's comparison of a cell's value with a step's `value`, the way Excel's `=`, `<`… compare.

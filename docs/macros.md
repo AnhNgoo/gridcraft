@@ -117,7 +117,10 @@ refused rather than read as the header.
    runs, which this version doesn't work out, so those rules stop the run as `fail` does.
 3. **Run.** One undo step, "Run Macro: Totals". Any error rolls the whole run back and names the
    step: `Step 3.1 (cell.set): …` (paths are 1-based; `2.1` is inside a Repeat, `4.then.1` inside
-   an If).
+   an If). When a step inserts, deletes or moves sheets, rows, columns or cells, the inputs, the
+   output and the range of a Repeat in progress move with their cells, as references in formulas
+   do; a step that deletes one of them, or changes the size of a range a Repeat is going over,
+   stops the run.
 
 ## Storage
 
