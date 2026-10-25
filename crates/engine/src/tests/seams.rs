@@ -837,12 +837,13 @@ fn stop_action_runs_only_on_its_own_and_is_not_recorded() {
     r.unwrap();
     assert_eq!(v(&s, "A2").display(), "two");
     assert_eq!(undo_labels(&s), ["Outer"], "the action kept its group");
-    // On its own it stops a group left open; the recording keeps the edits and not the stop.
+    // On its own it stops a group left open; the recording keeps neither the stop nor the edits
+    // the stop rolled back, so playing it back makes only the edits the workbook has.
     let _left = s.group_begin("Left open").unwrap();
     set(&mut s, "A3", "three");
     assert_eq!(s.execute("automate.stopAction", json!({})).unwrap(), json!({"stopped": true}));
     assert!(v(&s, "A3").is_empty());
-    assert_eq!(recorded_ids(&s), ["cell.set", "cell.set", "cell.set"]);
+    assert_eq!(recorded_ids(&s), ["cell.set", "cell.set"]);
     assert_eq!(s.stop_recording().unwrap().dropped, 0);
 }
 
