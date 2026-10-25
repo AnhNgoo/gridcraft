@@ -3,6 +3,11 @@ use serde_json::json;
 
 use crate::Session;
 
+thread_local! {
+    /// Copies of a document's undo and redo history `execute` has taken on this thread.
+    pub(crate) static HISTORY_COPIES: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
 fn s() -> Session {
     let mut s = Session::new();
     s.new_workbook();

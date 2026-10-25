@@ -135,12 +135,13 @@ pub struct Clipboard {
     pub trust: Trust,
 }
 
-/// Whether a document's active content (macros) may run without asking the person first.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize)]
+/// Whether a document's active content (macros) may run without asking the person first. There
+/// is no default: whoever makes a document says where it came from ([`DocState::new`]), so a new
+/// way of building one from bytes can't come out trusted by omission.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub enum Trust {
     /// Made in this session: a new workbook or a sample.
-    #[default]
     Local,
     /// Opened from a file, or holding content pasted from one: active content asks before it
     /// runs.
@@ -264,7 +265,10 @@ fn trim_to_budget(history: &mut Vec<HistoryEntry>, byte_budget: usize) {
 }
 
 impl DocState {
-    pub fn new(mut wb: Workbook, path: Option<String>, title: String) -> DocState {
+    /// A document for `wb`, which came from where `trust` says: [`Trust::FromFile`] for anything
+    /// read from bytes (a file, a download, a recovery copy), [`Trust::Local`] only for a workbook
+    /// made in this session.
+    pub fn new(mut wb: Workbook, path: Option<String>, title: String, trust: Trust) -> DocState {
         let mut calc = Calc::new();
         calc.recalc_all(&mut wb);
         let scripts_trusted = !cmd::extra::has_scripts(&wb);
@@ -285,7 +289,7 @@ impl DocState {
             unlocked_ranges: vec![],
             content_kind: None,
             scripts_trusted,
-            trust: Trust::Local,
+            trust,
         }
     }
     pub fn is_dirty(&self) -> bool {
@@ -485,7 +489,7 @@ impl Session {
             let name = wb.next_sheet_name();
             wb.sheets.push(Arc::new(gridcraft_model::Sheet::new(name)));
         }
-        self.add_document(DocState::new(wb, None, format!("Book{n}")))
+        self.add_document(DocState::new(wb, None, format!("Book{n}"), Trust::Local))
     }
 
     /// Journals a command, then trims the oldest entries past either cap. A recording in progress
@@ -539,8 +543,15 @@ impl Session {
         let start = before.as_ref().and_then(|(uid, ..)| self.docs.iter().find(|d| d.uid == *uid).map(|d| (self.in_group(*uid), d.undo.len())));
         // A command that panics leaves the history as it found it: the steps commands nested in it
         // made or undid, and the redo history they cleared, come back. A length is not enough,
-        // because a nested `edit.undo` removes entries.
-        let history_before = before.as_ref().and_then(|(uid, ..)| self.docs.iter().find(|d| d.uid == *uid).map(|d| (d.undo.clone(), d.redo.clone())));
+        // because a nested `edit.undo` removes entries. A query runs nothing that changes the
+        // history (`every_query_leaves_the_history_alone` runs each one), so it needs no
+        // copy; front ends run queries all the time.
+        let query = !spec.journal && !spec.undoable;
+        let history_before = before.as_ref().filter(|_| !query).and_then(|(uid, ..)| {
+            #[cfg(test)]
+            tests::HISTORY_COPIES.with(|n| n.set(n.get().saturating_add(1)));
+            self.docs.iter().find(|d| d.uid == *uid).map(|d| (d.undo.clone(), d.redo.clone()))
+        });
         // The groups open on the document before the command (usually none), for the same reason.
         let groups_before: Vec<(u64, String, Arc<Workbook>, Selection)> = match &before {
             Some((uid, ..)) => {
@@ -554,6 +565,7 @@ impl Session {
             None => (0, 0, String::new(), Selection::default()),
         });
         let doc_uid = before.as_ref().map(|(uid, ..)| *uid);
+        let requests_before = self.ui_requests.len();
         let marked = doc_uid.zip(start).map(|(uid, (_, len))| (uid, len));
         self.marks.extend(marked);
         self.depth = self.depth.saturating_add(1);
@@ -599,10 +611,23 @@ impl Session {
                 return Err(EngineError::Internal(id.to_string(), msg));
             }
         };
+        // A command that fails leaves none of its own undo groups open (a `?` between
+        // `group_begin` and `group_end`): each is rolled back as `group_rollback` does. Only a
+        // command that succeeds keeps a group it opened (a debugger's start).
+        if result.is_err() {
+            self.rollback_groups_from(first_group);
+        }
         if spec.journal && result.is_ok() {
             // A command that started recording is not part of the recording; one that stopped it
-            // finds no recorder.
-            if let Some((doc, sheet, sheet_name, selection)) = place
+            // finds no recorder. A menu-style call that only opened a dialog (`file.open` with no
+            // file, `home.formatCells` with no style) is not recorded either: the dialog's own
+            // call is, so playing the recording back runs the command once, with its parameters.
+            // A call that opened a dialog and changed the workbook too (a script with an edit before
+            // a menu-style step) is recorded: the edit happened, and the dialog's confirming call
+            // is a step of its own.
+            let opened_dialog = self.ui_requests.get(requests_before..).is_some_and(|new| new.iter().any(|q| matches!(q, UiRequest::Dialog(..))));
+            let changed = before.as_ref().is_some_and(|(uid, wb, _)| self.docs.iter().any(|d| d.uid == *uid && !Arc::ptr_eq(&d.wb, wb)));
+            if let Some((doc, sheet, sheet_name, selection)) = place.filter(|_| (!opened_dialog || changed) && !record::NOT_RECORDED.contains(&id))
                 && let Some(rec) = self.recorder.as_mut()
             {
                 rec.push(record::RecordedStep { doc, sheet, sheet_name, selection, id: id.to_string(), params: cmd::journal_params(&params) });
@@ -756,6 +781,29 @@ impl Session {
         Ok(changed)
     }
 
+    /// Stops the running action on the document with uid `doc`: every undo group open on it is
+    /// rolled back as [`Session::group_rollback`] does, putting back the workbook, selection, undo
+    /// and redo history as they were when the outermost one began. Their tokens are then spent
+    /// (ending or rolling one back reports that it has already ended). Returns whether a group
+    /// was open. `automate.stopAction` runs it on the active document.
+    pub fn abort_groups(&mut self, doc: u64) -> bool {
+        let Some(id) = self.groups.iter().filter(|g| g.doc == doc).map(|g| g.id).min() else { return false };
+        // Rolling back the outermost group ends the ones opened inside it.
+        self.group_rollback(GroupToken { id, doc }).is_ok()
+    }
+
+    /// Rolls back every open undo group numbered `first` or later (the groups a failed command
+    /// opened), outermost first on each document.
+    fn rollback_groups_from(&mut self, first: u64) {
+        let opened: Vec<(u64, u64)> = self.groups.iter().filter(|g| g.id >= first).map(|g| (g.id, g.doc)).collect();
+        for (id, doc) in opened {
+            // A group inside one rolled back before it is already gone.
+            if self.groups.iter().any(|g| g.id == id) {
+                let _ = self.group_rollback(GroupToken { id, doc });
+            }
+        }
+    }
+
     /// Bounds the undo steps pushed while a command runs (a script of many steps, a subtotal per
     /// group): at most [`UNDO_LIMIT`] of them within [`UNDO_BYTES_LIMIT`], dropping the oldest.
     /// Only steps after the latest mark go: a running command's start, an open group's start and
@@ -826,6 +874,16 @@ impl Session {
         self.depth
     }
 
+    /// Runs a command as a command in progress would (one level deeper), for tests of what a
+    /// nested call may do.
+    #[cfg(test)]
+    pub(crate) fn execute_nested(&mut self, id: &str, params: Json) -> Result<Json> {
+        self.depth = self.depth.saturating_add(1);
+        let r = self.execute(id, params);
+        self.depth = self.depth.saturating_sub(1);
+        r
+    }
+
     /// Whether an undo group is open on the document with this uid.
     pub fn in_group(&self, doc: u64) -> bool {
         self.groups.iter().any(|g| g.doc == doc)
@@ -854,17 +912,12 @@ impl Session {
     /// queued a file dialog because it got no file (`file.open`, `file.saveAs`, `file.save` on a workbook with no
     /// file yet, `data.getData`) is an error instead of a silent success.
     pub fn execute_headless(&mut self, id: &str, params: Json) -> Result<Json> {
-        let recorded = self.recorder.as_ref().map(|r| (r.steps.len(), r.dropped));
         let r = self.execute(id, params);
         let requests = self.take_ui_requests();
         let asked_for_file = requests.iter().any(|q| matches!(q, UiRequest::Dialog(name, _) if name == "open" || name == "saveAs"));
+        // A call that only opened a dialog is not recorded (see `execute`), so the recording
+        // has no step to take back here.
         if r.is_ok() && asked_for_file {
-            // The caller gets an error, so the recording keeps no step for the command.
-            if let Some((steps, dropped)) = recorded
-                && let Some(rec) = self.recorder.as_mut()
-            {
-                rec.truncate(steps, dropped);
-            }
             let what = match id {
                 "file.open" => "`path` or `base64`",
                 "data.getData" | "data.fromTextCsv" => "`path` or `text`",
