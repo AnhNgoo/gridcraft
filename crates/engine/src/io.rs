@@ -262,7 +262,7 @@ pub fn save_bytes_as(wb: &Workbook, path: &str, kind: FileKind) -> Result<Vec<u8
         // A workbook read from CSV keeps the separator it was read with (a `;` file stays `;`).
         FileKind::Csv => wb.sheet(sheet).map(|sh| csv(wb, sh, wb.csv_delimiter.unwrap_or(b','))).transpose().map(Option::unwrap_or_default),
         FileKind::Tsv => wb.sheet(sheet).map(|sh| csv(wb, sh, b'\t')).transpose().map(Option::unwrap_or_default),
-        FileKind::Json => serde_json::to_vec_pretty(wb).map_err(|e| EngineError::Other(e.to_string())),
+        FileKind::Json => crate::macros::json_bytes(wb),
         FileKind::Html => to_html(wb, sheet).map(String::into_bytes),
     }
 }

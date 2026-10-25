@@ -66,10 +66,12 @@ is someone's own name: opening a file leaves it alone, and saving stores the mac
 it does not use.
 
 Each macro carries its format version, `v` (1 in this version; a missing `v` reads as 1). When a
-file is opened, a macro that is damaged, over the limits or in a newer format (a `v` above 1) is
-left out with one warning, and the rest of the workbook and its other macros open. A newer
-macro is never read in part, so a save can't write it back with its newer fields missing; a
-macro that was left out is not in the saved file.
+file is opened, a macro in a newer format (a `v` above 1) is kept unread, with a warning: this
+version can't show or run it, and saving writes it back exactly as the file held it, so the newer
+version gets it back whole. It is never read in part. Kept macros count toward the 1,000-macro
+limit after the readable ones, and one too large for an xlsx file is left out. A macro that is
+damaged or over the limits is left out with one warning, and the rest of the workbook and its
+other macros open; a macro that was left out is not in the saved file.
 
 ## Automate scripts and VBA
 
