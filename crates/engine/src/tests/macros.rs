@@ -1775,6 +1775,24 @@ fn kept_macros_count_toward_the_limit_and_keep_their_names() {
 }
 
 #[test]
+fn re_saving_a_large_macro_keeps_the_undo_history_within_its_budget() {
+    // Each save keeps a copy of the macro list in the undo step before it. The budget counts
+    // the copies' parameters, so it trims the history instead of keeping every copy.
+    let mut s = s();
+    let big = "x".repeat(3_900_000);
+    let saves = 36;
+    for i in 0..saves {
+        let m = json!({"name": "Big", "description": i.to_string(), "steps": [{"command": "cell.set", "params": {"cell": "A1", "input": big}}]});
+        s.execute("macro.save", json!({"macro": m, "replace": true})).unwrap();
+    }
+    let d = s.doc().unwrap();
+    let kept: usize = d.undo.iter().map(|e| e.retained_bytes).sum();
+    assert!(kept <= crate::UNDO_BYTES_LIMIT, "{kept}");
+    assert!(d.undo.len() < saves, "{} undo steps", d.undo.len());
+    assert!(d.undo.iter().skip(1).all(|e| e.retained_bytes > big.len()), "each kept copy is charged for its parameters");
+}
+
+#[test]
 fn renaming_checks_the_macro_size() {
     // A longer name can take a macro past the size a file holds: renaming is refused, as saving is.
     let mut s = s();

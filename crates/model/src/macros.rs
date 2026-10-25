@@ -217,12 +217,28 @@ impl Macros {
         std::sync::Arc::ptr_eq(&self.0, &other.0)
     }
 
-    /// A rough size of the list in memory, for the undo budget.
+    /// A rough size of the list in memory, for the undo budget: each macro's JSON, which holds
+    /// every name, text and step parameter, plus its structs. An undo step that keeps a copy of
+    /// the list (after a save, rename or delete) is charged for all of it. The JSON is counted as
+    /// it is written, without building it.
     pub fn estimated_bytes(&self) -> usize {
+        /// Counts the bytes written to it.
+        struct Count(usize);
+        impl std::io::Write for Count {
+            fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+                self.0 = self.0.saturating_add(buf.len());
+                Ok(buf.len())
+            }
+            fn flush(&mut self) -> std::io::Result<()> {
+                Ok(())
+            }
+        }
         self.0.iter().fold(0usize, |bytes, m| {
-            let text = m.name.len().saturating_add(m.description.len());
-            let steps = m.step_count().saturating_mul(std::mem::size_of::<Step>().saturating_add(64));
-            bytes.saturating_add(std::mem::size_of::<Macro>()).saturating_add(text).saturating_add(steps)
+            let mut json = Count(0);
+            // Writing to a counter fails only for a value JSON can't hold, which a macro never is.
+            let _ = serde_json::to_writer(&mut json, m);
+            let steps = m.step_count().saturating_mul(std::mem::size_of::<Step>());
+            bytes.saturating_add(std::mem::size_of::<Macro>()).saturating_add(json.0).saturating_add(steps)
         })
     }
 }
