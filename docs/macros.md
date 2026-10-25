@@ -62,7 +62,7 @@ This page describes the engine and its commands, not a user interface for macros
   pass through a Repeat counts), passes its commands at most 256 MB of parameters, all steps
   together, and takes at most 60 seconds, all three shared by the footprint dry runs and the run
   itself (`timeLimit` to change the time; the web build has no clock, so there only the step and
-  parameter limits apply).
+  parameter limits apply). The debugger gives each of its actions the time limit on its own.
 
 ## Tokens
 
@@ -125,8 +125,9 @@ refused rather than read as the header.
    or objects that held data when the run started stops the run and rolls the workbook back (a
    file already written stays): it asks (`confirm: …`) under `ask` and fails otherwise, since
    shifting can't make room that late. Moving cells that hold data, as inserting or deleting rows
-   or cells above them does, counts as writing over them, in the footprint and in this check:
-   both compare cells by place.
+   or cells above them does, counts as writing over them, in the footprint and in this check, and
+   so does a formula whose references such a move rewrites: both compare cells by place, so they
+   may ask about data that only moved, never the other way.
 3. **Run.** One undo step, "Run Macro: Totals". Any error rolls the whole run back and names the
    step: `Step 3.1 (cell.set): …` (paths are 1-based; `2.1` is inside a Repeat, `4.then.1` inside
    an If). The message ends "Nothing was changed.", or names the files the run already wrote,
@@ -141,20 +142,54 @@ refused rather than read as the header.
 output anchor, any approval needed and the footprint, and puts back everything the dry run
 changed. `ok` says whether `macro.run` with the same parameters would go ahead without a question;
 when it wouldn't, `errors` says why: the run would fail at a step, a Stop step rolls it back, it
-would write over data under `ask` or `fail`, shifting can't make room, or the run would go past
+would write over data under `ask` or `fail`, shifting can't make room (the check shifts and
+checks again, then puts everything back), or the run would go past
 the step or parameter limit counting the dry runs before it. The random numbers RAND gives move
 on, as after any recalculation.
 
 ## Debugging
 
-`macro.debug {action, …}` with `start` (`name`, `inputs`, `breakpoints`), `step`, `continue`,
-`runTo` (`step`: a path), `stop` (`keep: true` keeps the changes) and `state`. `breakpoints` can
-be given with any action; `breakpointsOnly: true` makes the list replace the steps' own flags. The
-run stays one undo step; while it is open, edits of the workbooks it touched (its own, and any
-other its steps changed) are refused with "Finish or stop the macro first", also when another
-command makes them (stopping Record Actions saves a script), and other workbooks stay
-editable. Each answer gives the next step with its parameters as they would run, the parameters
-of the step that just ran, and the cells changed so far.
+`macro.debug {action, …}` runs a macro a step at a time. The actions are:
+
+- `start` with `name` and the options of `macro.run` (`inputs`, `onConflict`, `overwrite`,
+  `approve`, `timeLimit`), refused as `macro.run` refuses them when they are of the wrong kind. The
+  checks, the approval and the footprint come first, as for `macro.run`; then the run pauses
+  before its first step.
+- `step` runs the next step; `continue` runs to the next breakpoint or the end; `runTo` (`step`:
+  a path) runs to that step, stopping at a breakpoint on the way.
+- `stop` ends the run: `keep: true` keeps the changes as one undo step, otherwise they are rolled
+  back.
+- `state` answers without running anything (the default while a macro is being debugged).
+
+`breakpoints` (a list of step paths of the macro, at most 10,000) can be given with any action and
+replaces the list set before; `breakpointsOnly: true` makes the list replace the steps' own
+breakpoint flags, also when it is given without a list. An unknown action, a breakpoint or `runTo`
+path the macro doesn't have, and `keep` or `breakpointsOnly` that isn't `true` or `false` are
+refused before anything changes. The time limit applies to each action on its own (`start` with
+its dry runs, and each `step`, `continue` or `runTo`); the step and parameter limits apply to the
+whole run, counting the dry runs.
+
+Each answer gives the next step with its parameters as they would run (a Repeat over whole rows or
+columns shows the part of the sheet in use, as the run goes over it), the parameters of the step
+that just ran, the steps the run has executed (the dry runs not counted), and what the run has
+changed in its workbook: `changed` lists at most 500 entries (cell ranges, and sheets added,
+deleted or renamed) and `changedCells` counts the changed cells on the sheets it had at the start. `shifted` names the rule that made
+room at the start, and `wroteFiles` the files the run wrote, which stay when the run is rolled
+back; the answer to a rolled-back run says so in `message`. A run that ends (its last step, a
+Stop step, or a failed step, which rolls it back) or is stopped answers with `state` `finished`,
+`stopped` or `failed`.
+
+While a macro is being debugged, its workbook is locked between steps: only `macro.debug`, queries
+(commands that only read), commands that look around (`selection.*`, Select All, `sheet.activate`,
+`sheet.next` and `sheet.previous`, Go To, Go To Special, Find, Copy and the zoom commands), Switch
+Window, Close (which ends the run with its workbook) and Automate › Stop Action run there.
+Everything else, undoable or not, saving included, is refused with "Finish or stop the macro
+first", also when another command runs it (stopping Record Actions saves a script). Other
+workbooks stay editable. The person may look around between steps: before the next step runs, the
+debugger puts the active sheet and the selection back where the run left them, so the run goes on
+as `macro.run` would run it. A zoom change made meanwhile is part of the run, and is undone with
+it. Stop Action rolls the run back and ends it, and its answer names the macro. The debugger runs
+on its own, never as a step of a script or macro, and is never recorded.
 
 ## Recording
 
