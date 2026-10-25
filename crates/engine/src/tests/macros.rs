@@ -1728,3 +1728,76 @@ fn a_recording_waits_while_a_macro_in_its_workbook_is_debugged() {
     assert_eq!(r["saved"], "Typed");
     assert_eq!(recorded(&mut s, "Typed"), ["cell.set {\"cell\":\"Z1\",\"input\":\"typed\"}"]);
 }
+
+/// Opens a JSON workbook whose `macros` field holds `macros`, as a file the person opened.
+fn open_with_macros(s: &mut Session, macros: Vec<Json>) -> Vec<String> {
+    let mut file = serde_json::to_value(gridcraft_model::Workbook::new()).unwrap();
+    file["macros"] = json!(macros);
+    let r = s.execute("file.open", json!({"name": "kept.json", "base64": crate::io::base64_encode(file.to_string().as_bytes())})).unwrap();
+    r["warnings"].as_array().map(|w| w.iter().map(|x| x.as_str().unwrap_or_default().to_string()).collect()).unwrap_or_default()
+}
+
+#[test]
+fn kept_macros_count_toward_the_limit_and_keep_their_names() {
+    // Macros in a newer format count toward the limit when the file opens again, so they count
+    // when one is added; their names are taken.
+    let mut s = s();
+    let newer = |name: &str| json!({"name": name, "v": gridcraft_model::MACRO_VERSION + 1});
+    let mut list: Vec<Json> = (0..gridcraft_model::MAX_MACROS - 2).map(|i| json!({"name": format!("M{i}")})).collect();
+    list.extend([newer("Future"), newer("Macro1")]);
+    open_with_macros(&mut s, list);
+    assert_eq!((s.doc().unwrap().wb.macros.len(), s.doc().unwrap().wb.macros_unread.len()), (gridcraft_model::MAX_MACROS - 2, 2));
+    let err = s.execute("macro.save", json!({"name": "New"})).unwrap_err().to_string();
+    assert!(err.contains("at most 1000 macros") && err.contains("2 of the 1000"), "{err}");
+    s.execute("macro.delete", json!({"name": "M0"})).unwrap();
+    for (cmd, p) in [("macro.save", json!({"name": " future "})), ("macro.rename", json!({"name": "M1", "to": "MACRO1"}))] {
+        let err = s.execute(cmd, p).unwrap_err().to_string();
+        assert!(err.contains("newer version"), "{cmd}: {err}");
+    }
+    // A recording takes the next free name, around the kept one, and fills the last place.
+    s.execute("macro.record", json!({"relative": false})).unwrap();
+    set(&mut s, "A1", "typed");
+    assert_eq!(s.execute("macro.record", json!({"stop": true})).unwrap()["saved"], "Macro2");
+    assert_eq!(crate::macros::unique_name(&s.doc().unwrap().wb, "Future"), "Future (2)");
+    s.execute("macro.record", json!({"relative": false})).unwrap();
+    set(&mut s, "A2", "more");
+    let err = s.execute("macro.record", json!({"stop": true, "name": "Late"})).unwrap_err().to_string();
+    assert!(err.contains("2 of the 1000"), "{err}");
+    s.execute("macro.record", json!({"cancel": true})).unwrap();
+    // Saved and opened again: every macro, the kept ones too, is still there.
+    for format in ["xlsx", "json"] {
+        let b64 = s.execute("file.saveBytes", json!({"format": format})).unwrap()["base64"].as_str().unwrap().to_string();
+        s.execute("file.open", json!({"name": format!("again.{format}"), "base64": b64})).unwrap();
+        let wb = &s.doc().unwrap().wb;
+        assert_eq!((wb.macros.len(), wb.macros_unread.len()), (gridcraft_model::MAX_MACROS - 2, 2), "{format}");
+        assert_eq!(*wb.macros_unread, [newer("Future"), newer("Macro1")], "{format}");
+    }
+}
+
+#[test]
+fn renaming_checks_the_macro_size() {
+    // A longer name can take a macro past the size a file holds: renaming is refused, as saving is.
+    let mut s = s();
+    let mut m = json!({"name": "A", "steps": [{"command": "cell.set", "params": {"cell": "A1", "input": ""}}]});
+    let size = |m: &Json| crate::macros::macro_json(&crate::macros::parse_macro(m).unwrap()).to_string().chars().count();
+    let pad = crate::cmd::stash::MAX_ITEM_CHARS - size(&m);
+    m["steps"][0]["params"]["input"] = json!("x".repeat(pad));
+    assert_eq!(size(&m), crate::cmd::stash::MAX_ITEM_CHARS);
+    s.execute("macro.save", json!({"macro": m})).unwrap();
+    let err = s.execute("macro.rename", json!({"name": "A", "to": "Longer"})).unwrap_err().to_string();
+    assert!(err.contains("too large"), "{err}");
+    s.execute("macro.rename", json!({"name": "A", "to": "B"})).unwrap();
+    crate::io::save_bytes(&s.doc().unwrap().wb, "book.xlsx").unwrap();
+}
+
+#[test]
+fn saving_over_a_macro_needs_replace() {
+    let mut s = s();
+    s.execute("macro.save", json!({"name": "Tidy", "description": "first"})).unwrap();
+    let err = s.execute("macro.save", json!({"name": "TIDY", "description": "second"})).unwrap_err().to_string();
+    assert!(err.contains("'Tidy' already exists") && err.contains("replace: true"), "{err}");
+    assert!(s.execute("macro.save", json!({"name": "Tidy", "replace": "yes"})).is_err());
+    assert_eq!(s.execute("macro.get", json!({"name": "Tidy"})).unwrap()["description"], "first");
+    s.execute("macro.save", json!({"name": "TIDY", "description": "second", "replace": true})).unwrap();
+    assert_eq!(s.execute("macro.get", json!({"name": "Tidy"})).unwrap()["description"], "second");
+}

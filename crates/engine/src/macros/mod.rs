@@ -54,13 +54,50 @@ pub fn check(m: &Macro) -> Result<(), String> {
 }
 
 /// Refuses a macro too large to keep in an xlsx file ([`stash::MAX_ITEM_CHARS`] characters of
-/// JSON), so a macro's size never makes a save fail. (A clashing visible name doesn't either:
+/// JSON). Every command that adds or changes a macro calls [`check`], so the size of a macro kept
+/// in the workbook doesn't make a save fail. (A clashing visible name doesn't either:
 /// [`with_names`] stores the macro under another index.)
 fn check_size(m: &Macro) -> Result<(), String> {
     if macro_json(m).to_string().chars().count() > stash::MAX_ITEM_CHARS {
         return Err(format!("This macro is too large to keep in the workbook ({} characters at most).", stash::MAX_ITEM_CHARS));
     }
     Ok(())
+}
+
+/// How many macros the workbook holds: the readable ones and the ones kept in a newer format
+/// (`Workbook::macros_unread`), which a save writes back and the next open counts too.
+pub fn count(wb: &Workbook) -> usize {
+    wb.macros.len().saturating_add(wb.macros_unread.len())
+}
+
+/// Refuses one more macro in a workbook that holds [`gridcraft_model::MAX_MACROS`] already,
+/// counting the kept ones, so a save never holds more than the next open keeps.
+pub fn check_room(wb: &Workbook) -> Result<(), String> {
+    let max = gridcraft_model::MAX_MACROS;
+    if count(wb) < max {
+        return Ok(());
+    }
+    Err(match wb.macros_unread.len() {
+        0 => format!("A workbook can hold at most {max} macros."),
+        kept => format!(
+            "A workbook can hold at most {max} macros, and {kept} of the {} in this one {} made by a newer version of GridCraft and kept unchanged.",
+            count(wb),
+            if kept == 1 { "was" } else { "were" }
+        ),
+    })
+}
+
+/// The name of the macro kept in a newer format called `name` (compared as [`find`] compares),
+/// as the file held it. Its name is taken: a new or renamed macro with it would clash when the
+/// newer version reads the file.
+pub fn kept_name(wb: &Workbook, name: &str) -> Option<String> {
+    let name = name.trim();
+    wb.macros_unread
+        .iter()
+        .filter_map(|v| v.get("name").and_then(Json::as_str))
+        .map(str::trim)
+        .find(|k| k.eq_ignore_ascii_case(name))
+        .map(str::to_string)
 }
 
 /// Rewrites the short step form into the tagged one, in place, refusing nesting past the limit
@@ -284,13 +321,16 @@ fn macro_item(n: &DefinedName) -> Option<(String, Option<u64>)> {
     Some((key, i))
 }
 
-/// `name`, or `name (2)`, `name (3)`… if a macro already has it. A free name comes back as it is;
+/// `name`, or `name (2)`, `name (3)`… if a macro already has it, a kept one too. A free name comes back as it is;
 /// a renamed one is shortened to make room for the suffix, so it stays within
 /// [`gridcraft_model::MAX_MACRO_NAME`] characters. The result still goes through [`check`].
 pub fn unique_name(wb: &Workbook, name: &str) -> String {
     let mut taken = Taken::default();
     for m in &wb.macros {
         taken.insert(&m.name);
+    }
+    for kept in wb.macros_unread.iter().filter_map(|v| v.get("name").and_then(Json::as_str)) {
+        taken.insert(kept);
     }
     taken.unique(name)
 }
@@ -350,9 +390,9 @@ impl Taken {
     }
 }
 
-/// The first free `Macro1`, `Macro2`… name.
+/// The first free `Macro1`, `Macro2`… name, also free among the kept macros ([`kept_name`]).
 pub fn next_name(wb: &Workbook) -> String {
-    (1..).map(|n| format!("Macro{n}")).find(|n| find(wb, n).is_none()).unwrap_or_else(|| "Macro".into())
+    (1..).map(|n| format!("Macro{n}")).find(|n| find(wb, n).is_none() && kept_name(wb, n).is_none()).unwrap_or_else(|| "Macro".into())
 }
 
 /// Every command step of `steps` (inside Repeat and If too), with its path.

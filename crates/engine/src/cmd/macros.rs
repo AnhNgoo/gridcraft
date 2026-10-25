@@ -16,7 +16,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "Save Macro",
             [],
             None,
-            "{macro: {name, description?, shortcut?, inputs?: [{name, kind: cell|range, rows: [min, max], cols: [min, max], header, colTypes: [number|text|date|bool|any], nonEmpty, defaultRef?}], steps: [{type: command, id, params, enabled?, breakpoint?, note?} | {type: repeat, over, of: rows|columns, max, body} | {type: if, cell, op: eq|ne|gt|ge|lt|le|empty|notEmpty|contains, value, then, else} | {type: stop, message, rollback?}], output?: {anchor?, onConflict: ask|fail|overwrite|shiftDown|shiftRight}, permissions?: [command ids]} (or those fields at the top level), replace?: bool (default true)} → {name, steps}",
+            "{macro: {name, description?, shortcut?, inputs?: [{name, kind: cell|range, rows: [min, max], cols: [min, max], header, colTypes: [number|text|date|bool|any], nonEmpty, defaultRef?}], steps: [{type: command, id, params, enabled?, breakpoint?, note?} | {type: repeat, over, of: rows|columns, max, body} | {type: if, cell, op: eq|ne|gt|ge|lt|le|empty|notEmpty|contains, value, then, else} | {type: stop, message, rollback?}], output?: {anchor?, onConflict: ask|fail|overwrite|shiftDown|shiftRight}, permissions?: [command ids]} (or those fields at the top level), replace?: bool (default false: saving over a macro with the name is refused)} → {name, steps}",
             has_doc,
             save
         ),
@@ -102,24 +102,42 @@ fn get(s: &mut Session, p: &Json) -> Result<Json> {
 fn save(s: &mut Session, p: &Json) -> Result<Json> {
     let v = p.get("macro").filter(|m| m.is_object()).unwrap_or(p);
     let m = crate::macros::parse_macro(v).map_err(|e| bad("macro.save", e))?;
-    let replace = bool_param(p, "replace").unwrap_or(true);
+    // Replacing is asked for, never assumed: a save with a name in use is refused.
+    let replace = match p.get("replace") {
+        None | Some(Json::Null) => false,
+        Some(Json::Bool(b)) => *b,
+        Some(_) => return Err(bad("macro.save", "`replace` must be true or false")),
+    };
     let (name, steps) = (m.name.clone(), m.step_count());
     edit(s, |cx| {
+        if let Some(kept) = crate::macros::kept_name(&cx.wb, &m.name) {
+            return Err(EngineError::Other(taken_by_kept(&kept)));
+        }
         match crate::macros::find(&cx.wb, &m.name) {
-            Some(_) if !replace => return Err(EngineError::Other(format!("A macro called '{}' already exists.", m.name))),
+            Some(i) if !replace => {
+                let existing = cx.wb.macros.get(i).map_or(m.name.as_str(), |o| o.name.as_str());
+                return Err(EngineError::Other(format!("A macro called '{existing}' already exists. Pass `replace: true` to replace it.")));
+            }
             Some(i) => {
                 if let Some(old) = cx.wb.macros.get_mut(i) {
                     *old = m;
                 }
             }
-            None if cx.wb.macros.len() >= gridcraft_model::MAX_MACROS => {
-                return Err(EngineError::Other(format!("A workbook can hold at most {} macros.", gridcraft_model::MAX_MACROS)));
+            None => {
+                crate::macros::check_room(&cx.wb).map_err(EngineError::Other)?;
+                cx.wb.macros.push(m);
             }
-            None => cx.wb.macros.push(m),
         }
         Ok(())
     })?;
     Ok(json!({"name": name, "steps": steps}))
+}
+
+/// The refusal of a name that a macro kept in a newer format has.
+fn taken_by_kept(name: &str) -> String {
+    format!(
+        "A macro called '{name}' made by a newer version of GridCraft is kept in this workbook; this version can't change it. Choose another name."
+    )
 }
 
 fn delete(s: &mut Session, p: &Json) -> Result<Json> {
@@ -138,14 +156,19 @@ fn rename(s: &mut Session, p: &Json) -> Result<Json> {
     if to.chars().any(char::is_control) {
         return Err(bad("macro.rename", "a macro name can't hold line breaks or other control characters"));
     }
-    if crate::macros::find(&s.doc()?.wb, &to).is_some_and(|j| j != i) {
+    let wb = &s.doc()?.wb;
+    if crate::macros::find(wb, &to).is_some_and(|j| j != i) {
         return Err(EngineError::Other(format!("A macro called '{to}' already exists.")));
+    }
+    if let Some(kept) = crate::macros::kept_name(wb, &to) {
+        return Err(EngineError::Other(taken_by_kept(&kept)));
     }
     edit(s, |cx| {
         let Some(m) = cx.wb.macros.get_mut(i) else { return Ok(()) };
         let mut renamed = m.clone();
         renamed.name = to.clone();
-        renamed.check_limits().map_err(EngineError::Other)?;
+        // The whole check, size included: a longer name can take a macro past what a file holds.
+        crate::macros::check(&renamed).map_err(EngineError::Other)?;
         *m = renamed;
         Ok(())
     })?;

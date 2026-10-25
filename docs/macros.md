@@ -178,7 +178,9 @@ it ran: editing or deleting the script before the recording stops changes nothin
 ## Other commands and storage
 
 `macro.list`, `macro.get`, `macro.save {macro, replace?}`, `macro.delete` and `macro.rename
-{name, to}`. Saving, renaming and deleting are undoable.
+{name, to}`. Saving under a name a macro has is refused unless `replace: true` is passed, and
+renaming to one is refused; names compare ignoring the case of the letters A to Z. A renamed macro is checked
+against every limit again, its size included. Saving, renaming and deleting are undoable.
 
 Macros are saved in the workbook: as a field in GridCraft's JSON format, and in xlsx as hidden
 defined names (`_gc_macro_<n>_<k>`, the macro's JSON split into string literals within Excel's
@@ -190,7 +192,11 @@ Each macro carries its format version, `v` (1 in this version; a missing `v` rea
 file is opened, a macro in a newer format (a `v` above 1) is kept unread, with a warning: this
 version can't show or run it, and saving writes it back unchanged, so the newer
 version gets it back whole. It is never read in part. Kept macros count toward the 1,000-macro
-limit after the readable ones, and one too large for an xlsx file is left out. A macro that is
+limit after the readable ones, and one too large for an xlsx file is left out. They count when a
+macro is added too (saving, or stopping a recording, is refused once readable and kept macros
+together reach 1,000, and the message says how many are kept), so a save holds no more macros
+than the next open keeps. Their names are taken: saving or renaming a macro to one is refused, and
+a recording gets a suffix. A macro that is
 damaged or over the limits is left out with one warning, and the rest of the workbook and its
 other macros open; a macro that was left out is not in the saved file.
 
