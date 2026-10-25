@@ -40,16 +40,28 @@ no macro debugger, recorder or management commands in this version, and no macro
   `{"command": "cell.set", "params": {…}}` is accepted for a command step.
 - **Inputs**: `kind` (`cell` or `range`), `rows` and `cols` as `[min, max]` (0 for no maximum;
   rows exclude the header), `header`, `colTypes` (`number`, `text`, `date`, `bool`, `any`),
-  `nonEmpty` and `defaultRef`. An input's name is letters, digits and `_`, starting with a letter,
-  and is neither a token of its own (`Output`, `Row`, `Column`, `Name`) nor something that reads
-  as a cell reference (`Q1`), so a step written with plain A1 text keeps meaning the cell. A run
-  binds each input to the range it is given, its default, or (for the first input) the
-  selection, and refuses with messages that name the cells: "Input column 2 (Amount) must hold
-  numbers; C4 holds text."
-- **Limits**: 1,000 macros a workbook, 10,000 steps a macro, Repeat and If nested 4 deep,
-  100,000 steps executed per run and 60 seconds a run, both shared by the footprint dry runs and
-  the run itself (`timeLimit` to change the time; the web build has no clock, so there only the
-  step limit applies).
+  `nonEmpty` and `defaultRef`. These declare what a range must look like for the macro to work
+  on it. An input's name is letters, digits and `_`, starting with a letter, and is neither a
+  token of its own (`Output`, `Row`, `Column`, `Name`) nor something that reads as a cell
+  reference (`Q1`), so a step written with plain A1 text keeps meaning the cell. The declaration
+  is checked as a whole: neither `rows` nor `cols` may have a least above its most, a `cell` input
+  has one row and one column (`[1, 1]`, or the default `[1, 0]`), no header and at most one column
+  type, and no input lists more column types than it allows columns. A run binds each input
+  to the range it is given, its default, or (for the first input) the selection, and refuses
+  with messages that name the cells: "Input column 2 (Amount) must hold numbers; C4 holds text."
+- **Limits**: 1,000 macros a workbook, 10,000 steps a macro, Repeat and If nested 4 deep, and 64
+  inputs a macro. Names (of macros and inputs) and command ids are at most 255 characters;
+  descriptions, step notes, Stop messages and If values (as JSON) 4,096; references and tokens
+  (`output.anchor`, `defaultRef`, a Repeat's `over`, an If's `cell`) 1,024; a shortcut 64. A
+  macro lists at most 256 permissions, each a command id, and an input at most 16,384 column
+  types. One-line fields hold no line breaks or other control characters, and a command id is
+  letters, digits, `.` and `_`. A command step's `params` are bounded only by the size of the
+  whole macro (4,194,304 characters of JSON). A macro read from a file that breaks any of these is
+  left out with a warning; it is never changed to fit. When a macro runs, a Repeat whose range has
+  more rows or columns than its `max` is refused, and a run executes at most 100,000 steps (each
+  pass through a Repeat counts) and takes at most 60 seconds, both shared by the footprint dry
+  runs and the run itself (`timeLimit` to change the time; the web build has no clock, so there
+  only the step limit applies).
 
 ## Tokens
 
@@ -118,13 +130,17 @@ approval needed and the footprint, without changing anything.
 
 Macros are saved in the workbook: as a field in GridCraft's JSON format, and in xlsx as hidden
 defined names (`_gc_macro_<n>_<k>`, the macro's JSON split into string literals within Excel's
-limits), which other spreadsheet applications keep but do not run.
+limits), which other spreadsheet applications keep but do not run. A visible name of that shape
+is someone's own name: opening a file leaves it alone, and saving stores the macros under indices
+it does not use.
 
 Each macro carries its format version, `v` (1 in this version; a missing `v` reads as 1). When a
-file is opened, a macro that is damaged, over the limits or in a newer format (a `v` above 1) is
-left out with one warning, and the rest of the workbook and its other macros open. A newer
-macro is never read in part, so a save can't write it back with its newer fields missing; a
-macro that was left out is not in the saved file.
+file is opened, a macro in a newer format (a `v` above 1) is kept unread, with a warning: this
+version can't show or run it, and saving writes it back unchanged, so the newer
+version gets it back whole. It is never read in part. Kept macros count toward the 1,000-macro
+limit after the readable ones, and one too large for an xlsx file is left out. A macro that is
+damaged or over the limits is left out with one warning, and the rest of the workbook and its
+other macros open; a macro that was left out is not in the saved file.
 
 ## Automate scripts and VBA
 
