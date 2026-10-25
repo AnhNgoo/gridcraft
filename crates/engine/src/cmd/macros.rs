@@ -1,6 +1,7 @@
 //! Macros: typed command lists that run as one undo step. See [`crate::macros`] for the model,
 //! tokens, runner, debugger, recorder and policy. Automate scripts (`automate.*`) are a separate,
-//! older feature with their own storage; these commands neither read nor change them.
+//! older feature with their own storage; these commands neither read nor change it. A recording
+//! keeps the steps a script run ran while it recorded, as the run reported them.
 
 use serde_json::{Value as Json, json};
 
@@ -177,7 +178,20 @@ fn rename(s: &mut Session, p: &Json) -> Result<Json> {
 
 fn run(s: &mut Session, p: &Json) -> Result<Json> {
     let name = name_param("macro.run", p)?;
-    crate::macros::run::run(s, name, p)
+    // While recording: the steps a recording keeps for this run, taken from the macro as it runs,
+    // so saving or deleting the macro before the recording stops doesn't change what it saved.
+    let inline = if s.is_recording() {
+        let wb = &s.doc()?.wb;
+        crate::macros::find(wb, name).and_then(|i| wb.macros.get(i)).and_then(crate::macros::recorder::inline_steps)
+    } else {
+        None
+    };
+    let out = crate::macros::run::run(s, name, p)?;
+    if s.is_recording() {
+        // `None` when the macro's steps don't stand on their own: the recording leaves the run out.
+        s.script_ran = inline;
+    }
+    Ok(out)
 }
 
 fn check(s: &mut Session, p: &Json) -> Result<Json> {
@@ -186,8 +200,9 @@ fn check(s: &mut Session, p: &Json) -> Result<Json> {
 }
 
 fn record(s: &mut Session, p: &Json) -> Result<Json> {
+    check_record_params(s.is_recording(), p)?;
     // `cancel` ends a recording without saving it: the way out of a recording whose macro
-    // cannot be saved (too large for the workbook, for one).
+    // cannot be saved (a name the check refuses, a full workbook).
     if bool_param(p, "cancel").unwrap_or(false) {
         let was = s.stop_recording().is_some();
         s.macro_recording = None;
@@ -199,15 +214,47 @@ fn record(s: &mut Session, p: &Json) -> Result<Json> {
     start_recording(s, bool_param(p, "relative").unwrap_or(true))
 }
 
+/// Refuses parameters `macro.record` would ignore (`null` counts as not given): `name` and
+/// `description` when starting (they name the macro when it stops), `relative` when stopping (it
+/// is chosen when recording starts), `stop: false` while recording (the call stops it), anything
+/// beside `cancel: true`, and parameters of the wrong kind.
+fn check_record_params(recording: bool, p: &Json) -> Result<()> {
+    let given = |k: &str| p.get(k).filter(|v| !v.is_null());
+    for k in ["stop", "cancel", "relative"] {
+        if given(k).is_some_and(|v| !v.is_boolean()) {
+            return Err(bad("macro.record", format!("`{k}` must be true or false")));
+        }
+    }
+    for k in ["name", "description"] {
+        if given(k).is_some_and(|v| !v.is_string()) {
+            return Err(bad("macro.record", format!("`{k}` must be text")));
+        }
+    }
+    if given("cancel").and_then(Json::as_bool) == Some(true) {
+        if let Some(k) = ["stop", "relative", "name", "description"].into_iter().find(|k| given(k).is_some()) {
+            return Err(bad("macro.record", format!("`cancel: true` ends the recording without saving it, so `{k}` would be ignored")));
+        }
+        return Ok(());
+    }
+    let stop = given("stop").and_then(Json::as_bool);
+    if recording && stop == Some(false) {
+        return Err(bad(
+            "macro.record",
+            "a recording is in progress, and this call stops it: pass `stop: true`, or `cancel: true` to end it unsaved",
+        ));
+    }
+    if recording || stop == Some(true) {
+        if given("relative").is_some() {
+            return Err(bad("macro.record", "`relative` is chosen when recording starts"));
+        }
+    } else if let Some(k) = ["name", "description"].into_iter().find(|k| given(k).is_some()) {
+        return Err(bad("macro.record", format!("`{k}` names the macro when recording stops, not when it starts")));
+    }
+    Ok(())
+}
+
 fn start_recording(s: &mut Session, relative: bool) -> Result<Json> {
-    let d = s.doc()?;
-    let start = RecordingStart {
-        doc: d.uid,
-        sheet: d.wb.active_sheet,
-        sheet_name: d.wb.active().map(|sh| sh.name.clone()).unwrap_or_default(),
-        selection: d.selection.clone(),
-        relative,
-    };
+    let start = RecordingStart::new(s.doc()?, relative);
     let input = start.selection.current().a1();
     s.start_recording();
     s.macro_recording = Some(start);
@@ -244,27 +291,24 @@ fn save_recording(s: &mut Session, p: &Json, rec: &crate::record::Recorder, star
     if s.macro_debug.as_ref().is_some_and(|m| m.locks(d.uid)) {
         return Err(EngineError::Disabled("macro.record".into(), crate::macros::debug::BUSY.into()));
     }
-    let start = start.unwrap_or_else(|| RecordingStart {
-        doc: d.uid,
-        sheet: d.wb.active_sheet,
-        sheet_name: d.wb.active().map(|sh| sh.name.clone()).unwrap_or_default(),
-        selection: d.selection.clone(),
-        relative: true,
-    });
-    let wb = d.wb.clone();
+    // A recording started without `macro.record` (`Session::start_recording`) takes its example
+    // input from the workbook as it is now.
+    let start = start.unwrap_or_else(|| RecordingStart::new(d, true));
+    let (doc, wb) = (d.uid, d.wb.clone());
     // A name another macro has gets a suffix, so stopping never replaces a macro.
     let name = match str_param(p, "name").map(str::trim).filter(|n| !n.is_empty()) {
         Some(n) => crate::macros::unique_name(&wb, n),
         None => crate::macros::next_name(&wb),
     };
-    let mut converted = crate::macros::recorder::convert(&name, &start, &rec.steps, &rec.ran, &wb);
-    // Steps past the macro limit, and ones recorded in another workbook, are left out and counted
-    // with the ones the recorder dropped.
-    let cut = converted.cut.saturating_add(converted.mac.steps.len().saturating_sub(gridcraft_model::MAX_MACRO_STEPS));
+    let mut converted = crate::macros::recorder::convert(&name, &start, &rec.steps, &rec.ran);
+    // Steps past the macro limit or its size, and ones recorded in another workbook, are left
+    // out and counted with the ones the recorder dropped.
+    let mut cut = converted.cut.saturating_add(converted.mac.steps.len().saturating_sub(gridcraft_model::MAX_MACRO_STEPS));
     converted.mac.steps.truncate(gridcraft_model::MAX_MACRO_STEPS);
     if let Some(desc) = str_param(p, "description") {
         converted.mac.description = desc.chars().take(gridcraft_model::MAX_MACRO_TEXT).collect();
     }
+    cut = cut.saturating_add(crate::macros::fit_size(&mut converted.mac));
     let steps = converted.mac.steps.len();
     let inputs: Vec<String> = converted.mac.inputs.iter().map(|i| i.name.clone()).collect();
     // Saved into that workbook even when another one is active now.
@@ -273,6 +317,14 @@ fn save_recording(s: &mut Session, p: &Json, rec: &crate::record::Recorder, star
     let saved = s.execute("macro.save", json!({"macro": crate::macros::macro_json(&converted.mac), "replace": false}));
     s.set_active(active);
     saved?;
+    // The person recorded it, so it runs without the approval a macro that came with a file
+    // needs, until it changes.
+    if let Some(d) = s.docs.iter().find(|d| d.uid == doc)
+        && let Some(m) = crate::macros::find(&d.wb, &name).and_then(|i| d.wb.macros.get(i))
+    {
+        let key = (doc, crate::macros::fingerprint(m));
+        s.macro_approvals.insert(key);
+    }
     Ok(
         json!({"recording": false, "saved": name, "steps": steps, "dropped": rec.dropped.saturating_add(cut), "skipped": converted.skipped, "inputs": inputs}),
     )

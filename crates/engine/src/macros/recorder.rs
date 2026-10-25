@@ -6,13 +6,18 @@
 //! - commands a macro may not run (saving, opening files…) and other macros' commands are left
 //!   out; a macro run while recording is replaced by its steps when it has no inputs, no output
 //!   and only plain commands (otherwise it is left out), and an Automate script run while
-//!   recording by the script's steps, leaving out the steps a macro may not run;
+//!   recording by the steps it ran, leaving out the steps a macro may not run; both are the steps
+//!   as they ran, kept with the recording ([`crate::record::Recorder::ran`]), and a run without
+//!   them is left out;
 //! - a `sheet.activate` or `selection.set` step is added where the sheet or selection changed
 //!   between commands without one, and runs of `selection.set` collapse to the last;
 //! - with relative references (the default), the selection when recording started is the example
 //!   input: references on its sheet in, next to or near it become tokens (`Input.col(2)`,
 //!   `Input.below`, `Input.cell(1,4)`), also inside formulas (`{{Input.col(2)}}`), and the input's
-//!   shape, header and column types are inferred from it.
+//!   shape, header and column types are inferred from it as it was when recording started;
+//! - recorded text that playback would read as a token stays text: a reference parameter that
+//!   reads as one (a defined name called `Output`) becomes `{"$text": …}`, and `{{` in a string
+//!   becomes `{{{{`.
 
 use gridcraft_core::{CellRef, RangeRef, Value};
 use gridcraft_model::{ColType, InputKind, MAX_MACRO_STEPS, Macro, NamedInput, Step, StepKind, Workbook};
@@ -35,6 +40,55 @@ pub struct RecordingStart {
     pub sheet_name: String,
     pub selection: Selection,
     pub relative: bool,
+    /// With relative references, the example input (the selection) as it was when recording
+    /// started: the recorded steps may change its values (text made into numbers), and the
+    /// macro is for data like the data it was recorded on.
+    pub input: Option<NamedInput>,
+}
+
+impl RecordingStart {
+    /// Recording starting now in `d`.
+    pub fn new(d: &crate::DocState, relative: bool) -> RecordingStart {
+        let sheet = d.wb.active_sheet;
+        RecordingStart {
+            doc: d.uid,
+            sheet,
+            sheet_name: d.wb.active().map(|sh| sh.name.clone()).unwrap_or_default(),
+            selection: d.selection.clone(),
+            relative,
+            input: relative.then(|| infer_input(&d.wb, sheet, d.selection.current())),
+        }
+    }
+}
+
+/// The steps a recording keeps for a run of `m`: its enabled command steps as written, when they
+/// stand on their own (no inputs, no output and only plain commands; a Repeat, If or Stop means
+/// nothing outside its macro). `None` when they don't, and the recording leaves the run out.
+pub fn inline_steps(m: &Macro) -> Option<Vec<(String, Json)>> {
+    if !m.inputs.is_empty() || m.output.anchor.is_some() || !m.steps.iter().all(|x| matches!(x.kind, StepKind::Command { .. })) {
+        return None;
+    }
+    Some(
+        m.steps
+            .iter()
+            .filter(|x| x.enabled)
+            .filter_map(|x| match &x.kind {
+                StepKind::Command { id, params } => Some((id.clone(), params.clone())),
+                _ => None,
+            })
+            .collect(),
+    )
+}
+
+/// Where a gathered command came from, which says how its parameters are written.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Origin {
+    /// Run while recording: plain parameters, which may become relative.
+    Recorded,
+    /// A step of a recorded script run: plain parameters, kept as they are.
+    Script,
+    /// A step of a recorded macro run: macro parameters (tokens and all), kept as written.
+    Macro,
 }
 
 /// A recording turned into a macro, with what was left out.
@@ -48,18 +102,18 @@ pub struct Converted {
 }
 
 /// Builds a macro called `name` from the recorded steps.
-/// `ran` is what a script step ran, by step index ([`crate::record::Recorder::ran`]); a script step
-/// without an entry is read from `wb`.
-pub fn convert(name: &str, start: &RecordingStart, steps: &[RecordedStep], ran: &BTreeMap<usize, Vec<(String, Json)>>, wb: &Workbook) -> Converted {
+/// `ran` is what a macro or script run ran, by step index ([`crate::record::Recorder::ran`]); a
+/// run without an entry is left out and listed in `skipped`.
+pub fn convert(name: &str, start: &RecordingStart, steps: &[RecordedStep], ran: &BTreeMap<usize, Vec<(String, Json)>>) -> Converted {
     let mut skipped = Vec::new();
-    // Commands as they'll be played back: (id, params, sheet before, selection before, whether
-    // they came from another macro and stay as written). At most the macro's step limit are
-    // gathered: a recording of a thousand runs of a long macro would otherwise expand to
-    // millions of steps before the limit cut them back.
-    let mut cmds: Vec<(String, Json, usize, String, Selection, bool)> = Vec::new();
+    // Commands as they'll be played back: (id, params, sheet before, selection before, where
+    // they came from). At most the macro's step limit are gathered: a recording of a thousand
+    // runs of a long macro would otherwise expand to millions of steps before the limit cut them
+    // back.
+    let mut cmds: Vec<(String, Json, usize, String, Selection, Origin)> = Vec::new();
     let mut cut = steps.iter().filter(|st| st.doc != start.doc).count();
     let refused = |id: &str, params: &Json| matches!(macro_policy(id, params, crate::Trust::Local), Policy::Deny(_) | Policy::NeedsPermission(_));
-    let mut push = |cmds: &mut Vec<(String, Json, usize, String, Selection, bool)>, cmd: (String, Json, usize, String, Selection, bool)| {
+    let mut push = |cmds: &mut Vec<(String, Json, usize, String, Selection, Origin)>, cmd: (String, Json, usize, String, Selection, Origin)| {
         if cmds.len() < MAX_MACRO_STEPS {
             cmds.push(cmd);
         } else {
@@ -68,37 +122,23 @@ pub fn convert(name: &str, start: &RecordingStart, steps: &[RecordedStep], ran: 
     };
     for (index, st) in steps.iter().enumerate().filter(|(_, st)| st.doc == start.doc) {
         let id = st.id.as_str();
-        if id == "macro.run" {
-            // Another macro's steps, when they stand on their own: no inputs, no output and only
-            // plain commands (a Repeat, If or Stop means nothing outside its macro).
-            let inner = st.params.get("name").and_then(Json::as_str).and_then(|n| super::find(wb, n)).and_then(|i| wb.macros.get(i));
-            match inner {
-                Some(m) if m.inputs.is_empty() && m.output.anchor.is_none() && m.steps.iter().all(|x| matches!(x.kind, StepKind::Command { .. })) => {
-                    for x in m.steps.iter().filter(|x| x.enabled) {
-                        let StepKind::Command { id: cid, params } = &x.kind else { continue };
+        // Another macro's steps (when they stand on their own, [`inline_steps`]) or an Automate
+        // script's, as they ran: what the run kept with the recording. Without them the run is
+        // left out; the macro or script as it stands now may not be what ran.
+        let origin = match id {
+            "macro.run" => Some(Origin::Macro),
+            "automate.runScript" => Some(Origin::Script),
+            _ => None,
+        };
+        if let Some(origin) = origin {
+            match ran.get(&index) {
+                Some(steps) => {
+                    for (cid, params) in steps {
                         if refused(cid, params) {
                             skipped.push(cid.clone());
                             continue;
                         }
-                        push(&mut cmds, (cid.clone(), params.clone(), st.sheet, st.sheet_name.clone(), st.selection.clone(), true));
-                    }
-                }
-                _ => skipped.push(id.to_string()),
-            }
-            continue;
-        }
-        if id == "automate.runScript" {
-            // An Automate script's steps as they ran, or as the script stands now when the recorder
-            // could not keep them.
-            let now = || st.params.get("name").and_then(Json::as_str).and_then(|n| crate::cmd::extra::script_steps(wb, n));
-            match ran.get(&index).cloned().or_else(now) {
-                Some(steps) => {
-                    for (cid, params) in steps {
-                        if refused(&cid, &params) {
-                            skipped.push(cid);
-                            continue;
-                        }
-                        push(&mut cmds, (cid, params, st.sheet, st.sheet_name.clone(), st.selection.clone(), true));
+                        push(&mut cmds, (cid.clone(), params.clone(), st.sheet, st.sheet_name.clone(), st.selection.clone(), origin));
                     }
                 }
                 None => skipped.push(id.to_string()),
@@ -109,37 +149,37 @@ pub fn convert(name: &str, start: &RecordingStart, steps: &[RecordedStep], ran: 
             skipped.push(id.to_string());
             continue;
         }
-        push(&mut cmds, (id.to_string(), st.params.clone(), st.sheet, st.sheet_name.clone(), st.selection.clone(), false));
+        push(&mut cmds, (id.to_string(), st.params.clone(), st.sheet, st.sheet_name.clone(), st.selection.clone(), Origin::Recorded));
     }
 
     // Sheet and selection changes made without a command: where a command ran on another sheet,
     // or with another selection, than the one before it, say so (a command that moved the
     // selection itself does it again when played back, so the extra step is harmless).
     // Each step keeps the name of the sheet it runs on.
-    let mut out: Vec<(String, Json, String, bool)> = Vec::new();
+    let mut out: Vec<(String, Json, String, Origin)> = Vec::new();
     let (mut sheet, mut sel) = (start.sheet, start.selection.clone());
-    for (id, params, at_sheet, sheet_name, at_sel, kept) in cmds {
+    for (id, params, at_sheet, sheet_name, at_sel, origin) in cmds {
         if at_sheet != sheet {
-            out.push(("sheet.activate".into(), json!({"sheet": sheet_name}), sheet_name.clone(), false));
+            out.push(("sheet.activate".into(), json!({"sheet": sheet_name}), sheet_name.clone(), Origin::Recorded));
         }
         // A recorded selection.set just before already put the selection there.
         let selected = matches!(out.last(), Some((last, ..)) if last == "selection.set");
         if (at_sel != sel || at_sheet != sheet) && !selected {
-            out.push(("selection.set".into(), selection_params(&at_sel), sheet_name.clone(), false));
+            out.push(("selection.set".into(), selection_params(&at_sel), sheet_name.clone(), Origin::Recorded));
         }
         (sheet, sel) = (at_sheet, at_sel);
-        out.push((id, params, sheet_name, kept));
+        out.push((id, params, sheet_name, origin));
     }
     // Runs of selection.set (or sheet.activate): the last one wins.
-    let mut collapsed: Vec<(String, Json, String, bool)> = Vec::new();
-    for (id, params, on, kept) in out {
+    let mut collapsed: Vec<(String, Json, String, Origin)> = Vec::new();
+    for (id, params, on, origin) in out {
         if matches!(id.as_str(), "selection.set" | "sheet.activate")
             && let Some((last, ..)) = collapsed.last()
             && *last == id
         {
             collapsed.pop();
         }
-        collapsed.push((id, params, on, kept));
+        collapsed.push((id, params, on, origin));
     }
 
     // Relative references. Only references on the input's sheet become tokens: on another sheet
@@ -148,7 +188,7 @@ pub fn convert(name: &str, start: &RecordingStart, steps: &[RecordedStep], ran: 
     let mut used_input = false;
     let steps: Vec<Step> = collapsed
         .into_iter()
-        .map(|(id, params, on, kept)| {
+        .map(|(id, params, on, origin)| {
             // A step that names another sheet with its `sheet` parameter runs there, whatever
             // sheet was active: its unqualified references are that sheet's cells.
             let names_other_sheet = params.get("sheet").is_some_and(|v| match v {
@@ -157,13 +197,19 @@ pub fn convert(name: &str, start: &RecordingStart, steps: &[RecordedStep], ran: 
                 _ => false,
             });
             let here = on.eq_ignore_ascii_case(&start.sheet_name) && !names_other_sheet;
-            let params = if start.relative && !kept { relative(&params, example, &start.sheet_name, here, &mut used_input, None) } else { params };
+            // Plain text first, so the tokens added next are the only ones.
+            let params = if origin == Origin::Macro { params } else { literal(&params, None) };
+            let params = if start.relative && origin == Origin::Recorded {
+                relative(&params, example, &start.sheet_name, here, &mut used_input, None)
+            } else {
+                params
+            };
             Step::command(id, params)
         })
         .collect();
     let mut mac = Macro { name: name.to_string(), steps, ..Macro::default() };
     if start.relative && used_input {
-        mac.inputs = vec![infer_input(wb, start.sheet, example)];
+        mac.inputs = vec![start.input.clone().unwrap_or_default()];
     }
     Converted { mac, skipped, cut }
 }
@@ -173,10 +219,27 @@ fn selection_params(sel: &Selection) -> Json {
     json!({"range": ranges.join(","), "active": sel.active.a1()})
 }
 
+/// Plain recorded `params` written so playback reads them as they are: a string in a reference
+/// parameter that playback would read as a token, or that holds `{{`, becomes `{"$text": …}`,
+/// and `{{` in any other string becomes `{{{{`.
+fn literal(v: &Json, key: Option<&str>) -> Json {
+    match v {
+        Json::Object(o) => Json::Object(o.iter().map(|(k, x)| (k.clone(), literal(x, Some(k)))).collect()),
+        Json::Array(a) => Json::Array(a.iter().map(|x| literal(x, key)).collect()),
+        Json::String(t) if key.is_some_and(super::resolve::is_ref_key) && (t.contains("{{") || super::resolve::reads_as_token(t, &["Input"])) => {
+            json!({"$text": t})
+        }
+        Json::String(t) if t.contains("{{") => json!(t.replace("{{", "{{{{")),
+        other => other.clone(),
+    }
+}
+
 /// `params` with references near `example` (on `sheet`) made into tokens; `here` says whether the
 /// step runs on that sheet, so its unqualified references are on it.
 fn relative(v: &Json, example: RangeRef, sheet: &str, here: bool, used: &mut bool, key: Option<&str>) -> Json {
     match v {
+        // Text kept as text ([`literal`]).
+        Json::Object(o) if o.len() == 1 && o.contains_key("$text") => v.clone(),
         Json::Object(o) => {
             // A selection of several areas stays as it is, its active cell with it: a token for
             // the active cell alone would put it outside the areas on playback.
@@ -299,7 +362,9 @@ fn formula_tokens(f: &str, r: RangeRef) -> (String, bool) {
         if ch == '"' {
             in_text = !in_text;
         }
-        let prev_ok = i == 0 || !bytes.get(i - 1).is_some_and(|b| b.is_ascii_alphanumeric() || matches!(b, b'$' | b'!' | b'_' | b'.' | b':'));
+        // A reference right after `{` stays as it is: `{{` before the token would read as the
+        // escape of a literal `{{`.
+        let prev_ok = i == 0 || !bytes.get(i - 1).is_some_and(|b| b.is_ascii_alphanumeric() || matches!(b, b'$' | b'!' | b'_' | b'.' | b':' | b'{'));
         if !in_text && prev_ok && ch.is_ascii_alphabetic() {
             // The longest run of reference characters here: letters, digits and one `:`.
             let n = rest.bytes().take_while(|b| b.is_ascii_alphanumeric() || *b == b':').count();
@@ -349,7 +414,7 @@ fn formula_token(t: RangeRef, r: RangeRef) -> Option<String> {
 
 /// The example input's shape: a header when the first row is all text over other kinds of
 /// values, and each column's type when all its values agree.
-fn infer_input(wb: &Workbook, sheet: usize, r: RangeRef) -> NamedInput {
+pub fn infer_input(wb: &Workbook, sheet: usize, r: RangeRef) -> NamedInput {
     let mut input = NamedInput::default();
     if r.is_single() {
         input.kind = InputKind::Cell;

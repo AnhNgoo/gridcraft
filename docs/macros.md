@@ -1,6 +1,6 @@
 # Macros
 
-> **Last updated:** 2026-10-25 · **Change:** minor (recording macros and the management commands)
+> **Last updated:** 2026-10-25 · **Change:** minor (recording: kept steps, the input as it was, text that stays text, size limit, parameters refused; saving needs `replace: true` to replace; kept macros count and keep their names; earlier: recording macros and the management commands)
 
 GridCraft macros are typed, declarative lists of commands, not VBA. Every step runs a GridCraft
 command (the same ids the ribbon, CLI and MCP use) or one of three bounded control steps. A macro
@@ -86,7 +86,9 @@ exists is used and methods follow it.
 
 Write a token as the whole value of a reference parameter (`cell`, `range`, `target`, keys ending
 in `Cell` or `Range`…), as `{"$ref": "Input.col(2)"}` anywhere, or as `{{Input.col(2)}}` inside
-any string, such as a formula; `{{{{` in a string is a literal `{{`. Under the general keys that
+any string, such as a formula; `{{{{` in a string is a literal `{{`, and `{"$text": "Output"}`
+anywhere is the text as it is, never read as a token or for `{{…}}` (a defined name called
+`Output`, or `Dear {{name}}`). Under the general keys that
 other commands use for plain words (`to`, `from`, `at`, `area`, `source`, `target`,
 `destination`, `location`), a bare `Row` or `Column` stays text (a replacement word, a pivot
 area); write `Row.col(2)`, `{{Row}}` or `{"$ref": "Row"}` there. Plain A1 references stay
@@ -157,23 +159,42 @@ of the step that just ran, and the cells changed so far.
 
 ## Recording
 
-`macro.record` toggles recording (`relative: false` for absolute references; `name` and
-`description` when stopping; a name that another macro has gets a suffix, such as `Tidy (2)`, so
-stopping never replaces a macro; `cancel: true` ends a recording without saving it, the way out of
-one whose macro is too large for the workbook). The macro is saved in the workbook where recording started, even if
-another one is active; if that workbook was closed, stopping ends the recording without saving it.
-When saving the recording fails (a name the check refuses, a workbook at its macro limit, a
-macro being debugged in that workbook), recording goes on, so stopping again keeps what was
-recorded. A recording keeps up to 100,000 commands and a macro up to 10,000 steps; steps past
-either limit are left out and counted in `dropped`. With relative references the selection when
-recording starts is the example input: references in and near it on its sheet become tokens (on
-another sheet `C4` stays that sheet's `C4`), and the input's shape, header and column types are
-inferred. Toggles such as Bold are recorded with the state they set (`"on": true`), so playing
-them back sets them rather than flipping them. Commands a macro may not run are left out and
-listed in the result, also from the steps of a macro or script run while recording; a macro run
-while recording is replaced by its steps when it has no inputs, no output and only plain commands
-(otherwise it is left out and listed), and an Automate script run by the steps it ran, kept when
-it ran: editing or deleting the script before the recording stops changes nothing.
+`macro.record` toggles recording. Starting takes `relative` (default true; `false` for absolute
+references); stopping takes `name` and `description`. A name that another macro has, a kept one
+included, gets a suffix, such as `Tidy (2)`, so stopping never replaces a macro. `cancel: true`
+ends a recording without saving it, the way out of one whose macro can't be saved. A parameter
+the call would ignore is refused: `name` or `description` when starting, `relative` when
+stopping, `stop: false` while recording, `stop`, `relative`, `name` or `description` beside
+`cancel: true`, and one of the wrong kind. The macro is saved in the workbook where recording started, even if another one is active;
+if that workbook was closed, stopping ends the recording without saving it. When saving the
+recording fails (a name the check refuses, a workbook at its macro limit, a macro being debugged
+in that workbook), recording goes on, so stopping again keeps what was recorded. The person
+recorded the macro, so in a workbook opened from a file it runs without the approval a macro that
+came with the file needs, until it changes.
+
+A recording keeps up to 100,000 commands and 64 MB of them as JSON, and a macro holds up to
+10,000 steps and 4,194,304 characters of JSON. The steps past any of these limits, and steps
+recorded in another workbook, are left out and counted in `dropped`.
+
+With relative references the selection when recording starts is the example input: references in
+and near it on its sheet become tokens (on another sheet `C4` stays that sheet's `C4`), and the
+input's shape, header and column types are inferred from it as it was when recording started,
+before the recorded steps changed it. Recorded text that playback would read as a token stays
+text: a reference parameter that reads as one (a defined name called `Output`) is written
+`{"$text": "Output"}`, and `{{` in a string is written `{{{{`. Toggles such as Bold are recorded
+with the state they set (`"on": true`), also inside a script run, so playing them back sets them
+rather than flipping them.
+
+Commands a macro may not run are left out and listed in `skipped`, also from the steps of a macro
+or script run while recording. A macro run while recording is replaced by its steps when it has
+no inputs, no output and only plain commands (otherwise it is left out and listed), and an
+Automate script run by the steps it ran, without a step that only opened a dialog (a menu-style
+call without its parameters). Both are kept as they ran, so editing or deleting the macro or
+script before the recording stops changes nothing; a run whose steps did not fit in the
+recording's 64 MB is left out and listed.
+
+Undo while recording works as in Excel: `edit.undo` is left out (a macro never runs it), and the
+step it undid stays in the recording, so playing the recording back makes that edit again.
 
 ## Other commands and storage
 
@@ -204,8 +225,9 @@ other macros open; a macro that was left out is not in the saved file.
 
 Automate scripts (`automate.recordActions`, `newScript`, `allScripts`, `runScript`,
 `deleteScript`) are an older, separate feature. They keep their commands, parameters, storage
-(`_sc_scripts`) and results, and View › Macros (`view.macros`) still lists them. Macros neither
-read nor change them; a workbook can hold a script and a macro with the same name.
+(`_sc_scripts`) and results, and View › Macros (`view.macros`) still lists them. Macro commands
+neither read nor change their storage; a recording keeps the steps a script run ran while it
+recorded. A workbook can hold a script and a macro with the same name.
 
 A VBA project in an `.xlsm` or `.xltm` file is preserved on save and never run. GridCraft macros
 are stored apart from it.

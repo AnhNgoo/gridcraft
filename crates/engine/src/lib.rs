@@ -459,8 +459,9 @@ pub struct Session {
     pub recorder: Option<record::Recorder>,
     /// How many `execute` calls are running (0 between top-level commands).
     depth: u32,
-    /// The steps the last successful `automate.runScript` ran while a recorder was on, for the
-    /// recorder to keep with that step (see [`record::Recorder::ran`]); taken by the recording hook.
+    /// The steps the last successful `automate.runScript` or `macro.run` ran while a recorder was
+    /// on, for the recorder to keep with that step (see [`record::Recorder::ran`]); taken by the
+    /// recording hook.
     pub(crate) script_ran: Option<Vec<(String, Json)>>,
     /// Macros the person allowed to run in this session: (document uid, the macro's content as
     /// canonical JSON, from [`macros::fingerprint`]).
@@ -720,19 +721,16 @@ impl Session {
             {
                 // A toggle (Bold) is recorded with the state it set, as Excel records
                 // `Bold = True`: playing it back sets that state rather than flipping it again.
-                let mut params = cmd::journal_params(&params);
-                if let (Ok(Json::Object(r)), Json::Object(p)) = (&result, &mut params)
-                    && !p.contains_key("on")
-                    && let Some(on @ Json::Bool(_)) = r.get("on")
-                {
-                    p.insert("on".into(), on.clone());
-                }
+                let params = match &result {
+                    Ok(r) if params.is_object() => record::with_toggle_state(cmd::journal_params(&params), r),
+                    _ => cmd::journal_params(&params),
+                };
                 let kept = rec.push(record::RecordedStep { doc, sheet, sheet_name, selection, id: id.to_string(), params });
-                // A script run is kept with the steps it ran, so editing or deleting the script
-                // before the recording stops does not change what was recorded.
+                // A script or macro run is kept with the steps it ran, so editing or deleting the
+                // script or macro before the recording stops does not change what was recorded.
                 if let Some(ran) = self.script_ran.take()
                     && kept
-                    && id == "automate.runScript"
+                    && matches!(id, "automate.runScript" | "macro.run")
                 {
                     rec.attach_ran(ran);
                 }

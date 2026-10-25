@@ -16,7 +16,9 @@
 //! In parameters a token is written three ways: `{"$ref": "Input.col(2)"}` anywhere; the whole
 //! string `"Input.col(2)"` in a reference parameter (`cell`, `range`, `target`, `to`, keys ending
 //! in `Cell` or `Range`…); or `{{Input.col(2)}}` inside any string (`"=SUM({{Input.col(2)}})"`).
-//! Each becomes A1 text before the command runs, so commands never see a token. Plain A1
+//! Each becomes A1 text before the command runs, so commands never see a token. Text that would
+//! read as a token is written `{"$text": "Output"}`: it is passed as it is, never resolved or
+//! interpolated (a defined name called `Output`, or `Dear {{name}}`). Plain A1
 //! references in steps are absolute: they don't follow row inserts (as in VBA); a `Name:` anchor
 //! does.
 
@@ -128,6 +130,15 @@ const MAX_JSON_DEPTH: usize = 64;
 /// Whether `text` starts like a token (its base is one this environment knows). A reference on a
 /// sheet with such a name (`Output!A1`) is not a token.
 pub fn is_token(text: &str, env: &Env) -> bool {
+    starts_like_token(text, |base| env.inputs.iter().any(|(n, ..)| n.eq_ignore_ascii_case(base)))
+}
+
+/// Whether `text` would read as a token in a macro whose inputs are `inputs` (see [`is_token`]).
+pub fn reads_as_token(text: &str, inputs: &[&str]) -> bool {
+    starts_like_token(text, |base| inputs.iter().any(|n| n.eq_ignore_ascii_case(base)))
+}
+
+fn starts_like_token(text: &str, is_input: impl Fn(&str) -> bool) -> bool {
     let t = text.trim();
     if t.get(..5).is_some_and(|h| h.eq_ignore_ascii_case("name:")) {
         return true;
@@ -137,7 +148,7 @@ pub fn is_token(text: &str, env: &Env) -> bool {
     if t.get(n..).unwrap_or("").trim_start().starts_with('!') {
         return false;
     }
-    is_builtin(base) || env.inputs.iter().any(|(n, ..)| n.eq_ignore_ascii_case(base))
+    is_builtin(base) || is_input(base)
 }
 
 fn is_builtin(base: &str) -> bool {
@@ -502,6 +513,12 @@ fn walk(v: &Json, key: Option<&str>, env: &Env, depth: usize) -> R<Json> {
                 && let Some(Json::String(t)) = o.get("$ref")
             {
                 return Ok(Json::String(a1(resolve_ref(t, env)?, env)));
+            }
+            // Text passed as it is: never a token, and no `{{…}}` in it is read.
+            if o.len() == 1
+                && let Some(Json::String(t)) = o.get("$text")
+            {
+                return Ok(Json::String(t.clone()));
             }
             let mut out = Map::new();
             for (k, x) in o {
@@ -902,6 +919,22 @@ mod tests {
         assert_eq!(interpolate("Dear {{{{name}},", &env).unwrap(), "Dear {{name}},");
         assert_eq!(interpolate("{{{{ {{Input.cell(1,1)}} }}", &env).unwrap(), "{{ B2 }}");
         assert!(interpolate("Dear {{name}},", &env).is_err(), "an unknown token is still an error");
+    }
+
+    #[test]
+    fn text_marked_as_text_is_never_a_token() {
+        // A defined name called Output or Input in a reference parameter, a Name: prefix and
+        // braces: `$text` passes each as it is, in any key; unmarked, each reads as a token.
+        let wb = wb();
+        let inputs = vec![("Input".to_string(), place("B2:D11"), true)];
+        let env = Env { wb: &wb, active_sheet: 0, inputs: &inputs, output: None, item: None };
+        for text in ["Output", "Input", "Name:Nowhere", "Row", "Dear {{name}}"] {
+            let p = json!({"range": {"$text": text}, "input": {"$text": text}});
+            assert_eq!(resolve_params(&p, &env).unwrap(), json!({"range": text, "input": text}), "{text}");
+            assert_ne!(resolve_params(&json!({"range": text}), &env).ok(), Some(json!({"range": text})), "{text}");
+            assert!(reads_as_token(text, &["Input"]) || text.contains("{{"), "{text}");
+        }
+        assert!(!reads_as_token("Output!A1", &["Input"]) && !reads_as_token("B2", &["Input"]));
     }
 
     #[test]

@@ -50,10 +50,26 @@ pub struct Recorder {
     /// The size of `steps` and `ran` serialized as JSON.
     bytes: usize,
     /// What a step ran, by its index in `steps`, for a command that runs steps stored in the
-    /// workbook (`automate.runScript`): the commands as they ran, so a recording keeps them even
-    /// when the script is edited or deleted before the recording stops. A step without an entry
-    /// is read from the workbook when the recording is used.
+    /// workbook (`automate.runScript`, `macro.run`): the commands as they ran, so a recording
+    /// keeps them even when the script or macro is edited or deleted before the recording stops.
+    /// A run without an entry is left out when the recording is used.
     pub ran: BTreeMap<usize, Vec<(String, Json)>>,
+}
+
+/// `params` with the state a toggle set (Bold's `on`, from the command's result), as Excel
+/// records `Bold = True`: playing the step back sets that state rather than flipping it again.
+pub(crate) fn with_toggle_state(mut params: Json, result: &Json) -> Json {
+    if let Some(on @ Json::Bool(_)) = result.get("on") {
+        if params.is_null() {
+            params = Json::Object(serde_json::Map::new());
+        }
+        if let Json::Object(p) = &mut params
+            && !p.contains_key("on")
+        {
+            p.insert("on".into(), on.clone());
+        }
+    }
+    params
 }
 
 impl Recorder {
@@ -77,7 +93,7 @@ impl Recorder {
     }
 
     /// Attaches what the last kept step ran ([`Recorder::ran`]), within the byte budget: past it,
-    /// the step stays and its script is read from the workbook when the recording is used.
+    /// the step stays without it, and the recording leaves the run out and lists it as skipped.
     pub fn attach_ran(&mut self, steps: Vec<(String, Json)>) {
         let Some(index) = self.steps.len().checked_sub(1) else { return };
         let size = serde_json::to_vec(&steps).map_or(0, |v| v.len());

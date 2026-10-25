@@ -1088,6 +1088,7 @@ fn run_script(s: &mut Session, p: &Json) -> Result<Json> {
             continue;
         }
         let before = s.ui_requests.len();
+        let wb_before = s.doc().ok().map(|d| (d.uid, d.wb.clone()));
         let ran = s.execute(id, st["params"].clone());
         // A step that asks the host to open a URL leaves the app: drop the request and stop.
         if s.ui_requests.get(before..).is_some_and(|new| new.iter().any(|r| matches!(r, crate::UiRequest::OpenUrl(_)))) {
@@ -1098,33 +1099,23 @@ fn run_script(s: &mut Session, p: &Json) -> Result<Json> {
             });
             return Err(bad("automate.runScript", format!("scripts can't open links (`{id}`)")));
         }
-        ran?;
+        let result = ran?;
         n += 1;
         if s.recorder.is_some() {
-            ran_steps.push((id.to_string(), st["params"].clone()));
+            // The recorder's rule for each step, as for a command run on its own: a menu-style
+            // step that only opened a dialog is left out (playing it back would stop at the
+            // dialog), and a toggle keeps the state it set.
+            let opened_dialog = s.ui_requests.get(before..).is_some_and(|new| new.iter().any(|r| matches!(r, crate::UiRequest::Dialog(..))));
+            let changed = wb_before.as_ref().is_some_and(|(uid, wb)| s.docs.iter().any(|d| d.uid == *uid && !std::sync::Arc::ptr_eq(&d.wb, wb)));
+            if !opened_dialog || changed {
+                ran_steps.push((id.to_string(), crate::record::with_toggle_state(st["params"].clone(), &result)));
+            }
         }
     }
     if s.recorder.is_some() {
         s.script_ran = Some(ran_steps);
     }
     Ok(json!({"ran": n}))
-}
-
-/// The command steps of the Automate script called `name`, as `automate.runScript` runs them
-/// (steps that run other scripts are left out), or `None` when there is no such script.
-pub(crate) fn script_steps(wb: &Workbook, name: &str) -> Option<Vec<(String, Json)>> {
-    let all = stash_get(wb, SCRIPTS_NAME);
-    let steps = all.get(name)?.as_array()?;
-    Some(
-        steps
-            .iter()
-            .take(100_000)
-            .filter_map(|st| {
-                let id = st["command"].as_str()?;
-                (!id.starts_with("automate.")).then(|| (id.to_string(), st["params"].clone()))
-            })
-            .collect(),
-    )
 }
 
 /// Automate › Stop Action: rolls back the undo groups open on the active workbook, so Undo and

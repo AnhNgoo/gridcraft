@@ -5,7 +5,8 @@
 //! GridCraft's hidden workbook data ([`crate::cmd::stash`]), `_gc_macro_<n>_<k>`, written when the
 //! file is saved and taken back out of the names when it is opened, so the names never linger in
 //! the open document. Scripts made with Automate › New Script or Record Actions are a separate,
-//! older feature with their own storage; macros neither read nor change them.
+//! older feature with their own storage; macros neither read nor change it. A recording keeps the
+//! steps a script run ran while it recorded, as the run reported them.
 
 use std::collections::{BTreeMap, HashMap, HashSet};
 
@@ -62,6 +63,30 @@ fn check_size(m: &Macro) -> Result<(), String> {
         return Err(format!("This macro is too large to keep in the workbook ({} characters at most).", stash::MAX_ITEM_CHARS));
     }
     Ok(())
+}
+
+/// Leaves out the last top-level steps of `m` until it fits the size [`check_size`] allows, and
+/// returns how many steps it left out (a recording cut to fit, as at the step limit). Each step's
+/// JSON is measured once.
+pub fn fit_size(m: &mut Macro) -> usize {
+    let chars = |v: &Json| v.to_string().chars().count();
+    let steps = std::mem::take(&mut m.steps);
+    // The macro without steps holds `"steps":[]`; each step adds its JSON, and a comma after the
+    // first.
+    let mut size = chars(&macro_json(m));
+    let mut kept = 0usize;
+    for (i, st) in steps.iter().enumerate() {
+        let add = chars(&serde_json::to_value(st).unwrap_or(Json::Null)).saturating_add(usize::from(i > 0));
+        if size.saturating_add(add) > stash::MAX_ITEM_CHARS {
+            break;
+        }
+        size = size.saturating_add(add);
+        kept = i.saturating_add(1);
+    }
+    let cut = steps.len().saturating_sub(kept);
+    m.steps = steps;
+    m.steps.truncate(kept);
+    cut
 }
 
 /// How many macros the workbook holds: the readable ones and the ones kept in a newer format
