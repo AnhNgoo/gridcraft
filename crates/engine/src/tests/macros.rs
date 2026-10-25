@@ -2165,6 +2165,26 @@ fn a_script_step_that_only_opened_a_dialog_is_left_out_of_the_recording() {
 }
 
 #[test]
+fn a_rolled_back_script_run_takes_what_it_ran_out_of_the_recording() {
+    // What a recorded script run ran goes with its step when a group rollback takes the step
+    // back, and a kept run keeps what it ran under its new place.
+    let mut s = s();
+    s.execute("automate.newScript", json!({"name": "Mark", "commands": [{"command": "cell.set", "params": {"cell": "A1", "input": "m"}}]})).unwrap();
+    s.execute("macro.record", json!({"relative": false})).unwrap();
+    s.execute("automate.runScript", json!({"name": "Mark"})).unwrap();
+    let _left = s.group_begin("Left open").unwrap();
+    set(&mut s, "B1", "gone");
+    s.execute("automate.runScript", json!({"name": "Mark"})).unwrap();
+    s.execute("automate.stopAction", json!({})).unwrap();
+    let rec = s.recorder.as_ref().unwrap();
+    assert_eq!((rec.steps.len(), rec.ran.keys().copied().collect::<Vec<_>>()), (1, vec![0]));
+    s.execute("automate.runScript", json!({"name": "Mark"})).unwrap();
+    s.execute("macro.record", json!({"stop": true, "name": "Rec"})).unwrap();
+    let a1 = "cell.set {\"cell\":\"A1\",\"input\":\"m\"}";
+    assert_eq!(recorded(&mut s, "Rec"), [a1, a1]);
+}
+
+#[test]
 fn a_script_run_records_the_state_its_toggles_set() {
     let mut s = s();
     s.execute(

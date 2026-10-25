@@ -112,15 +112,26 @@ impl Recorder {
     /// Takes back the steps recorded in the document with uid `doc` since `mark` (an undo group
     /// on it was rolled back, so playing them back would make edits it no longer has). Steps in
     /// other documents stay: their edits do too. Steps the buffer dropped stay counted.
+    /// What a step ran ([`Recorder::ran`]) goes with its step, and stays with a kept one under its
+    /// new index.
     pub(crate) fn cut_back(&mut self, (len, _): (usize, usize), doc: u64) {
-        let before = self.steps.len();
-        let mut i = 0;
-        self.steps.retain(|s| {
-            i += 1;
-            i <= len || s.doc != doc
-        });
-        if self.steps.len() != before {
-            self.bytes = self.steps.iter().map(|s| serde_json::to_vec(s).map_or(0, |v| v.len())).sum();
+        if !self.steps.iter().skip(len).any(|s| s.doc == doc) {
+            return;
         }
+        let mut ran = std::mem::take(&mut self.ran);
+        let mut steps = Vec::with_capacity(self.steps.len());
+        for (i, step) in std::mem::take(&mut self.steps).into_iter().enumerate() {
+            if i >= len && step.doc == doc {
+                continue;
+            }
+            if let Some(r) = ran.remove(&i) {
+                self.ran.insert(steps.len(), r);
+            }
+            steps.push(step);
+        }
+        self.steps = steps;
+        let size = |v: Result<Vec<u8>, serde_json::Error>| v.map_or(0, |v| v.len());
+        self.bytes = self.steps.iter().map(|s| size(serde_json::to_vec(s))).sum::<usize>()
+            + self.ran.values().map(|r| size(serde_json::to_vec(r))).sum::<usize>();
     }
 }
