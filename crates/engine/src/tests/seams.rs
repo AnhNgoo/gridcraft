@@ -858,6 +858,34 @@ fn stop_action_runs_only_on_its_own_and_is_not_recorded() {
 }
 
 #[test]
+fn rollbacks_take_back_their_own_recorded_steps_in_any_order() {
+    // Groups open on two workbooks, each with a recorded edit: rolling back the first takes out
+    // only its edit, and the second's mark still finds its own after that.
+    let mut s = s();
+    s.start_recording();
+    let a = s.active_index();
+    let _in_a = s.group_begin("A").unwrap();
+    set(&mut s, "A1", "a");
+    s.new_workbook();
+    let b = s.active_index();
+    let _in_b = s.group_begin("B").unwrap();
+    set(&mut s, "B1", "b");
+    s.set_active(a);
+    s.execute("automate.stopAction", json!({})).unwrap();
+    let cells = |s: &Session| s.recorder.as_ref().unwrap().steps.iter().map(|st| st.params["cell"].clone()).collect::<Vec<_>>();
+    assert_eq!(cells(&s), [json!("B1")]);
+    s.set_active(b);
+    s.execute("automate.stopAction", json!({})).unwrap();
+    assert!(cells(&s).is_empty());
+    // A recording started again inside a group: every step of it came after the group began.
+    let _again = s.group_begin("Again").unwrap();
+    s.start_recording();
+    set(&mut s, "C1", "c");
+    s.execute("automate.stopAction", json!({})).unwrap();
+    assert!(cells(&s).is_empty(), "{:?}", cells(&s));
+}
+
+#[test]
 fn a_run_that_edits_and_opens_a_dialog_is_recorded() {
     // A script with an edit before a menu-style step: the edit happened, so the run is a step of
     // the recording (the person's confirming call is another). Only a call that opened a dialog

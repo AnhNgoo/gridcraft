@@ -39,8 +39,11 @@ pub struct RecordedStep {
     pub params: Json,
 }
 
+/// Numbers each recording, so an undo group's mark from an earlier one isn't read as this one's.
+static NEXT_RECORDING: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+
 /// The steps recorded since recording started.
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Debug)]
 pub struct Recorder {
     pub steps: Vec<RecordedStep>,
     /// Steps not kept because the recording reached [`RECORD_LIMIT`] or [`RECORD_MAX_BYTES`].
@@ -49,6 +52,18 @@ pub struct Recorder {
     pub dropped: usize,
     /// The size of `steps` serialized as JSON.
     bytes: usize,
+    /// Which recording this is, and the number the next kept step gets: each step's number is in
+    /// `seqs`, beside it, so a mark stays right however many steps rollbacks take out.
+    generation: u64,
+    next_seq: u64,
+    seqs: Vec<u64>,
+}
+
+impl Default for Recorder {
+    fn default() -> Self {
+        let generation = NEXT_RECORDING.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        Recorder { steps: Vec::new(), dropped: 0, bytes: 0, generation, next_seq: 0, seqs: Vec::new() }
+    }
 }
 
 impl Recorder {
@@ -64,28 +79,38 @@ impl Recorder {
         if self.bytes.saturating_add(size) <= RECORD_MAX_BYTES {
             self.bytes = self.bytes.saturating_add(size);
             self.steps.push(step);
+            self.seqs.push(self.next_seq);
+            self.next_seq = self.next_seq.saturating_add(1);
         } else {
             self.dropped = self.dropped.saturating_add(1);
         }
     }
 
-    /// Where the recording is now, for [`Recorder::cut_back`].
-    pub(crate) fn mark(&self) -> (usize, usize) {
-        (self.steps.len(), self.dropped)
+    /// Where the recording is now, for [`Recorder::cut_back`]: this recording and the number its
+    /// next step gets.
+    pub(crate) fn mark(&self) -> (u64, u64) {
+        (self.generation, self.next_seq)
     }
 
     /// Takes back the steps recorded in the document with uid `doc` since `mark` (an undo group
     /// on it was rolled back, so playing them back would make edits it no longer has). Steps in
-    /// other documents stay: their edits do too. Steps the buffer dropped stay counted.
-    pub(crate) fn cut_back(&mut self, (len, _): (usize, usize), doc: u64) {
-        let before = self.steps.len();
-        let mut i = 0;
-        self.steps.retain(|s| {
-            i += 1;
-            i <= len || s.doc != doc
-        });
-        if self.steps.len() != before {
-            self.bytes = self.steps.iter().map(|s| serde_json::to_vec(s).map_or(0, |v| v.len())).sum();
+    /// other documents stay: their edits do too. A mark from another recording (the recording
+    /// started again inside the group) means every step of this one came after it. Steps the
+    /// buffer dropped stay counted.
+    pub(crate) fn cut_back(&mut self, (generation, seq): (u64, u64), doc: u64) {
+        let from = if generation == self.generation { seq } else { 0 };
+        let gone = |i: usize, step: &RecordedStep| step.doc == doc && self.seqs.get(i).is_some_and(|&n| n >= from);
+        if !self.steps.iter().enumerate().any(|(i, s)| gone(i, s)) {
+            return;
         }
+        let (mut steps, mut seqs) = (Vec::with_capacity(self.steps.len()), Vec::with_capacity(self.seqs.len()));
+        for (i, step) in self.steps.iter().enumerate() {
+            if !gone(i, step) {
+                steps.push(step.clone());
+                seqs.push(self.seqs.get(i).copied().unwrap_or(0));
+            }
+        }
+        (self.steps, self.seqs) = (steps, seqs);
+        self.bytes = self.steps.iter().map(|s| serde_json::to_vec(s).map_or(0, |v| v.len())).sum();
     }
 }
