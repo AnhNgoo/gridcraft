@@ -209,6 +209,9 @@ pub struct DocState {
     /// While a macro's footprint is measured: every cell a command wrote, by sheet name, even
     /// where it wrote what was already there.
     pub touched: Option<Vec<(String, CellRef)>>,
+    /// The references `edit.goTo` with `record: true` went to in this document, newest first,
+    /// without names, each area written with its sheet (`Sheet1!B14:C22,Sheet1!F19:G30`).
+    pub go_to_recent: Vec<String>,
 }
 
 static NEXT_UID: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
@@ -300,6 +303,7 @@ impl DocState {
             scripts_trusted,
             trust,
             touched: None,
+            go_to_recent: vec![],
         }
     }
     pub fn is_dirty(&self) -> bool {
@@ -362,6 +366,27 @@ pub struct Prefs {
     pub user_dictionary: Vec<String>,
     /// View › Show › Formula Bar (an application option in Excel, not saved in the file).
     pub formula_bar: bool,
+    /// The statistics the status bar shows for a selection (right-click the status bar).
+    pub status_bar: StatusBarStats,
+}
+
+/// The selection statistics shown on the status bar, set with `view.statusBar`. Excel turns on
+/// Average, Count and Sum by default.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, serde::Deserialize)]
+#[serde(default, rename_all = "camelCase")]
+pub struct StatusBarStats {
+    pub average: bool,
+    pub count: bool,
+    pub numerical_count: bool,
+    pub minimum: bool,
+    pub maximum: bool,
+    pub sum: bool,
+}
+
+impl Default for StatusBarStats {
+    fn default() -> Self {
+        StatusBarStats { average: true, count: true, numerical_count: false, minimum: false, maximum: false, sum: true }
+    }
 }
 
 impl Default for Prefs {
@@ -376,6 +401,7 @@ impl Default for Prefs {
             r1c1: false,
             user_dictionary: vec![],
             formula_bar: true,
+            status_bar: StatusBarStats::default(),
         }
     }
 }
@@ -387,6 +413,9 @@ pub enum UiRequest {
     Message(String),
     /// Start editing the active cell (F2) with optional initial text.
     EditCell(Option<String>),
+    /// Put a defined name at the caret of the cell being edited, in place of selected text; with
+    /// no edit under way, start editing the active cell with `=` and the name.
+    InsertName(String),
     OpenUrl(String),
 }
 
