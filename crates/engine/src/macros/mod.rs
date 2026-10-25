@@ -48,7 +48,8 @@ pub fn check(m: &Macro) -> Result<(), String> {
 }
 
 /// Refuses a macro too large to keep in an xlsx file ([`stash::MAX_ITEM_CHARS`] characters of
-/// JSON), so saving a workbook never fails because of one of its macros.
+/// JSON), so a macro's size never makes a save fail. (A clashing visible name doesn't either:
+/// [`with_names`] stores the macro under another index.)
 fn check_size(m: &Macro) -> Result<(), String> {
     if macro_json(m).to_string().chars().count() > stash::MAX_ITEM_CHARS {
         return Err(format!("This macro is too large to keep in the workbook ({} characters at most).", stash::MAX_ITEM_CHARS));
@@ -94,7 +95,8 @@ pub fn find(wb: &Workbook, name: &str) -> Option<usize> {
 }
 
 /// A copy of `wb` for xlsx with each macro in hidden names (`_gc_macro_<n>_<k>`) instead of the
-/// field, or `None` when there is nothing to change.
+/// field, or `None` when there is nothing to change. The macros keep their order; the index `n`
+/// is this build's choice, so it steps around any a person's own visible name already uses.
 pub fn with_names(wb: &Workbook) -> crate::Result<Option<Workbook>> {
     // Only the numbered items are this build's: a hidden `_gc_macro_<x>_<k>` name with some
     // other key stays, as `load` leaves it.
@@ -106,7 +108,14 @@ pub fn with_names(wb: &Workbook) -> crate::Result<Option<Workbook>> {
     // One pass drops the items of the last save, and one writes the macros (a file can hold a
     // thousand macros and many thousands of names).
     out.names.retain(|n| !stored(n));
-    let items: Vec<(String, String)> = wb.macros.iter().enumerate().map(|(i, m)| (format!("{MACRO_KEY}{i}"), macro_json(m).to_string())).collect();
+    // A visible workbook-scope name of the storage shape is someone's own, and `set_many` won't
+    // write a hidden one of the same name beside it. Such a name (`_GC_MACRO_1_0`, or one a
+    // person defined after the file opened) blocks its item's key, in any chunk, so the macros
+    // take the free indices from 0 up. The keys compare as the stash reads them, so this skips
+    // exactly what `set_many` would refuse, and no arithmetic depends on a number from the file.
+    let blocked: HashSet<String> = out.names.iter().filter(|n| !n.hidden && n.scope.is_none()).filter_map(|n| stash::item_key(&n.name)).collect();
+    let free = (0..=u64::MAX).map(|i| format!("{MACRO_KEY}{i}")).filter(|key| !blocked.contains(key));
+    let items: Vec<(String, String)> = wb.macros.iter().zip(free).map(|(m, key)| (key, macro_json(m).to_string())).collect();
     stash::set_many(&mut out, &items)?;
     // An empty list of its own, not a copy of the shared one cleared.
     out.macros = gridcraft_model::Macros::default();

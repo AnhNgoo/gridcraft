@@ -216,21 +216,62 @@ fn a_macro_built_in_code_goes_through_the_size_check_too() {
     assert!(crate::io::save_bytes(&wb, "book.xlsx").is_err(), "a macro that fails `check` fails the save");
 }
 
+fn visible(name: &str) -> DefinedName {
+    DefinedName { name: name.into(), scope: None, formula: "Sheet1!$A$1".into(), comment: String::new(), hidden: false }
+}
+
+/// Saves `wb` to xlsx and returns the names in the file and the workbook opened from it.
+fn xlsx_round_trip(wb: &Workbook) -> (Vec<String>, Workbook) {
+    let bytes = crate::io::save_bytes(wb, "book.xlsx").unwrap();
+    let raw = names_of(&gridcraft_xlsx::read_xlsx(&bytes).unwrap().0);
+    let (back, warnings) = crate::io::open_bytes("book.xlsx", &bytes).unwrap();
+    assert!(warnings.is_empty(), "{warnings:?}");
+    (raw, back)
+}
+
 #[test]
-fn a_save_refuses_a_clashing_visible_name_before_changing_anything() {
+fn a_visible_name_of_the_storage_shape_does_not_block_a_save() {
+    // The index a macro is stored under is GridCraft's choice, so a person's own visible name
+    // of that shape (here in capitals: names compare without case) is stepped around, not
+    // refused. Stale hidden items still go in the same pass.
     let mut wb = Workbook::new();
     wb.macros.push(sample_macro("A"));
     wb.macros.push(sample_macro("B"));
-    let own = DefinedName { hidden: false, ..hidden("_GC_MACRO_1_0", "mine") };
-    wb.names.push(own.clone());
+    wb.names.push(visible("_GC_MACRO_0_0"));
     wb.names.push(hidden("_gc_macro_7_0", "stale"));
-    let err = crate::io::save_bytes(&wb, "book.xlsx").unwrap_err().to_string();
-    assert!(err.contains("_GC_MACRO_1_0"), "{err}");
-    assert_eq!(wb.names.len(), 2, "nothing changed");
-    wb.names.remove(0);
-    let (raw, _) = gridcraft_xlsx::read_xlsx(&crate::io::save_bytes(&wb, "book.xlsx").unwrap()).unwrap();
-    let names = names_of(&raw);
-    assert_eq!(names, ["_gc_macro_0_0", "_gc_macro_1_0"], "the stale item went in the same pass");
+    let (raw, back) = xlsx_round_trip(&wb);
+    assert_eq!(raw, ["_GC_MACRO_0_0", "_gc_macro_1_0", "_gc_macro_2_0"]);
+    assert_eq!(back.macros, wb.macros, "both macros, in their order");
+    assert_eq!(back.names, vec![visible("_GC_MACRO_0_0")], "the person's name is kept as it was");
+    assert_eq!(wb.names.len(), 2, "the open workbook is not changed by a save");
+}
+
+#[test]
+fn a_huge_visible_index_takes_no_part_in_numbering() {
+    // A file can carry a visible name with any number in it. The macros take the free indices
+    // from 0 up, so no arithmetic depends on that number (one past the largest would overflow).
+    let mut wb = Workbook::new();
+    wb.macros.push(sample_macro("A"));
+    wb.names.push(visible(&format!("_gc_macro_{}_0", u64::MAX)));
+    wb.names.push(visible("_gc_macro_0_0"));
+    let (raw, back) = xlsx_round_trip(&wb);
+    assert_eq!(raw, [format!("_gc_macro_{}_0", u64::MAX), "_gc_macro_0_0".into(), "_gc_macro_1_0".into()]);
+    assert_eq!(back.macros, wb.macros);
+    assert_eq!(names_of(&back), names_of(&wb));
+}
+
+#[test]
+fn a_name_defined_after_opening_does_not_block_the_next_save() {
+    // Once a file is open its macros are out of the names, so Define Name accepts a visible
+    // `_gc_macro_0_0`; the next save steps around it.
+    let mut s = crate::Session::new();
+    s.execute("file.new", json!({})).unwrap();
+    std::sync::Arc::make_mut(&mut s.doc_mut().unwrap().wb).macros.push(sample_macro("A"));
+    s.execute("formulas.defineName", json!({"name": "_gc_macro_0_0", "refersTo": "=Sheet1!$A$1"})).unwrap();
+    let (raw, back) = xlsx_round_trip(&s.doc().unwrap().wb);
+    assert_eq!(raw, ["_gc_macro_0_0", "_gc_macro_1_0"]);
+    assert_eq!(back.macros.len(), 1);
+    assert_eq!(names_of(&back), ["_gc_macro_0_0"]);
 }
 
 #[test]

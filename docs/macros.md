@@ -49,7 +49,9 @@ version.
 
 Macros are saved in the workbook: as a field in GridCraft's JSON format, and in xlsx as hidden
 defined names (`_gc_macro_<n>_<k>`, the macro's JSON split into string literals within Excel's
-limits), which other spreadsheet applications keep but do not run.
+limits), which other spreadsheet applications keep but do not run. A visible name of that shape
+is someone's own name: opening a file leaves it alone, and saving stores the macros under indices
+it does not use.
 
 Each macro carries its format version, `v` (1 in this version; a missing `v` reads as 1). When a
 file is opened, a macro that is damaged, over the limits or in a newer format (a `v` above 1) is
