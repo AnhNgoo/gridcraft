@@ -291,7 +291,7 @@ fn a_new_macro_never_replaces_one_with_its_name() {
         assert_eq!(wb.macros[0].steps.len(), 3, "{button}: the saved macro is intact");
         assert!(value(&h, "B1").is_empty(), "{button}: nothing ran");
         let msg = h.state_mut().message.take().map(|(_, m)| m).unwrap_or_default();
-        assert!(msg.contains("A macro called 'three' already exists"), "{button}: {msg}");
+        assert!(msg.contains("A macro called “three” already exists. Choose another name."), "{button}: {msg}");
         assert!(h.state().macros.editor.as_ref().unwrap().saved_as.is_none());
         h.run_steps(2);
     }

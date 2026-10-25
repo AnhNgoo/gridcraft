@@ -586,8 +586,15 @@ pub fn save(app: &mut SheetApp, ed: &mut Editor) -> bool {
         // The workbook has it under the new name now, even if the save below fails.
         ed.saved_as = Some(ed.draft.name.clone());
     }
-    // A new draft never replaces a macro that has its name.
+    // A new draft never replaces a macro that has its name; the person chooses another.
     let replace = ed.saved_as.is_some();
+    if !replace
+        && let Some(doc) = app.session.active()
+        && let Err(e) = gridcraft_engine::macros::check_new_name(&doc.wb, &ed.draft.name)
+    {
+        app.message = Some(("Save Macro".into(), e));
+        return false;
+    }
     match app.run("macro.save", json!({"macro": gridcraft_engine::macros::macro_json(&ed.draft), "replace": replace})) {
         Ok(_) => {
             ed.saved_as = Some(ed.draft.name.clone());
