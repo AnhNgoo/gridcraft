@@ -166,7 +166,10 @@ fn read_plain(name: &str, bytes: &[u8], csv_as_text: bool) -> Result<(Workbook, 
             let mut wb: Workbook = serde_json::from_slice(bytes).map_err(|e| EngineError::Other(format!("not a GridCraft JSON workbook: {e}")))?;
             wb.styles.rebuild_index();
             if wb.sheets.is_empty() {
+                // The file's macros are read after this (`macros::load`), so they come along.
+                let macros = std::mem::take(&mut wb.macros_read);
                 wb = Workbook::new();
+                wb.macros_read = macros;
             }
             // The file's band placement and cell count are derived state: rebuild them from the
             // cells themselves, dropping what is outside the sheet grid (#1008).
@@ -259,7 +262,7 @@ pub fn save_bytes_as(wb: &Workbook, path: &str, kind: FileKind) -> Result<Vec<u8
         // A workbook read from CSV keeps the separator it was read with (a `;` file stays `;`).
         FileKind::Csv => wb.sheet(sheet).map(|sh| csv(wb, sh, wb.csv_delimiter.unwrap_or(b','))).transpose().map(Option::unwrap_or_default),
         FileKind::Tsv => wb.sheet(sheet).map(|sh| csv(wb, sh, b'\t')).transpose().map(Option::unwrap_or_default),
-        FileKind::Json => serde_json::to_vec_pretty(wb).map_err(|e| EngineError::Other(e.to_string())),
+        FileKind::Json => crate::macros::json_bytes(wb),
         FileKind::Html => to_html(wb, sheet).map(String::into_bytes),
     }
 }

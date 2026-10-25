@@ -213,24 +213,82 @@ fn a_macro_built_in_code_goes_through_the_size_check_too() {
     assert!(check(&big).unwrap_err().contains("too large"));
     let mut wb = Workbook::new();
     wb.macros.push(big);
-    assert!(crate::io::save_bytes(&wb, "book.xlsx").is_err(), "a macro that fails `check` fails the save");
+    // A macro that fails `check` fails the save in either format, rather than being written and
+    // dropped the next time the file opens.
+    for file in ["book.xlsx", "book.json"] {
+        assert!(crate::io::save_bytes(&wb, file).is_err(), "{file}");
+    }
+}
+
+fn visible(name: &str) -> DefinedName {
+    DefinedName { name: name.into(), scope: None, formula: "Sheet1!$A$1".into(), comment: String::new(), hidden: false }
+}
+
+/// Saves `wb` to xlsx and returns the names in the file and the workbook opened from it.
+fn xlsx_round_trip(wb: &Workbook) -> (Vec<String>, Workbook) {
+    let bytes = crate::io::save_bytes(wb, "book.xlsx").unwrap();
+    let raw = names_of(&gridcraft_xlsx::read_xlsx(&bytes).unwrap().0);
+    let (back, warnings) = crate::io::open_bytes("book.xlsx", &bytes).unwrap();
+    assert!(warnings.is_empty(), "{warnings:?}");
+    (raw, back)
 }
 
 #[test]
-fn a_save_refuses_a_clashing_visible_name_before_changing_anything() {
+fn a_visible_name_of_the_storage_shape_does_not_block_a_save() {
+    // The index a macro is stored under is GridCraft's choice, so a person's own visible name
+    // of that shape (here in capitals: names compare without case) is stepped around, not
+    // refused. Stale hidden items still go in the same pass.
     let mut wb = Workbook::new();
     wb.macros.push(sample_macro("A"));
     wb.macros.push(sample_macro("B"));
-    let own = DefinedName { hidden: false, ..hidden("_GC_MACRO_1_0", "mine") };
-    wb.names.push(own.clone());
+    wb.names.push(visible("_GC_MACRO_0_0"));
     wb.names.push(hidden("_gc_macro_7_0", "stale"));
-    let err = crate::io::save_bytes(&wb, "book.xlsx").unwrap_err().to_string();
-    assert!(err.contains("_GC_MACRO_1_0"), "{err}");
-    assert_eq!(wb.names.len(), 2, "nothing changed");
-    wb.names.remove(0);
-    let (raw, _) = gridcraft_xlsx::read_xlsx(&crate::io::save_bytes(&wb, "book.xlsx").unwrap()).unwrap();
-    let names = names_of(&raw);
-    assert_eq!(names, ["_gc_macro_0_0", "_gc_macro_1_0"], "the stale item went in the same pass");
+    let (raw, back) = xlsx_round_trip(&wb);
+    assert_eq!(raw, ["_GC_MACRO_0_0", "_gc_macro_1_0", "_gc_macro_2_0"]);
+    assert_eq!(back.macros, wb.macros, "both macros, in their order");
+    assert_eq!(back.names, vec![visible("_GC_MACRO_0_0")], "the person's name is kept as it was");
+    assert_eq!(wb.names.len(), 2, "the open workbook is not changed by a save");
+}
+
+#[test]
+fn a_huge_visible_index_takes_no_part_in_numbering() {
+    // A file can carry a visible name with any number in it. The macros take the free indices
+    // from 0 up, so no arithmetic depends on that number (one past the largest would overflow).
+    let mut wb = Workbook::new();
+    wb.macros.push(sample_macro("A"));
+    wb.names.push(visible(&format!("_gc_macro_{}_0", u64::MAX)));
+    wb.names.push(visible("_gc_macro_0_0"));
+    let (raw, back) = xlsx_round_trip(&wb);
+    assert_eq!(raw, [format!("_gc_macro_{}_0", u64::MAX), "_gc_macro_0_0".into(), "_gc_macro_1_0".into()]);
+    assert_eq!(back.macros, wb.macros);
+    assert_eq!(names_of(&back), names_of(&wb));
+}
+
+#[test]
+fn a_visible_legacy_name_of_the_storage_shape_is_kept() {
+    // The stash reads a legacy `_sc_<key>` name as data whether or not it is hidden, so writing
+    // key `macro_0` would remove a person's visible `_sc_macro_0`. That key is stepped around too.
+    let mut wb = Workbook::new();
+    wb.macros.push(sample_macro("A"));
+    wb.names.push(visible("_sc_macro_0"));
+    let (raw, back) = xlsx_round_trip(&wb);
+    assert_eq!(raw, ["_sc_macro_0", "_gc_macro_1_0"]);
+    assert_eq!(back.macros, wb.macros);
+    assert_eq!(back.names, vec![visible("_sc_macro_0")]);
+}
+
+#[test]
+fn a_name_defined_after_opening_does_not_block_the_next_save() {
+    // Once a file is open its macros are out of the names, so Define Name accepts a visible
+    // `_gc_macro_0_0`; the next save steps around it.
+    let mut s = crate::Session::new();
+    s.execute("file.new", json!({})).unwrap();
+    std::sync::Arc::make_mut(&mut s.doc_mut().unwrap().wb).macros.push(sample_macro("A"));
+    s.execute("formulas.defineName", json!({"name": "_gc_macro_0_0", "refersTo": "=Sheet1!$A$1"})).unwrap();
+    let (raw, back) = xlsx_round_trip(&s.doc().unwrap().wb);
+    assert_eq!(raw, ["_gc_macro_0_0", "_gc_macro_1_0"]);
+    assert_eq!(back.macros.len(), 1);
+    assert_eq!(names_of(&back), ["_gc_macro_0_0"]);
 }
 
 #[test]
@@ -272,7 +330,8 @@ fn damaged_or_oversized_macros_are_dropped_with_a_warning() {
     let mut wb = Workbook::new();
     wb.macros = (0..MAX_MACROS + 5).map(|i| Macro { name: format!("M{i}"), ..Macro::default() }).collect();
     wb.macros[0].steps = vec![Step::command("x", json!({})); MAX_MACRO_STEPS + 1];
-    let bytes = crate::io::save_bytes(&wb, "many.json").unwrap();
+    // Written as another program would: a GridCraft save refuses a macro that fails `check`.
+    let bytes = serde_json::to_vec(&wb).unwrap();
     let (back, warnings) = crate::io::open_bytes("many.json", &bytes).unwrap();
     // Only the first MAX_MACROS entries are read, as in xlsx.
     assert_eq!(back.macros.len(), MAX_MACROS - 1);
@@ -285,7 +344,8 @@ fn damaged_or_oversized_macros_are_dropped_with_a_warning() {
     assert!(err.contains("too large"), "{err}");
     let mut wb = Workbook::new();
     wb.macros.push(Macro { name: "Huge".into(), steps: vec![Step::command("cell.set", json!({"input": huge}))], ..Macro::default() });
-    let bytes = crate::io::save_bytes(&wb, "huge.json").unwrap();
+    // Written as another program would: a GridCraft save refuses a macro that fails `check`.
+    let bytes = serde_json::to_vec(&wb).unwrap();
     let (back, warnings) = crate::io::open_bytes("huge.json", &bytes).unwrap();
     assert!(back.macros.is_empty() && warnings[0].starts_with("1 macro "), "{warnings:?}");
 }
@@ -319,7 +379,8 @@ fn json_field_macros_get_the_name_check_too() {
     let mut wb = Workbook::new();
     wb.macros.push(Macro { name: "a\nb".into(), ..Macro::default() });
     wb.macros.push(Macro { name: "Fine".into(), ..Macro::default() });
-    let bytes = crate::io::save_bytes(&wb, "ctl.json").unwrap();
+    // Written as another program would: a GridCraft save refuses a macro that fails `check`.
+    let bytes = serde_json::to_vec(&wb).unwrap();
     let (back, warnings) = crate::io::open_bytes("ctl.json", &bytes).unwrap();
     let names: Vec<&str> = back.macros.iter().map(|m| m.name.as_str()).collect();
     assert_eq!(names, ["Fine"]);
@@ -391,10 +452,11 @@ fn a_damaged_json_macro_drops_alone() {
 }
 
 #[test]
-fn a_macro_in_a_newer_format_is_dropped_not_rewritten() {
+fn a_macro_in_a_newer_format_is_kept_unread_and_saved_back_unchanged() {
     // A newer build's macro (`v` 2, with a field this build doesn't know) would lose that field
-    // here and be saved back as if complete, so it is dropped with the usual warning instead.
-    // Version 1 and a missing version are read as before.
+    // if it were read here, so it is never read: it is kept as the file held it, saved back
+    // unchanged, and the newer build gets it back whole. Version 1 and a missing version are
+    // read as before.
     let future = json!({"name": "Future", "v": MACRO_VERSION + 1, "fromALaterBuild": {"x": 1}, "steps": [{"command": "cell.set"}]});
     let current = json!({"name": "Current", "v": MACRO_VERSION, "steps": [{"command": "cell.set"}]});
     let missing = json!({"name": "Missing"});
@@ -407,17 +469,24 @@ fn a_macro_in_a_newer_format_is_dropped_not_rewritten() {
         let names: Vec<&str> = back.macros.iter().map(|m| m.name.as_str()).collect();
         assert_eq!(names, ["Current", "Missing"], "{file}");
         assert!(back.macros.iter().all(|m| m.v == MACRO_VERSION), "{file}");
-        assert!(warnings.len() == 1 && warnings[0].starts_with("1 macro ") && warnings[0].contains("newer version"), "{file}: {warnings:?}");
-        // Saving and opening again leaves no reduced copy of it behind.
+        assert_eq!(*back.macros_unread, std::slice::from_ref(&future), "{file}");
+        assert!(
+            warnings.len() == 1 && warnings[0].starts_with("1 macro ") && warnings[0].contains("newer version") && warnings[0].contains("unchanged"),
+            "{file}: {warnings:?}"
+        );
+        // Saved and opened again, it is still there, whole, and the others are as they were.
         let (again, warnings) = crate::io::open_bytes(file, &crate::io::save_bytes(back, file).unwrap()).unwrap();
-        assert!(warnings.is_empty(), "{file}: {warnings:?}");
+        assert_eq!(warnings.len(), 1, "{file}: {warnings:?}");
         assert_eq!(again.macros, back.macros, "{file}");
+        assert_eq!(again.macros_unread, back.macros_unread, "{file}");
     };
     // The JSON format's field.
     let mut v: serde_json::Value = serde_json::from_slice(&crate::io::save_bytes(&Workbook::new(), "book.json").unwrap()).unwrap();
     v["macros"] = json!([future, current, missing]);
     let (back, warnings) = crate::io::open_bytes("book.json", v.to_string().as_bytes()).unwrap();
     check("book.json", &back, &warnings);
+    let saved: serde_json::Value = serde_json::from_slice(&crate::io::save_bytes(&back, "book.json").unwrap()).unwrap();
+    assert!(saved["macros"].as_array().unwrap().contains(&future), "the file holds it as it was");
     // Hidden names in xlsx.
     let mut wb = Workbook::new();
     for (i, m) in [&future, &current, &missing].into_iter().enumerate() {
@@ -427,6 +496,42 @@ fn a_macro_in_a_newer_format_is_dropped_not_rewritten() {
     let (back, warnings) = crate::io::open_bytes("book.xlsx", &bytes).unwrap();
     assert!(back.names.is_empty(), "{:?}", names_of(&back));
     check("book.xlsx", &back, &warnings);
+}
+
+#[test]
+fn kept_macros_share_the_save_limits_and_the_numbering() {
+    // A newer macro too large for the file is left out (keeping it would make every xlsx save
+    // fail), and readable and unread macros together stay within the macro limit, readable ones
+    // first. Kept ones are numbered after the readable ones, around a person's visible name.
+    let newer = |name: &str| json!({"name": name, "v": MACRO_VERSION + 1});
+    let mut big = newer("Big");
+    big["pad"] = json!(long(crate::cmd::stash::MAX_ITEM_CHARS));
+    let mut file: serde_json::Value = serde_json::from_slice(&crate::io::save_bytes(&Workbook::new(), "book.json").unwrap()).unwrap();
+    let mut list = vec![big, newer("Kept"), json!({"name": "Read"})];
+    file["macros"] = json!(list);
+    let (mut wb, warnings) = crate::io::open_bytes("book.json", file.to_string().as_bytes()).unwrap();
+    assert_eq!(*wb.macros_unread, [newer("Kept")]);
+    assert_eq!(warnings.len(), 2, "one kept, one left out: {warnings:?}");
+    wb.names.push(visible("_gc_macro_1_0"));
+    let (raw, back) = {
+        let bytes = crate::io::save_bytes(&wb, "book.xlsx").unwrap();
+        let raw = names_of(&gridcraft_xlsx::read_xlsx(&bytes).unwrap().0);
+        (raw, crate::io::open_bytes("book.xlsx", &bytes).unwrap().0)
+    };
+    assert_eq!(raw, ["_gc_macro_1_0", "_gc_macro_0_0", "_gc_macro_2_0"]);
+    assert_eq!((back.macros.len(), back.macros_unread.len()), (1, 1));
+    // Past the limit the rest are left out; and when a JSON file's list is full, an unread item
+    // it also holds in hidden names is the one left out: readable macros come first.
+    list = (0..MAX_MACROS).map(|i| json!({"name": format!("M{i}")})).collect();
+    let mut with_item = Workbook::new();
+    with_item.names.push(hidden("_gc_macro_0_0", &newer("InNames").to_string()));
+    let mut file: serde_json::Value = serde_json::from_slice(&crate::io::save_bytes(&with_item, "book.json").unwrap()).unwrap();
+    for extra in [None, Some(newer("Over"))] {
+        file["macros"] = json!(list.iter().cloned().chain(extra).collect::<Vec<_>>());
+        let (wb, warnings) = crate::io::open_bytes("book.json", file.to_string().as_bytes()).unwrap();
+        assert_eq!((wb.macros.len(), wb.macros_unread.len()), (MAX_MACROS, 0));
+        assert!(warnings.len() == 1 && warnings[0].contains("couldn't be opened"), "{warnings:?}");
+    }
 }
 
 #[test]
@@ -477,4 +582,150 @@ fn naming_clashing_macros_takes_linear_work() {
     assert_eq!(taken.unique("a"), "a (2)");
     taken.insert("a (2)");
     assert_eq!(taken.unique("a"), "a (4)");
+}
+
+#[test]
+fn a_json_workbook_with_no_sheets_keeps_its_macros() {
+    // A JSON file with an empty sheet list opens as a new workbook; its macros come along.
+    let mut wb = Workbook::new();
+    wb.macros.push(sample_macro("A"));
+    let mut v: serde_json::Value = serde_json::from_slice(&crate::io::save_bytes(&wb, "book.json").unwrap()).unwrap();
+    v["sheets"] = json!([]);
+    let (back, warnings) = crate::io::open_bytes("book.json", v.to_string().as_bytes()).unwrap();
+    assert!(warnings.is_empty(), "{warnings:?}");
+    assert_eq!(back.sheets.len(), 1);
+    assert_eq!(back.macros, wb.macros);
+}
+
+fn long(n: usize) -> String {
+    "x".repeat(n)
+}
+
+/// `sample_macro` as JSON with `change` made to it.
+fn changed(change: fn(&mut serde_json::Value)) -> serde_json::Value {
+    let mut v = macro_json(&sample_macro("T"));
+    change(&mut v);
+    v
+}
+
+#[test]
+fn every_field_a_file_sets_has_a_limit() {
+    // The sample's steps: 0 a command, 1 a Repeat whose body holds an If whose else holds a Stop.
+    let refused: [(&str, fn(&mut serde_json::Value)); 14] = [
+        ("shortcut", |v| v["shortcut"] = json!(long(MAX_MACRO_SHORTCUT + 1))),
+        ("shortcut line break", |v| v["shortcut"] = json!("Ctrl+\nM")),
+        ("permission count", |v| v["permissions"] = json!(vec!["data.getData"; MAX_MACRO_PERMISSIONS + 1])),
+        ("permission text", |v| v["permissions"] = json!(["data getData"])),
+        ("output anchor", |v| v["output"]["anchor"] = json!(long(MAX_MACRO_REF + 1))),
+        ("default range", |v| v["inputs"][0]["defaultRef"] = json!(long(MAX_MACRO_REF + 1))),
+        ("column types", |v| {
+            v["inputs"][0]["cols"] = json!([1, 0]);
+            v["inputs"][0]["colTypes"] = json!(vec!["any"; MAX_MACRO_COLUMNS + 1]);
+        }),
+        ("command id", |v| v["steps"][0]["id"] = json!("cell set")),
+        ("empty command id", |v| v["steps"][0]["id"] = json!("")),
+        ("Repeat range", |v| v["steps"][1]["over"] = json!(long(MAX_MACRO_REF + 1))),
+        ("If cell", |v| v["steps"][1]["body"][0]["cell"] = json!(long(MAX_MACRO_REF + 1))),
+        // As JSON the string takes its two quotes as well.
+        ("If value", |v| v["steps"][1]["body"][0]["value"] = json!(long(MAX_MACRO_TEXT - 1))),
+        ("Stop message", |v| v["steps"][1]["body"][0]["else"][0]["message"] = json!(long(MAX_MACRO_TEXT + 1))),
+        ("Stop message, nested", |v| v["steps"][1]["body"][0]["else"][0]["message"] = json!(long(MAX_MACRO_TEXT * 2))),
+    ];
+    for (what, change) in refused {
+        assert!(parse_macro(&changed(change)).is_err(), "{what} past its limit is refused");
+    }
+    let accepted: [(&str, fn(&mut serde_json::Value)); 9] = [
+        ("shortcut", |v| v["shortcut"] = json!(long(MAX_MACRO_SHORTCUT))),
+        ("permission count", |v| v["permissions"] = json!(vec!["data.getData"; MAX_MACRO_PERMISSIONS])),
+        ("output anchor", |v| v["output"]["anchor"] = json!(long(MAX_MACRO_REF))),
+        ("column types", |v| {
+            v["inputs"][0]["cols"] = json!([1, 0]);
+            v["inputs"][0]["colTypes"] = json!(vec!["any"; MAX_MACRO_COLUMNS]);
+        }),
+        ("If value", |v| v["steps"][1]["body"][0]["value"] = json!(long(MAX_MACRO_TEXT - 2))),
+        // Empty and NotEmpty ignore the value, which is then left out (null).
+        ("If with no value", |v| {
+            v["steps"][1]["body"][0]["op"] = json!("empty");
+            v["steps"][1]["body"][0].as_object_mut().unwrap().remove("value");
+        }),
+        // How many times a Repeat may run is the runner's to bound, not the format's.
+        ("Repeat max", |v| v["steps"][1]["max"] = json!(u32::MAX)),
+        ("Stop message", |v| v["steps"][1]["body"][0]["else"][0]["message"] = json!(long(MAX_MACRO_TEXT))),
+        ("no shortcut", |v| {
+            v.as_object_mut().unwrap().remove("shortcut");
+        }),
+    ];
+    for (what, change) in accepted {
+        assert!(parse_macro(&changed(change)).is_ok(), "{what} at its limit is accepted");
+    }
+    // Every command there is passes as a step and as a permission.
+    for spec in crate::command_specs() {
+        let m = json!({"name": "T", "steps": [{"command": spec.id}], "permissions": [spec.id]});
+        assert!(parse_macro(&m).is_ok(), "{}", spec.id);
+    }
+}
+
+#[test]
+fn an_input_declaration_is_checked_as_a_whole() {
+    let input = |i: serde_json::Value| json!({"name": "T", "inputs": [i]});
+    for i in [
+        json!({"name": "Input", "rows": [5, 2]}),
+        json!({"name": "Input", "cols": [3, 2]}),
+        json!({"name": "Input", "kind": "cell", "cols": [2, 5]}),
+        json!({"name": "Input", "kind": "cell", "rows": [0, 0]}),
+        json!({"name": "Input", "kind": "cell", "header": true}),
+        json!({"name": "Input", "kind": "cell", "colTypes": ["number", "text"]}),
+        json!({"name": "Input", "cols": [2, 2], "colTypes": ["number", "text", "any"]}),
+    ] {
+        assert!(parse_macro(&input(i.clone())).is_err(), "{i}");
+    }
+    for i in [
+        json!({"name": "Input", "rows": [5, 0]}),
+        json!({"name": "Input", "rows": [2, 2], "cols": [0, 3]}),
+        json!({"name": "Input", "kind": "cell"}),
+        json!({"name": "Input", "kind": "cell", "rows": [1, 1], "cols": [1, 1], "colTypes": ["number"]}),
+        json!({"name": "Input", "cols": [1, 2], "colTypes": ["number", "text"]}),
+    ] {
+        assert!(parse_macro(&input(i.clone())).is_ok(), "{i}");
+    }
+    // From a file, a macro whose declaration fails is left out with the usual warning, and the
+    // workbook's other macros open.
+    let mut file: serde_json::Value = serde_json::from_slice(&crate::io::save_bytes(&Workbook::new(), "book.json").unwrap()).unwrap();
+    file["macros"] = json!([input(json!({"name": "Input", "rows": [5, 2]})), {"name": "Fine"}]);
+    let (wb, warnings) = crate::io::open_bytes("book.json", file.to_string().as_bytes()).unwrap();
+    assert_eq!(wb.macros.iter().map(|m| m.name.as_str()).collect::<Vec<_>>(), ["Fine"]);
+    assert_eq!(warnings.len(), 1, "{warnings:?}");
+}
+
+#[test]
+fn the_storage_rules_hold_together_through_both_formats() {
+    // A visible name of the storage shape, a macro in a newer format and one whose input breaks
+    // the declaration rules, in one file, saved and opened again in each format and then the
+    // other: the visible name stays, the newer macro comes back whole, the broken one is left out
+    // once, and the readable one survives.
+    let newer = json!({"name": "Kept", "v": MACRO_VERSION + 1, "fromALaterBuild": true});
+    let broken = json!({"name": "Broken", "inputs": [{"name": "Input", "rows": [5, 2]}]});
+    let mut start = Workbook::new();
+    start.names.push(visible("_gc_macro_0_0"));
+    let mut file: serde_json::Value = serde_json::from_slice(&crate::io::save_bytes(&start, "book.json").unwrap()).unwrap();
+    file["macros"] = json!([newer, broken, {"name": "Good"}]);
+    let (wb, warnings) = crate::io::open_bytes("book.json", file.to_string().as_bytes()).unwrap();
+    assert_eq!(warnings.len(), 2, "one kept, one left out: {warnings:?}");
+    let expect = |wb: &Workbook, how: &str| {
+        assert_eq!(wb.macros.iter().map(|m| m.name.as_str()).collect::<Vec<_>>(), ["Good"], "{how}");
+        assert_eq!(*wb.macros_unread, std::slice::from_ref(&newer), "{how}");
+        assert_eq!(names_of(wb), ["_gc_macro_0_0"], "{how}");
+    };
+    expect(&wb, "opened");
+    for formats in [["book.xlsx", "book.json"], ["book.json", "book.xlsx"]] {
+        let mut now = wb.clone();
+        for file in formats {
+            let (back, warnings) = crate::io::open_bytes(file, &crate::io::save_bytes(&now, file).unwrap()).unwrap();
+            assert_eq!(warnings.len(), 1, "{file}: only the kept macro is reported again: {warnings:?}");
+            expect(&back, file);
+            now = back;
+        }
+    }
+    let bytes = crate::io::save_bytes(&wb, "book.xlsx").unwrap();
+    assert_eq!(names_of(&gridcraft_xlsx::read_xlsx(&bytes).unwrap().0), ["_gc_macro_0_0", "_gc_macro_1_0", "_gc_macro_2_0"]);
 }

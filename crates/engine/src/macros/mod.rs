@@ -53,7 +53,8 @@ pub fn check(m: &Macro) -> Result<(), String> {
 }
 
 /// Refuses a macro too large to keep in an xlsx file ([`stash::MAX_ITEM_CHARS`] characters of
-/// JSON), so saving a workbook never fails because of one of its macros.
+/// JSON), so a macro's size never makes a save fail. (A clashing visible name doesn't either:
+/// [`with_names`] stores the macro under another index.)
 fn check_size(m: &Macro) -> Result<(), String> {
     if macro_json(m).to_string().chars().count() > stash::MAX_ITEM_CHARS {
         return Err(format!("This macro is too large to keep in the workbook ({} characters at most).", stash::MAX_ITEM_CHARS));
@@ -106,34 +107,88 @@ pub fn fingerprint(m: &Macro) -> String {
 }
 
 /// A copy of `wb` for xlsx with each macro in hidden names (`_gc_macro_<n>_<k>`) instead of the
-/// field, or `None` when there is nothing to change.
+/// field, or `None` when there is nothing to change. The macros keep their order; the index `n`
+/// is this build's choice, so it steps around any a person's own visible name already uses.
 pub fn with_names(wb: &Workbook) -> crate::Result<Option<Workbook>> {
     // Only the numbered items are this build's: a hidden `_gc_macro_<x>_<k>` name with some
     // other key stays, as `load` leaves it.
     let stored = |n: &DefinedName| macro_item(n).is_some_and(|(_, i)| i.is_some());
-    if wb.macros.is_empty() && !wb.names.iter().any(stored) {
+    if wb.macros.is_empty() && wb.macros_unread.is_empty() && !wb.names.iter().any(stored) {
         return Ok(None);
     }
     let mut out = wb.clone();
     // One pass drops the items of the last save, and one writes the macros (a file can hold a
     // thousand macros and many thousands of names).
     out.names.retain(|n| !stored(n));
-    let items: Vec<(String, String)> = wb.macros.iter().enumerate().map(|(i, m)| (format!("{MACRO_KEY}{i}"), macro_json(m).to_string())).collect();
+    // A visible workbook-scope name of the storage shape is someone's own, and `set_many` won't
+    // write a hidden one of the same name beside it. Such a name (`_GC_MACRO_1_0`, or one a
+    // person defined after the file opened) blocks its item's key, in any chunk, so the macros
+    // take the free indices from 0 up. The keys compare as the stash reads them, so this skips
+    // exactly what `set_many` would refuse, and no arithmetic depends on a number from the file.
+    let blocked: HashSet<String> = out.names.iter().filter(|n| !n.hidden && n.scope.is_none()).filter_map(|n| stash::item_key(&n.name)).collect();
+    let free = (0..=u64::MAX).map(|i| format!("{MACRO_KEY}{i}")).filter(|key| !blocked.contains(key));
+    // Macros in a newer format follow the readable ones, written back as the file held them.
+    let texts = wb.macros.iter().map(|m| macro_json(m).to_string()).chain(wb.macros_unread.iter().map(Json::to_string));
+    let items: Vec<(String, String)> = texts.zip(free).map(|(text, key)| (key, text)).collect();
     stash::set_many(&mut out, &items)?;
-    out.macros.clear();
+    // An empty list of its own, not a copy of the shared one cleared.
+    out.macros = gridcraft_model::Macros::default();
+    out.macros_unread = std::sync::Arc::default();
     Ok(Some(out))
 }
 
-/// After a file is opened: moves macros out of hidden names into `Workbook::macros` and drops
-/// macros that are damaged, over the limits or in a newer format. Returns a warning for what was dropped.
+/// The JSON format's bytes for `wb`: the workbook, with the macros in a newer format put back into
+/// the `macros` list as the file held them.
+pub fn json_bytes(wb: &Workbook) -> crate::Result<Vec<u8>> {
+    // Every path that adds a macro checks it, so this refuses only one that skipped the check, as
+    // the xlsx save does, instead of writing a macro the next open would drop.
+    for m in &wb.macros {
+        check(m).map_err(crate::EngineError::Other)?;
+    }
+    let bytes = if wb.macros_unread.is_empty() {
+        serde_json::to_vec_pretty(wb)
+    } else {
+        serde_json::to_value(wb).and_then(|mut v| {
+            if let Some(list) = v.as_object_mut().map(|o| o.entry("macros").or_insert_with(|| Json::Array(vec![]))).and_then(Json::as_array_mut) {
+                list.extend(wb.macros_unread.iter().cloned());
+            }
+            serde_json::to_vec_pretty(&v)
+        })
+    };
+    bytes.map_err(|e| crate::EngineError::Other(e.to_string()))
+}
+
+/// Whether `v` is a macro in a newer format than this build reads.
+fn is_newer(v: &Json) -> bool {
+    v.get("v").and_then(Json::as_u64).is_some_and(|found| found > u64::from(gridcraft_model::MACRO_VERSION))
+}
+
+/// Keeps a macro in a newer format unread, if it is small enough to save back
+/// ([`stash::MAX_ITEM_CHARS`] characters of JSON, the size every xlsx save can write).
+fn keep_unread(unread: &mut Vec<Json>, v: Json, bad: &mut usize) {
+    if v.to_string().chars().count() <= stash::MAX_ITEM_CHARS {
+        unread.push(v);
+    } else {
+        *bad = bad.saturating_add(1);
+    }
+}
+
+/// After a file is opened: moves macros out of hidden names into `Workbook::macros`, keeps
+/// macros in a newer format unread (`Workbook::macros_unread`), and drops macros that are damaged
+/// or over the limits. Returns a warning for what was kept unread and one for what was dropped.
 pub fn load(wb: &mut Workbook) -> Vec<String> {
     let mut warnings = Vec::new();
     let mut bad = 0usize;
+    let mut unread = Vec::new();
     // Entries of the JSON format's field, each read on its own so a damaged one drops alone.
     let read = std::mem::take(&mut wb.macros_read);
     bad = bad.saturating_add(read.len().saturating_sub(gridcraft_model::MAX_MACROS));
-    for v in read.iter().take(gridcraft_model::MAX_MACROS) {
-        match parse_macro(v) {
+    for v in read.into_iter().take(gridcraft_model::MAX_MACROS) {
+        if is_newer(&v) {
+            keep_unread(&mut unread, v, &mut bad);
+            continue;
+        }
+        match parse_macro(&v) {
             Ok(m) => wb.macros.push(m),
             Err(_) => bad += 1,
         }
@@ -157,7 +212,12 @@ pub fn load(wb: &mut Workbook) -> Vec<String> {
     let mut item = Workbook::new();
     for ((_, key), names) in stored.into_iter().take(gridcraft_model::MAX_MACROS) {
         item.names = names;
-        match stash::get_json(&item, &key).ok_or_else(|| "unreadable".to_string()).and_then(|v| parse_macro(&v)) {
+        let v = stash::get_json(&item, &key);
+        if let Some(v) = v.as_ref().filter(|v| is_newer(v)) {
+            keep_unread(&mut unread, v.clone(), &mut bad);
+            continue;
+        }
+        match v.ok_or_else(|| "unreadable".to_string()).and_then(|v| parse_macro(&v)) {
             Ok(m) => found.push(m),
             Err(_) => bad += 1,
         }
@@ -185,9 +245,25 @@ pub fn load(wb: &mut Workbook) -> Vec<String> {
             Err(_) => bad += 1,
         }
     }
+    // Readable and unread macros together stay within the limit, the readable ones first.
+    let room = gridcraft_model::MAX_MACROS.saturating_sub(wb.macros.len());
+    bad = bad.saturating_add(unread.len().saturating_sub(room));
+    unread.truncate(room);
+    if !unread.is_empty() {
+        let one = unread.len() == 1;
+        warnings.push(format!(
+            "{} macro{} in the workbook {} made by a newer version of GridCraft: this version can't show or run {}, and saving keeps {} unchanged.",
+            unread.len(),
+            if one { "" } else { "s" },
+            if one { "was" } else { "were" },
+            if one { "it" } else { "them" },
+            if one { "it" } else { "them" },
+        ));
+    }
+    wb.macros_unread = std::sync::Arc::new(unread);
     if bad > 0 {
         warnings.push(format!(
-            "{bad} macro{} in the workbook couldn't be opened: {} damaged, made by a newer version of GridCraft, or over the limits ({} macros, {} steps each, Repeat and If nested {} deep).",
+            "{bad} macro{} in the workbook couldn't be opened: {} damaged or over the limits ({} macros, {} steps each, Repeat and If nested {} deep).",
             if bad == 1 { "" } else { "s" },
             if bad == 1 { "it is" } else { "they are" },
             gridcraft_model::MAX_MACROS,

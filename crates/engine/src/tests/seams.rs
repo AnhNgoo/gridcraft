@@ -643,6 +643,142 @@ fn a_group_ended_by_a_command_that_then_panics_keeps_its_step() {
     }
 }
 
+#[test]
+fn a_command_that_fails_rolls_back_the_groups_it_opened() {
+    // A `?` between `group_begin` and `group_end` used to leave the group open for good: Undo
+    // and Redo refused, and later edits made no steps.
+    crate::cmd::register_undoable_test_command("test.groupThenFail", |s, _| {
+        let _token = s.group_begin("Half")?;
+        put(s, "A1", "half done")?;
+        Err(EngineError::Other("stopped halfway".into()))
+    });
+    crate::cmd::register_undoable_test_command("test.editGroupThenFail", |s, _| {
+        put(s, "B1", "outside")?;
+        let _token = s.group_begin("Half")?;
+        put(s, "B2", "inside")?;
+        Err(EngineError::Other("stopped halfway".into()))
+    });
+    let mut s = s();
+    set(&mut s, "A1", "before");
+    set(&mut s, "A2", "undone");
+    s.execute("edit.undo", json!({})).unwrap();
+    s.execute("selection.set", json!({"range": "C3"})).unwrap();
+    let uid = s.doc().unwrap().uid;
+    let err = s.execute("test.groupThenFail", json!({})).unwrap_err().to_string();
+    assert!(err.contains("stopped halfway"), "{err}");
+    assert!(!s.in_group(uid), "no group is left open");
+    assert_eq!(v(&s, "A1").display(), "before");
+    assert_eq!(s.doc().unwrap().selection.a1(), "C3");
+    assert_eq!(undo_labels(&s), ["Enter Cell"]);
+    assert_eq!(s.doc().unwrap().redo.len(), 1, "the redo history comes back");
+    assert_eq!(s.execute("history.list", json!({})).unwrap()["grouping"], json!(false));
+    set(&mut s, "A3", "next");
+    assert_eq!(undo_labels(&s), ["Enter Cell", "Enter Cell"], "later edits make steps again");
+    s.execute("edit.undo", json!({})).unwrap();
+    assert!(v(&s, "A3").is_empty());
+
+    // What the command changed before opening the group stays, as for any failed command, and is
+    // a step of its own; what it changed inside the group goes.
+    assert!(s.execute("test.editGroupThenFail", json!({})).is_err());
+    assert!(!s.in_group(uid));
+    assert_eq!((v(&s, "B1").display(), v(&s, "B2").display()), ("outside".into(), String::new()));
+    assert_eq!(undo_labels(&s), ["Enter Cell", "test.editGroupThenFail"]);
+    s.execute("edit.undo", json!({})).unwrap();
+    assert!(v(&s, "B1").is_empty());
+
+    // A group open before the command stays open: only the command's own group goes.
+    let token = s.group_begin("Outer").unwrap();
+    set(&mut s, "D1", "outer");
+    assert!(s.execute("test.groupThenFail", json!({})).is_err());
+    assert!(s.in_group(uid), "the outer group is still running");
+    assert_eq!((v(&s, "A1").display(), v(&s, "D1").display()), ("before".into(), "outer".into()));
+    assert!(s.group_end(token).unwrap());
+    assert_eq!(undo_labels(&s), ["Enter Cell", "Outer"]);
+    s.execute("edit.undo", json!({})).unwrap();
+    assert!(v(&s, "D1").is_empty());
+}
+
+#[test]
+fn stop_action_rolls_back_a_group_left_open() {
+    // A host that dropped its token, or a debugger the person wants to abandon: the message on
+    // Undo names the command that stops it, and the command puts the start back.
+    let mut s = s();
+    set(&mut s, "A1", "start");
+    set(&mut s, "A2", "undone");
+    s.execute("edit.undo", json!({})).unwrap();
+    let uid = s.doc().unwrap().uid;
+    let token = s.group_begin("Debug").unwrap();
+    set(&mut s, "A1", "step 1");
+    drop(s.group_begin("Inner").unwrap());
+    set(&mut s, "A3", "step 2");
+    let err = s.execute("edit.undo", json!({})).unwrap_err().to_string();
+    assert!(err.contains("automate.stopAction"), "{err}");
+    assert_eq!(s.execute("automate.stopAction", json!({})).unwrap(), json!({"stopped": true}));
+    assert!(!s.in_group(uid));
+    assert_eq!(v(&s, "A1").display(), "start");
+    assert!(v(&s, "A3").is_empty());
+    assert_eq!(undo_labels(&s), ["Enter Cell"], "stopping is not a step of its own");
+    assert_eq!(s.doc().unwrap().redo.len(), 1, "the redo history comes back");
+    assert!(s.group_end(token).is_err(), "the token is spent");
+    assert_eq!(s.execute("automate.stopAction", json!({})).unwrap(), json!({"stopped": false}));
+    s.execute("edit.redo", json!({})).unwrap();
+    assert_eq!(v(&s, "A2").display(), "undone");
+    // Other documents keep their groups.
+    let other = s.new_workbook();
+    let other_uid = s.documents()[other].uid;
+    let _kept = s.group_begin("Theirs").unwrap();
+    s.set_active(0);
+    assert_eq!(s.execute("automate.stopAction", json!({})).unwrap(), json!({"stopped": false}));
+    assert!(s.in_group(other_uid));
+}
+
+fn history_of(s: &Session) -> Vec<(String, *const gridcraft_model::Workbook)> {
+    let d = s.doc().unwrap();
+    d.undo.iter().chain(d.redo.iter()).map(|e| (e.label.clone(), std::sync::Arc::as_ptr(&e.wb))).collect()
+}
+
+#[test]
+fn queries_take_no_copy_of_the_history() {
+    // `execute` copies the history so a panic can put it back; a query leaves it alone, so the
+    // copy is skipped for the queries front ends run all the time.
+    let mut s = s();
+    for i in 0..50 {
+        set(&mut s, "A1", &i.to_string());
+    }
+    s.execute("edit.undo", json!({})).unwrap();
+    super::HISTORY_COPIES.with(|n| n.set(0));
+    for _ in 0..100 {
+        s.execute("history.list", json!({})).unwrap();
+        s.execute("cell.get", json!({"cell": "A1"})).unwrap();
+        s.execute("document.inspect", json!({})).unwrap();
+    }
+    assert_eq!(super::HISTORY_COPIES.with(|n| n.get()), 0);
+    set(&mut s, "A2", "x");
+    assert_eq!(super::HISTORY_COPIES.with(|n| n.get()), 1, "a command that can change it still copies it");
+}
+
+#[test]
+fn every_query_leaves_the_history_alone() {
+    // What lets a query skip the copy: none of them changes the undo or redo history.
+    let mut s = Session::new();
+    s.execute("file.new", json!({"sample": "sales"})).unwrap();
+    set(&mut s, "A1", "1");
+    set(&mut s, "A1", "2");
+    s.execute("edit.undo", json!({})).unwrap();
+    let before = history_of(&s);
+    assert_eq!(before.len(), 2);
+    let mut queries = 0;
+    for spec in crate::command_specs().iter().filter(|c| !c.journal && !c.undoable) {
+        queries += 1;
+        for params in [json!({}), json!({"range": "A1:B3", "cell": "A1", "sheet": 0}), json!([1, 2])] {
+            let _ = s.execute(spec.id, params.clone());
+            s.set_active(0);
+            assert_eq!(history_of(&s), before, "{} {params}", spec.id);
+        }
+    }
+    assert!(queries > 40, "{queries}");
+}
+
 // ---------------------------------------------------------------- recording buffer
 
 fn recorded_ids(s: &Session) -> Vec<String> {
@@ -660,6 +796,74 @@ fn a_headless_call_that_fails_for_want_of_a_file_is_not_recorded() {
     assert_eq!(recorded_ids(&s), ["cell.set"]);
     let rec = s.stop_recording().unwrap();
     assert_eq!(rec.dropped, 0);
+}
+
+#[test]
+fn a_call_that_only_opens_a_dialog_is_not_recorded() {
+    // Menu-style calls with no parameters only queue their dialog; the dialog's confirming call
+    // is the step, so playing the recording back runs each command once, with its parameters.
+    let mut s = s();
+    s.start_recording();
+    for id in ["file.open", "data.fromTextCsv", "home.formatCells"] {
+        s.execute(id, json!({})).unwrap_or_else(|e| panic!("{id}: {e}"));
+        let dialogs = s.take_ui_requests();
+        assert!(dialogs.iter().any(|q| matches!(q, crate::UiRequest::Dialog(..))), "{id} opens a dialog: {dialogs:?}");
+    }
+    assert!(recorded_ids(&s).is_empty(), "{:?}", recorded_ids(&s));
+    set(&mut s, "A1", "1");
+    s.execute("home.formatCells", json!({"range": "A1", "style": {"bold": true}})).unwrap();
+    assert_eq!(recorded_ids(&s), ["cell.set", "home.formatCells"]);
+    // A dialog queued before the call, and not taken yet, does not hide the call.
+    s.execute("file.open", json!({})).unwrap();
+    set(&mut s, "A2", "2");
+    assert_eq!(recorded_ids(&s), ["cell.set", "home.formatCells", "cell.set"]);
+    assert_eq!(s.stop_recording().unwrap().dropped, 0);
+}
+
+#[test]
+fn stop_action_runs_only_on_its_own_and_is_not_recorded() {
+    // A step of an action in progress may not stop the action: nested, the command is refused
+    // and the action's group stays. Nor is Stop Action a step of the person's work: a recording
+    // leaves it out, so playing the recording back never stops the run it is part of.
+    let mut s = s();
+    s.start_recording();
+    let r: crate::Result<()> = s.grouped("Outer", |s| {
+        set(s, "A1", "one");
+        let err = s.execute_nested("automate.stopAction", json!({})).unwrap_err().to_string();
+        assert!(err.contains("on its own"), "{err}");
+        set(s, "A2", "two");
+        Ok(())
+    });
+    r.unwrap();
+    assert_eq!(v(&s, "A2").display(), "two");
+    assert_eq!(undo_labels(&s), ["Outer"], "the action kept its group");
+    // On its own it stops a group left open; the recording keeps the edits and not the stop.
+    let _left = s.group_begin("Left open").unwrap();
+    set(&mut s, "A3", "three");
+    assert_eq!(s.execute("automate.stopAction", json!({})).unwrap(), json!({"stopped": true}));
+    assert!(v(&s, "A3").is_empty());
+    assert_eq!(recorded_ids(&s), ["cell.set", "cell.set", "cell.set"]);
+    assert_eq!(s.stop_recording().unwrap().dropped, 0);
+}
+
+#[test]
+fn a_run_that_edits_and_opens_a_dialog_is_recorded() {
+    // A script with an edit before a menu-style step: the edit happened, so the run is a step of
+    // the recording (the person's confirming call is another). Only a call that opened a dialog
+    // and changed nothing is left out.
+    let mut s = s();
+    let edit_then_dialog = json!([{"command": "cell.set", "params": {"cell": "B1", "input": "1"}}, {"command": "home.formatCells", "params": {}}]);
+    let dialog_only = json!([{"command": "home.formatCells", "params": {}}]);
+    s.execute("automate.newScript", json!({"name": "Edit", "commands": edit_then_dialog})).unwrap();
+    s.execute("automate.newScript", json!({"name": "Ask", "commands": dialog_only})).unwrap();
+    s.start_recording();
+    s.execute("automate.runScript", json!({"name": "Ask"})).unwrap();
+    assert!(s.take_ui_requests().iter().any(|q| matches!(q, crate::UiRequest::Dialog(..))));
+    assert!(recorded_ids(&s).is_empty(), "{:?}", recorded_ids(&s));
+    s.execute("automate.runScript", json!({"name": "Edit"})).unwrap();
+    assert!(s.take_ui_requests().iter().any(|q| matches!(q, crate::UiRequest::Dialog(..))));
+    assert_eq!(recorded_ids(&s), ["automate.runScript"], "the edit happened, so the run is a step");
+    assert_eq!(s.stop_recording().unwrap().dropped, 0);
 }
 
 #[test]
@@ -801,6 +1005,22 @@ fn documents_know_where_they_came_from() {
     // Moving and copying sheets inside it changes nothing.
     s.execute("sheet.move", json!({"to": 0, "copy": true})).unwrap();
     assert_eq!(trust(&s), Trust::FromFile);
+}
+
+#[test]
+fn whoever_makes_a_document_says_where_it_came_from() {
+    // No default trust: a document built from bytes outside `file.open` (a recovery copy, a
+    // template) is untrusted because its maker says so, not trusted because it forgot to.
+    let mut s = Session::new();
+    let bytes = gridcraft_xlsx::write_xlsx(&gridcraft_model::Workbook::new()).unwrap();
+    let (wb, _) = crate::io::open_bytes("recovered.xlsx", &bytes).unwrap();
+    s.add_document(crate::DocState::new(wb, None, "Recovered".into(), Trust::FromFile));
+    assert_eq!(trust(&s), Trust::FromFile);
+    assert_eq!(s.execute("document.inspect", json!({})).unwrap()["trust"], "fromFile");
+    s.add_document(crate::DocState::new(gridcraft_model::Workbook::new(), None, "Made here".into(), Trust::Local));
+    assert_eq!(trust(&s), Trust::Local);
+    s.new_workbook();
+    assert_eq!(trust(&s), Trust::Local);
 }
 
 #[test]
