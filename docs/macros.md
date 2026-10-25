@@ -67,7 +67,7 @@ it does not use.
 
 Each macro carries its format version, `v` (1 in this version; a missing `v` reads as 1). When a
 file is opened, a macro in a newer format (a `v` above 1) is kept unread, with a warning: this
-version can't show or run it, and saving writes it back exactly as the file held it, so the newer
+version can't show or run it, and saving writes it back unchanged, so the newer
 version gets it back whole. It is never read in part. Kept macros count toward the 1,000-macro
 limit after the readable ones, and one too large for an xlsx file is left out. A macro that is
 damaged or over the limits is left out with one warning, and the rest of the workbook and its
