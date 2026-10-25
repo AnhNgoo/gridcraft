@@ -74,13 +74,18 @@ impl Recorder {
         (self.steps.len(), self.dropped)
     }
 
-    /// Takes back the steps recorded since `mark` (an undo group that recorded them was rolled
-    /// back, so playing them back would make edits the workbook no longer has).
-    pub(crate) fn cut_back(&mut self, (len, dropped): (usize, usize)) {
-        if self.steps.len() > len {
-            self.steps.truncate(len);
+    /// Takes back the steps recorded in the document with uid `doc` since `mark` (an undo group
+    /// on it was rolled back, so playing them back would make edits it no longer has). Steps in
+    /// other documents stay: their edits do too. Steps the buffer dropped stay counted.
+    pub(crate) fn cut_back(&mut self, (len, _): (usize, usize), doc: u64) {
+        let before = self.steps.len();
+        let mut i = 0;
+        self.steps.retain(|s| {
+            i += 1;
+            i <= len || s.doc != doc
+        });
+        if self.steps.len() != before {
             self.bytes = self.steps.iter().map(|s| serde_json::to_vec(s).map_or(0, |v| v.len())).sum();
         }
-        self.dropped = self.dropped.min(dropped);
     }
 }
