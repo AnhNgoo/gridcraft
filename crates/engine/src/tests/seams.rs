@@ -844,6 +844,16 @@ fn stop_action_runs_only_on_its_own_and_is_not_recorded() {
     assert_eq!(s.execute("automate.stopAction", json!({})).unwrap(), json!({"stopped": true}));
     assert!(v(&s, "A3").is_empty());
     assert_eq!(recorded_ids(&s), ["cell.set", "cell.set"]);
+    // An edit recorded in another workbook while the group was open stays, as its edit does.
+    let first = s.active_index();
+    let _left = s.group_begin("Left open").unwrap();
+    set(&mut s, "A4", "four");
+    s.new_workbook();
+    set(&mut s, "B1", "other");
+    s.set_active(first);
+    assert_eq!(s.execute("automate.stopAction", json!({})).unwrap(), json!({"stopped": true}));
+    assert_eq!(recorded_ids(&s), ["cell.set", "cell.set", "cell.set"], "the other workbook's edit stays");
+    assert_eq!(s.recorder.as_ref().unwrap().steps.last().map(|st| st.params["cell"].clone()), Some(json!("B1")));
     assert_eq!(s.stop_recording().unwrap().dropped, 0);
 }
 

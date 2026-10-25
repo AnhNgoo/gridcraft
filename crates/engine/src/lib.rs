@@ -626,6 +626,9 @@ impl Session {
             return Err(EngineError::Disabled(id.to_string(), macros::debug::BUSY.into()));
         }
         let before = self.active().map(|d| (d.uid, d.wb.clone(), d.selection.clone()));
+        // A dry run inside this command that a panic cuts short leaves journaling paused and its
+        // touch log open; the panic branch puts both back.
+        let paused_before = self.journal_paused;
         let params = if params.is_null() { Json::Object(Default::default()) } else { params };
         let (first_group, group_epoch) = (self.next_group, self.group_epoch);
         // Whether a group was open on the document before the command, and how long its history was.
@@ -692,14 +695,18 @@ impl Session {
                     }
                     d.calc.rebuild(&d.wb);
                 }
+                if self.journal_paused != paused_before {
+                    self.journal_paused = paused_before;
+                    for d in self.docs.iter_mut() {
+                        d.touched = None;
+                    }
+                }
                 if self.depth == 0 {
                     // Only the `macro.debug` call itself can lose the run's place: a command nested
                     // in a step that panics is an error of that step, which the run handles.
                     macros::debug::recover(self);
                     self.trim_history();
                     self.group_step = None;
-                    // A dry run the panic cut short never put journaling back on.
-                    self.journal_paused = 0;
                 }
                 return Err(EngineError::Internal(id.to_string(), msg));
             }
@@ -956,7 +963,7 @@ impl Session {
         // The steps recorded while the group was open go with their edits (all of them when the
         // recording started inside the group).
         if let Some(rec) = self.recorder.as_mut() {
-            rec.cut_back(g.recorded.unwrap_or((0, 0)));
+            rec.cut_back(g.recorded.unwrap_or((0, 0)), g.doc);
         }
         // The record of the last group step stays when the document is back exactly where that
         // step left it (this group began there); otherwise the rollback is where the group ended.
