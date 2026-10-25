@@ -146,7 +146,7 @@ fn start(s: &mut Session, p: &Json) -> Result<Json> {
     };
     let start_wb = s.doc()?.wb.clone();
     let token = s.group_begin(&format!("Run Macro: {}", b.mac.name))?;
-    // The run's machine: it checks each step for writes over data when the footprint was partial.
+    // The run's machine: unless the rule is overwrite, it checks each step for writes over data.
     let mut machine = match super::run::make_way(s, &b) {
         Ok((machine, _)) => machine,
         Err(e) => {

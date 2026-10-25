@@ -209,6 +209,9 @@ pub struct DocState {
     /// While a macro's footprint is measured: every cell a command wrote, by sheet name, even
     /// where it wrote what was already there.
     pub touched: Option<Vec<(String, CellRef)>>,
+    /// While a macro step runs: the structural edits its command made (the sheet's name, the
+    /// edit), so the macro's inputs, output and Repeat ranges follow their cells as formulas do.
+    pub edits: Option<Vec<(String, gridcraft_formula::adjust::Edit)>>,
     /// The references `edit.goTo` with `record: true` went to in this document, newest first,
     /// without names, each area written with its sheet (`Sheet1!B14:C22,Sheet1!F19:G30`).
     pub go_to_recent: Vec<String>,
@@ -303,6 +306,7 @@ impl DocState {
             scripts_trusted,
             trust,
             touched: None,
+            edits: None,
             go_to_recent: vec![],
         }
     }

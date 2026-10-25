@@ -611,7 +611,7 @@ impl Drop for ScriptSandbox {
 /// thread is being torn down).
 fn script_sandbox_check(path: &str) -> Result<()> {
     if SCRIPT_SANDBOX.try_with(|c| c.get() > 0).unwrap_or(true) {
-        return Err(EngineError::Other(format!("{path}: scripts can't read or write files")));
+        return Err(EngineError::Other(format!("{path}: scripts, and macro steps without the permission, can't read or write files")));
     }
     Ok(())
 }
