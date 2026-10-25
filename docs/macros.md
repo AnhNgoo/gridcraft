@@ -9,8 +9,7 @@ error (a file it already wrote stays), checks where its results will land before
 and does not touch files without permission.
 Agents run macros with `macro.run` like any other command.
 
-This page describes the engine and its commands. The macro interface (a Macros list, a recorder
-button and a step editor) is not part of it yet.
+This page describes the engine and its commands, not a user interface for macros.
 
 
 ## A macro

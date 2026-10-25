@@ -1,6 +1,6 @@
 # Architecture
 
-> **Last reviewed:** 2026-10-10 · **Last updated:** 2026-10-24 · **Change:** minor (macro engine on the engine building blocks) · **Target:** Microsoft Excel (Microsoft 365)
+> **Last reviewed:** 2026-10-10 · **Last updated:** 2026-10-25 · **Change:** trivial (the hidden names that hold macros; earlier: macro engine on the engine building blocks) · **Target:** Microsoft Excel (Microsoft 365)
 
 How GridCraft is built today. Rules for contributors are in [`AGENTS.md`](../AGENTS.md).
 
@@ -132,7 +132,7 @@ Actions made of many commands (macros, a debugger that runs one step per call) u
 The macro engine (`engine/src/macros/`, commands in `cmd/macros.rs`, described in
 [`macros.md`](macros.md)) is built on these: a run is an undo group, the recorder reads the
 recording buffer, the policy asks before a macro in a `FromFile` workbook runs, and xlsx keeps
-macros as chunked hidden names (`_gc_macro_<n>`).
+macros as chunked hidden names (`_gc_macro_<n>_<k>`: macro `n`, chunk `k`).
 
 ## Agent control
 
@@ -159,6 +159,7 @@ rpm, tarball), FreeBSD, and web (WASM; WebGPU or WebGL2). Release workflows in
 
 | Date | Change | Summary |
 |---|---|---|
+| 2026-10-25 | trivial | The hidden names that hold macros are `_gc_macro_<n>_<k>` |
 | 2026-10-24 | minor | Macro engine on the building blocks (`macros/`, `cmd/macros.rs`) |
 | 2026-10-24 | minor | Engine building blocks for multi-command actions: undo groups, recording buffer, document trust, chunked hidden-name storage |
 | 2026-10-14 | minor | Document Undo's retained-cell-storage budget and latest-step guarantee |
