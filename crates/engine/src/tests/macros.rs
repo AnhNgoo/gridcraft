@@ -665,6 +665,12 @@ fn the_policy_keeps_macros_away_from_files_and_the_app() {
     let err = s.execute("macro.run", json!({"name": "Pic"})).unwrap_err().to_string();
     assert!(err.contains("would open the insertPicture dialog"), "{err}");
     assert!(s.ui_requests.is_empty());
+    // A step that would start editing a cell, or put a name in the edit, runs without it.
+    let (use_name, insert) = (json!({"name": "Rate"}), json!({"name": "SUM"}));
+    let steps = json!([{"command": "formulas.useInFormula", "params": use_name}, {"command": "formulas.insertFunction", "params": insert}]);
+    put(&mut s, json!({"name": "Edit", "output": {"onConflict": "overwrite"}, "steps": steps}));
+    s.execute("macro.run", json!({"name": "Edit"})).unwrap();
+    assert!(s.ui_requests.is_empty());
 }
 
 #[test]
@@ -1360,14 +1366,14 @@ fn a_recorded_script_run_leaves_out_the_steps_a_macro_may_not_run() {
     let mut s = s();
     let steps = json!([
         {"command": "cell.set", "params": {"cell": "B1", "input": "kept"}},
-        {"command": "window.activate", "params": {"index": 0}},
+        {"command": "app.commands", "params": {}},
         {"command": "macro.list", "params": {}}
     ]);
     s.execute("automate.newScript", json!({"name": "Mixed", "commands": steps})).unwrap();
     s.execute("macro.record", json!({"relative": false})).unwrap();
     s.execute("automate.runScript", json!({"name": "Mixed"})).unwrap();
     let r = s.execute("macro.record", json!({"stop": true, "name": "Rec"})).unwrap();
-    assert_eq!(r["skipped"], json!(["window.activate", "macro.list"]));
+    assert_eq!(r["skipped"], json!(["app.commands", "macro.list"]));
     assert_eq!(recorded(&mut s, "Rec"), ["cell.set {\"cell\":\"B1\",\"input\":\"kept\"}"]);
     s.execute("macro.run", json!({"name": "Rec", "onConflict": "overwrite"})).unwrap();
 }
