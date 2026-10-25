@@ -2013,6 +2013,7 @@ fn inputs_tab(app: &mut SheetApp, ui: &mut Ui, d: &mut Dialog, ed: &mut Editor) 
         });
     }
     if i != before {
+        tidy_input(&mut i, &before);
         if let Some(slot) = ed.draft.inputs.get_mut(k) {
             *slot = i;
         }
@@ -2060,6 +2061,30 @@ fn example_headers(app: &SheetApp, example: &str, header: bool) -> Vec<String> {
         .collect()
 }
 
+/// Keeps an input the person is editing to the shapes a macro may declare, as the edit is made:
+/// a single cell is one row and one column with no header and at most one column type; a least
+/// above its most moves the other end along (the one just set wins); and a range lists no more
+/// column types than it allows columns.
+pub fn tidy_input(i: &mut NamedInput, before: &NamedInput) {
+    if i.kind == InputKind::Cell {
+        (i.rows, i.cols, i.header) = ([1, 1], [1, 1], false);
+        i.col_types.truncate(1);
+        return;
+    }
+    for (now, was) in [(&mut i.rows, before.rows), (&mut i.cols, before.cols)] {
+        if now[1] != 0 && now[0] > now[1] {
+            if now[0] != was[0] {
+                now[1] = now[0];
+            } else {
+                now[0] = now[1];
+            }
+        }
+    }
+    if i.cols[1] != 0 {
+        i.col_types.truncate(i.cols[1] as usize);
+    }
+}
+
 /// "Use current selection as example": the selection becomes the first input's example, and its
 /// shape, header and column types are read from it.
 pub fn use_selection_as_example(app: &SheetApp, ed: &mut Editor) {
@@ -2069,11 +2094,13 @@ pub fn use_selection_as_example(app: &SheetApp, ed: &mut Editor) {
     ed.example = r.a1();
     let Some(first) = ed.draft.inputs.first_mut() else { return };
     let inferred = infer_input(sh, r);
+    let before = first.clone();
     first.kind = if r.is_single() { InputKind::Cell } else { InputKind::Range };
     first.header = inferred.0;
     first.col_types = inferred.1;
     first.cols = [r.width(), r.width()];
     first.rows = [1, 0];
+    tidy_input(first, &before);
     if first.default_ref.is_some() {
         first.default_ref = Some(ed.example.clone());
     }
@@ -2240,6 +2267,31 @@ pub fn paint_overlay(p: &egui::Painter, geo: &crate::grid::Geo, sh: &gridcraft_e
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn an_edited_input_keeps_a_shape_a_macro_may_declare() {
+        let range = NamedInput { rows: [2, 10], cols: [3, 3], header: true, col_types: vec![ColType::Number; 3], ..NamedInput::default() };
+        // Switching a range to a single cell drops what a cell can't have.
+        let mut cell = NamedInput { kind: InputKind::Cell, ..range.clone() };
+        tidy_input(&mut cell, &range);
+        assert_eq!((cell.rows, cell.cols, cell.header, cell.col_types.len()), ([1, 1], [1, 1], false, 1));
+        // A least set above the most moves the most up; a most set below the least moves the least.
+        let mut i = NamedInput { rows: [12, 10], ..range.clone() };
+        tidy_input(&mut i, &range);
+        assert_eq!(i.rows, [12, 12]);
+        let mut i = NamedInput { rows: [2, 1], ..range.clone() };
+        tidy_input(&mut i, &range);
+        assert_eq!(i.rows, [1, 1]);
+        // At most 0 is no limit; fewer columns drop the column types past them.
+        let mut i = NamedInput { rows: [12, 0], cols: [1, 2], ..range.clone() };
+        tidy_input(&mut i, &range);
+        assert_eq!((i.rows, i.cols, i.col_types.len()), ([12, 0], [1, 2], 2));
+        // Each passes the format's own check.
+        for input in [cell, i] {
+            let m = Macro { name: "M".into(), inputs: vec![input], ..Macro::default() };
+            assert_eq!(m.check_limits(), Ok(()), "{m:?}");
+        }
+    }
 
     fn steps() -> Vec<Step> {
         vec![
