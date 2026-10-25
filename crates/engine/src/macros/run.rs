@@ -508,7 +508,8 @@ impl Guard {
             if Arc::ptr_eq(ps, sa) {
                 continue;
             }
-            let in_input = |c: CellRef| inputs.iter().any(|(_, p, _)| p.sheet == si && p.range.contains(c));
+            // The inputs have followed their cells, so they are on the sheet's index now.
+            let in_input = |c: CellRef| inputs.iter().any(|(_, p, _)| p.sheet == ai && p.range.contains(c));
             let mut hit: Vec<CellRef> = ps
                 .cells
                 .diff(&sa.cells)

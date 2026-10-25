@@ -9,9 +9,10 @@ error (a file it already wrote stays), stops before it writes over data it may n
 touch files without permission.
 Agents run macros with `macro.run` like any other command.
 
-This page describes the macro format, its tokens, and running macros. The engine has no check of a
-macro before it runs, no macro debugger, recorder or management commands in this version, and no
-macro interface.
+This page describes the macro format, its tokens, and running macros. `macro.run` checks the
+macro, its inputs, its parameters and the policy before it runs, and each step as it runs; this
+version has no command that checks a macro without running it, no macro debugger, recorder or
+management commands, and no macro interface.
 
 ## A macro
 
@@ -115,7 +116,8 @@ refused rather than read as the header.
    step that writes over cells outside the inputs that held data when the run started, or deletes
    sheets or objects that were there, stops the run, which rolls the workbook back (a file already
    written stays). Moving such cells, as inserting or deleting rows or cells above them does,
-   counts as writing over them: the check compares cells by place. The rule is `onConflict` (or
+   counts as writing over them, and so does a formula whose references such a move rewrites: the
+   check compares cells by place, so it may ask about data that only moved, never the other way. The rule is `onConflict` (or
    the macro's `output.onConflict`): `ask` (the call fails with `confirm: …`; `overwrite: true`
    answers it), `fail` or `overwrite`. Shifting the data to make room (`shiftDown`,
    `shiftRight`) needs to know where the macro writes before it runs, which this version doesn't
