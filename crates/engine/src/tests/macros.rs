@@ -205,9 +205,20 @@ fn inputs_and_the_output_follow_their_cells_when_a_step_moves_them() {
         {"command": "home.insertSheet", "params": {"name": "Summary", "before": 0}},
         {"command": "cell.set", "params": {"cell": "Input", "input": "x"}}
     ]);
-    put(&mut s, json!({"name": "Front", "inputs": [{"name": "Input", "kind": "cell"}], "output": {"onConflict": "overwrite"}, "steps": steps}));
+    put(
+        &mut s,
+        json!({"name": "Front", "inputs": [{"name": "Input", "kind": "cell"}], "output": {"onConflict": "overwrite"}, "steps": steps.clone()}),
+    );
     s.execute("macro.run", json!({"name": "Front", "inputs": "Sheet1!B2"})).unwrap();
     assert_eq!((on(&s, "Sheet1", "B2"), on(&s, "Summary", "B2")), ("x".into(), "".into()));
+
+    // Data in the input: the step writes into its own input, which isn't data written over, on
+    // the input's sheet wherever it moved.
+    let mut s = super::s();
+    set(&mut s, "B2", "held");
+    put(&mut s, json!({"name": "Front", "inputs": [{"name": "Input", "kind": "cell"}], "output": {"onConflict": "fail"}, "steps": steps}));
+    s.execute("macro.run", json!({"name": "Front", "inputs": "Sheet1!B2"})).unwrap();
+    assert_eq!(on(&s, "Sheet1", "B2"), "x");
 
     // Rows inserted above: the input and the output move down with their cells.
     let mut s = super::s();
@@ -293,6 +304,297 @@ fn shifting_makes_room_and_is_checked_again() {
     let err = s.execute("macro.run", json!({"name": "Named"})).unwrap_err().to_string();
     assert!(err.contains("shifting the data didn't make room (E3 on Sheet1)"), "{err}");
     assert!(Arc::ptr_eq(&s.doc().unwrap().wb, &start));
+    // The check shifts and checks again as the run does, and puts everything back.
+    let journal = s.journal.len();
+    let c = s.execute("macro.check", json!({"name": "Named"})).unwrap();
+    assert_eq!((&c["ok"], &c["errors"]), (&json!(false), &json!(["Shifting the data doesn't make room (E3 on Sheet1)."])), "{c}");
+    assert!(Arc::ptr_eq(&s.doc().unwrap().wb, &start));
+    assert_eq!(s.journal.len(), journal);
+    // Where the shift does make room, the check says the run would go ahead.
+    let mut s = super::s();
+    data(&mut s);
+    set(&mut s, "E2", "old 1");
+    put(&mut s, totals());
+    let c = s.execute("macro.check", json!({"name": "Totals", "inputs": "B2:C5", "onConflict": "shiftDown"})).unwrap();
+    assert_eq!((&c["ok"], c.get("errors")), (&json!(true), None), "{c}");
+}
+
+#[test]
+fn stop_action_stops_a_macro_being_debugged() {
+    // Stop Action rolls back the open undo groups, the debugger's among them; the run ends with
+    // its group, and the answer says so.
+    let mut s = s();
+    data(&mut s);
+    put(&mut s, totals());
+    let (start, undo) = (s.doc().unwrap().wb.clone(), undo_labels(&s));
+    s.execute("macro.debug", json!({"action": "start", "name": "Totals", "inputs": "B2:C5", "breakpoints": ["1"]})).unwrap();
+    s.execute("macro.debug", json!({"action": "step"})).unwrap();
+    assert_eq!(v(&s, "E2").display(), "Total");
+    let r = s.execute("automate.stopAction", json!({})).unwrap();
+    assert_eq!((r["stopped"].as_bool(), r["macro"].as_str()), (Some(true), Some("Totals")), "{r}");
+    assert!(r["message"].as_str().unwrap().contains("was stopped and rolled back"), "{r}");
+    assert!(s.macro_debug.is_none(), "the debugger ended with its group");
+    assert!(Arc::ptr_eq(&s.doc().unwrap().wb, &start));
+    assert_eq!(undo_labels(&s), undo);
+    assert!(!s.in_group(s.doc().unwrap().uid));
+    set(&mut s, "A1", "free");
+    assert!(s.execute("macro.debug", json!({"action": "step"})).unwrap_err().to_string().contains("No macro is being debugged"));
+    // Stop Action on another workbook leaves the debugger alone.
+    s.execute("macro.debug", json!({"action": "start", "name": "Totals", "inputs": "B2:C5"})).unwrap();
+    s.new_workbook();
+    let r = s.execute("automate.stopAction", json!({})).unwrap();
+    assert_eq!(r, json!({"stopped": false}));
+    assert!(s.macro_debug.is_some());
+}
+
+#[test]
+fn the_debugger_runs_on_its_own_and_is_never_recorded() {
+    // As a step of a script, the debugger would outlive the script's rollback of its groups.
+    let mut s = s();
+    stepper(&mut s);
+    let start = s.doc().unwrap().wb.clone();
+    let commands = json!([
+        {"command": "macro.debug", "params": {"action": "start", "name": "Walk", "inputs": "B2:C5"}},
+        {"command": "cell.set", "params": {"cell": "A1", "input": "after"}}
+    ]);
+    s.execute("automate.newScript", json!({"name": "S", "commands": commands})).unwrap();
+    let after_script = s.doc().unwrap().wb.clone();
+    let e = s.execute("automate.runScript", json!({"name": "S"})).unwrap_err().to_string();
+    assert!(e.contains("runs on its own"), "{e}");
+    assert!(s.macro_debug.is_none());
+    assert!(Arc::ptr_eq(&s.doc().unwrap().wb, &after_script));
+    assert!(!s.in_group(s.doc().unwrap().uid));
+    set(&mut s, "A1", "free");
+    assert!(!Arc::ptr_eq(&s.doc().unwrap().wb, &start));
+    // Neither recorder keeps it.
+    s.start_recording();
+    s.execute("automate.recordActions", json!({})).unwrap();
+    debug(&mut s, json!({"action": "start", "name": "Walk", "inputs": "B2:C5"}));
+    debug(&mut s, json!({"action": "stop"}));
+    let saved = s.execute("automate.recordActions", json!({"stop": true, "name": "R"})).unwrap();
+    assert_eq!(saved["steps"], 0, "{saved}");
+    let recorded = s.stop_recording().unwrap();
+    assert!(!recorded.steps.iter().any(|st| st.id == "macro.debug"), "{:?}", recorded.steps);
+}
+
+#[test]
+fn a_debugger_whose_group_was_closed_elsewhere_locks_nothing() {
+    let mut s = s();
+    stepper(&mut s);
+    let uid = s.doc().unwrap().uid;
+    debug(&mut s, json!({"action": "start", "name": "Walk", "inputs": "B2:C5"}));
+    debug(&mut s, json!({"action": "step"}));
+    // As if a command had rolled back the open groups without telling the debugger.
+    assert!(s.abort_groups(uid));
+    set(&mut s, "A1", "free");
+    assert!(s.macro_debug.is_none(), "the lock let the edit through and ended the debugger");
+    // A debugger action says the run had ended; nothing is reported as kept or rolled back.
+    debug(&mut s, json!({"action": "start", "name": "Walk", "inputs": "B2:C5"}));
+    debug(&mut s, json!({"action": "step"}));
+    assert!(s.abort_groups(uid));
+    let e = s.execute("macro.debug", json!({"action": "stop", "keep": true})).unwrap_err().to_string();
+    assert!(e.contains("no longer being debugged"), "{e}");
+    assert!(s.macro_debug.is_none());
+    // Starting again works at once.
+    debug(&mut s, json!({"action": "start", "name": "Walk", "inputs": "B2:C5"}));
+    assert!(s.abort_groups(uid));
+    assert_eq!(debug(&mut s, json!({"action": "start", "name": "Walk", "inputs": "B2:C5"}))["state"], "paused");
+}
+
+/// Whether `a` on sheet `sheet` is bold.
+fn bold_on(s: &Session, sheet: &str, a: &str) -> bool {
+    let d = s.doc().unwrap();
+    let sh = d.wb.sheet(d.wb.sheet_index(sheet).unwrap()).unwrap();
+    d.wb.styles.get(sh.style_id(CellRef::parse(a).unwrap())).font.bold
+}
+
+#[test]
+fn between_steps_only_looking_around_runs_and_the_run_continues_where_it_was() {
+    let mut s = s();
+    s.execute("home.insertSheet", json!({"name": "Other"})).unwrap();
+    s.execute("sheet.activate", json!({"sheet": 0})).unwrap();
+    put(
+        &mut s,
+        json!({"name": "Sel", "output": {"onConflict": "overwrite"}, "steps": [
+            {"command": "selection.set", "params": {"range": "C3"}},
+            {"command": "home.bold", "params": {}}
+        ]}),
+    );
+    debug(&mut s, json!({"action": "start", "name": "Sel"}));
+    debug(&mut s, json!({"action": "step"}));
+    // Looking around runs: another sheet, another selection, Go To, Find, Copy, zoom.
+    s.execute("sheet.activate", json!({"sheet": "Other"})).unwrap();
+    s.execute("selection.set", json!({"range": "A1"})).unwrap();
+    s.execute("edit.goTo", json!({"reference": "B2"})).unwrap();
+    s.execute("edit.copy", json!({})).unwrap();
+    s.execute("view.zoom", json!({"percent": 150})).unwrap();
+    assert!(s.execute("selection.stats", json!({})).is_ok(), "queries run");
+    // Anything else waits, undoable or not, saving included.
+    let path = std::env::temp_dir().join(format!("gc-macro-debug-save-{}.xlsx", std::process::id()));
+    let busy = |r: Result<Json, EngineError>| matches!(&r, Err(EngineError::Disabled(_, why)) if why == crate::macros::debug::BUSY);
+    assert!(busy(s.execute("view.customViews", json!({"save": "Mine"}))));
+    assert!(busy(s.execute("view.pageLayout", json!({}))));
+    assert!(busy(s.execute("file.saveAs", json!({"path": path.to_string_lossy()}))));
+    assert!(busy(s.execute("file.save", json!({}))));
+    assert!(busy(s.execute("automate.recordActions", json!({}))));
+    assert!(busy(s.execute("cell.set", json!({"cell": "A1", "input": "x"}))));
+    assert!(!path.exists(), "nothing was saved");
+    // The next step runs on the run's sheet and selection, as macro.run would.
+    let st = debug(&mut s, json!({"action": "step"}));
+    assert_eq!(st["state"], "finished", "{st}");
+    assert!(bold_on(&s, "Sheet1", "C3"));
+    assert!(!bold_on(&s, "Other", "B2") && !bold_on(&s, "Other", "A1"));
+    let d = s.doc().unwrap();
+    assert_eq!((d.wb.active_sheet, d.selection.active), (0, CellRef::parse("C3").unwrap()));
+}
+
+#[test]
+fn a_panic_inside_a_step_is_that_steps_error_and_the_run_goes_on() {
+    crate::register_test_command("test.debugInnerPanics", |_, _| panic!("inner"));
+    // A step whose command catches a nested command's panic as an error and goes on editing.
+    crate::register_test_command("test.debugSwallowsPanic", |s, _| {
+        let _ = s.execute("test.debugInnerPanics", json!({}));
+        s.execute("cell.set", json!({"cell": "B1", "input": "after"}))
+    });
+    let mut s = s();
+    put(
+        &mut s,
+        json!({"name": "M", "output": {"onConflict": "overwrite"}, "steps": [
+            {"command": "cell.set", "params": {"cell": "A1", "input": "x"}},
+            {"command": "test.debugSwallowsPanic", "params": {}}
+        ]}),
+    );
+    let undo = undo_labels(&s);
+    debug(&mut s, json!({"action": "start", "name": "M"}));
+    debug(&mut s, json!({"action": "step"}));
+    let st = debug(&mut s, json!({"action": "step"}));
+    assert_eq!(st["state"], "finished", "{st}");
+    assert_eq!((v(&s, "A1").display(), v(&s, "B1").display()), ("x".into(), "after".into()));
+    let after = undo_labels(&s);
+    assert_eq!((after.len(), after.last().map(String::as_str)), (undo.len() + 1, Some("Run Macro: M")), "{after:?}");
+    s.execute("edit.undo", json!({})).unwrap();
+    assert!(v(&s, "A1").is_empty() && v(&s, "B1").is_empty());
+}
+
+#[test]
+fn debugger_parameters_are_checked_before_anything_changes() {
+    let mut s = s();
+    stepper(&mut s);
+    let start = |bps: Json| json!({"action": "start", "name": "Walk", "inputs": "B2:C5", "breakpoints": bps});
+    let e = s.execute("macro.debug", start(json!(["9"]))).unwrap_err().to_string();
+    assert!(e.contains("has no step 9 for a breakpoint"), "{e}");
+    let many: Vec<String> = (0..10_001).map(|_| "1".to_string()).collect();
+    let e = s.execute("macro.debug", start(json!(many))).unwrap_err().to_string();
+    assert!(e.contains("at most 10000"), "{e}");
+    assert!(s.macro_debug.is_none() && !s.in_group(s.doc().unwrap().uid));
+    debug(&mut s, start(json!([])));
+    // `keep` is true or false: "true" would have read as false and rolled the run back.
+    assert!(s.execute("macro.debug", json!({"action": "stop", "keep": "true"})).is_err());
+    assert!(s.execute("macro.debug", json!({"action": "step", "breakpointsOnly": "yes"})).is_err());
+    assert!(s.execute("macro.debug", json!({"action": 5})).is_err());
+    // An unknown action or step path changes nothing, breakpoints included.
+    assert!(s.execute("macro.debug", json!({"action": "leap", "breakpoints": ["2"]})).is_err());
+    assert!(s.execute("macro.debug", json!({"action": "step", "breakpoints": ["2.x"]})).is_err());
+    assert!(s.execute("macro.debug", json!({"action": "runTo", "step": "9", "breakpoints": ["2"]})).is_err());
+    let st = debug(&mut s, json!({"action": "state"}));
+    assert_eq!((st["current"]["step"].as_str(), &st["breakpoints"]), (Some("1"), &json!([])), "{st}");
+    // `breakpointsOnly` alone applies to the list the run has (none here): the flag on 3.1 no
+    // longer stops it.
+    let st = debug(&mut s, json!({"action": "continue", "breakpointsOnly": true}));
+    assert_eq!(st["state"], "finished", "{st}");
+}
+
+#[test]
+fn the_debuggers_answers_count_its_own_steps_and_say_what_stays() {
+    // `executed` counts the run's steps, not the footprint's dry run before it.
+    let mut s = s();
+    data(&mut s);
+    put(&mut s, totals());
+    let st = debug(&mut s, json!({"action": "start", "name": "Totals", "inputs": "B2:C5"}));
+    assert_eq!(st["executed"], 0, "{st}");
+    assert_eq!(debug(&mut s, json!({"action": "step"}))["executed"], 1);
+    let st = debug(&mut s, json!({"action": "continue"}));
+    assert_eq!((st["state"].as_str(), st["executed"].as_u64()), (Some("finished"), Some(3)), "{st}");
+    // A shift at the start is reported, as macro.run reports it.
+    let mut s = super::s();
+    data(&mut s);
+    set(&mut s, "E2", "old");
+    put(&mut s, totals());
+    let st = debug(&mut s, json!({"action": "start", "name": "Totals", "inputs": "B2:C5", "onConflict": "shiftDown"}));
+    assert_eq!(st["shifted"], "shiftDown", "{st}");
+    assert_eq!(debug(&mut s, json!({"action": "stop"}))["shifted"], "shiftDown");
+    // The files the run wrote stay when the workbook is put back: a failed step, a Stop step
+    // that rolls back, and stopping without keeping each say so.
+    let dir = std::env::temp_dir().join(format!("gc-macro-debug-files-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let export = json!({"command": "file.exportCsv", "params": {"path": format!("{}/out.csv", dir.to_string_lossy())}});
+    for (last, how) in [
+        (json!({"command": "cell.set", "params": {"cell": "Nowhere!A2", "input": "two"}}), "failed"),
+        (json!({"type": "stop", "message": "undo", "rollback": true}), "stopped"),
+        (json!({"command": "cell.set", "params": {"cell": "A2", "input": "two"}}), "stop"),
+    ] {
+        let mut s = super::s();
+        put(&mut s, json!({"name": "F", "output": {"onConflict": "overwrite"}, "permissions": ["file.exportCsv"], "steps": [export, last]}));
+        debug(&mut s, json!({"action": "start", "name": "F", "approve": true}));
+        debug(&mut s, json!({"action": "step"}));
+        let st = if how == "stop" { debug(&mut s, json!({"action": "stop"})) } else { debug(&mut s, json!({"action": "step"})) };
+        let msg = st["message"].as_str().unwrap_or_default();
+        assert!(msg.contains("the file step 1 (file.exportCsv) wrote stays") && !msg.contains("Nothing was changed"), "{how}: {st}");
+        assert_eq!(st["wroteFiles"], json!(["step 1 (file.exportCsv)"]), "{how}: {st}");
+    }
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn the_debugger_lists_deleted_and_renamed_sheets_and_caps_the_list() {
+    let mut s = s();
+    s.execute("home.insertSheet", json!({"name": "Sheet2"})).unwrap();
+    s.execute("home.insertSheet", json!({"name": "Sheet3"})).unwrap();
+    s.execute("sheet.activate", json!({"sheet": 0})).unwrap();
+    put(
+        &mut s,
+        json!({"name": "Sheets", "output": {"onConflict": "overwrite"}, "steps": [
+            {"command": "sheet.rename", "params": {"sheet": "Sheet2", "name": "Renamed"}},
+            {"command": "home.deleteSheet", "params": {"sheet": "Sheet3"}},
+            {"command": "cell.set", "params": {"cell": "A1", "input": "end"}}
+        ]}),
+    );
+    debug(&mut s, json!({"action": "start", "name": "Sheets"}));
+    debug(&mut s, json!({"action": "step"}));
+    let st = debug(&mut s, json!({"action": "step"}));
+    let changed = st["changed"].as_array().unwrap();
+    assert!(changed.contains(&json!("Renamed (renamed from Sheet2)")), "{st}");
+    assert!(changed.contains(&json!("Sheet3 (deleted sheet)")), "{st}");
+    assert!(!changed.iter().any(|c| c.as_str().is_some_and(|c| c.contains("(new sheet)"))), "{st}");
+    // As if a step had written cells that make more ranges than the answer lists, on two sheets.
+    let d = s.doc_mut().unwrap();
+    let mut wb = (*d.wb).clone();
+    for sh in wb.sheets.iter_mut() {
+        let sh = Arc::make_mut(sh);
+        for r in 0..600u32 {
+            sh.set_value(CellRef::new(r + 10, r % 2), gridcraft_core::Value::Number(1.0));
+        }
+    }
+    d.wb = Arc::new(wb);
+    let st = debug(&mut s, json!({"action": "state"}));
+    assert_eq!(st["changed"].as_array().unwrap().len(), 500, "{}", st["changed"].as_array().unwrap().len());
+    assert_eq!(st["changedCells"], 1200);
+    debug(&mut s, json!({"action": "stop"}));
+}
+
+#[test]
+fn the_debugger_shows_a_repeat_over_whole_columns_as_the_run_goes_over_them() {
+    let mut s = s();
+    data(&mut s);
+    put(
+        &mut s,
+        json!({"name": "Cols", "output": {"onConflict": "overwrite"}, "steps": [
+            {"type": "repeat", "over": "B:C", "of": "columns", "body": [{"command": "cell.set", "params": {"cell": "Z1", "input": "x"}}]}
+        ]}),
+    );
+    let st = debug(&mut s, json!({"action": "start", "name": "Cols"}));
+    assert_eq!(st["current"]["over"], "B2:C5", "{st}");
+    debug(&mut s, json!({"action": "stop"}));
 }
 
 #[test]

@@ -55,7 +55,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "Step Into",
             [],
             None,
-            "{action: start|step|continue|runTo|stop|state, name? and inputs?, onConflict?, approve? (start), step: path (runTo), keep?: bool (stop), breakpoints?: [\"3\", \"2.1\"], breakpointsOnly?: bool (the list replaces the steps' own breakpoints)} debugs a macro one step at a time as one undo step; edits of the workbooks it touched wait until it finishes or stops (other workbooks stay editable) → {state: paused|finished|stopped|failed, current: {step, kind, command?, params?, iteration?}, lastParams, executed, changed, atBreakpoint?, error?}",
+            "{action: start|step|continue|runTo|stop|state, name, inputs?, onConflict?, overwrite?, approve?, timeLimit?: seconds per action (start, as macro.run), step: path (runTo), keep?: bool (stop), breakpoints?: [\"3\", \"2.1\"] (steps of the macro), breakpointsOnly?: bool (the list replaces the steps' own breakpoints)} debugs a macro one step at a time; stop keeps the changes as one undo step or rolls them back. Runs on its own, never as a step of a script or macro. Until it finishes or stops, its workbook runs only macro.debug, queries, selection and sheet changes, Go To, Find, Copy, zoom, Switch Window, Close and Stop Action (other workbooks stay editable) → {state: paused|finished|stopped|failed, current: {step, kind, command?, params?, iteration?}, lastParams, executed, changed (at most 500), changedCells, atBreakpoint?, shifted?, wroteFiles?, message?, error?}",
             has_doc,
             |s, p| crate::macros::debug::debug(s, p)
         ),

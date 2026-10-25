@@ -217,7 +217,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "Stop Action",
             [],
             None,
-            "{} → {stopped: bool}: stops an action left running on the active workbook (an open undo group, such as a debugger's) and puts back the workbook and its undo history as they were when it began",
+            "{} → {stopped: bool, macro?, message?}: stops an action left running on the active workbook (an open undo group, such as a debugger's) and puts back the workbook and its undo history as they were when it began; a macro being debugged there is stopped (`macro` names it)",
             has_doc,
             stop_action
         ),
@@ -978,8 +978,13 @@ fn queries(s: &mut Session, _: &Json) -> Result<Json> {
 fn record(s: &mut Session, p: &Json) -> Result<Json> {
     if bool_param(p, "stop").unwrap_or(false) || s.recording.is_some() {
         let Some(start) = s.recording.take() else { return Ok(json!({"recording": false})) };
-        let cmds: Vec<Json> =
-            s.journal.iter().skip(start).filter(|(id, _)| !id.starts_with("automate.")).map(|(id, p)| json!({"command": id, "params": p})).collect();
+        let cmds: Vec<Json> = s
+            .journal
+            .iter()
+            .skip(start)
+            .filter(|(id, _)| !id.starts_with("automate.") && !crate::record::NOT_RECORDED.contains(&id.as_str()))
+            .map(|(id, p)| json!({"command": id, "params": p}))
+            .collect();
         let name = str_param(p, "name").map(str::to_string).unwrap_or_else(|| format!("Script {}", start));
         s.execute("automate.newScript", json!({"name": name, "commands": cmds}))?;
         return Ok(json!({"recording": false, "saved": name, "steps": cmds.len()}));
@@ -1119,7 +1124,7 @@ fn run_script(s: &mut Session, p: &Json) -> Result<Json> {
 }
 
 /// Automate › Stop Action: rolls back the undo groups open on the active workbook, so Undo and
-/// Redo work there again.
+/// Redo work there again. A macro being debugged on that workbook is stopped with them.
 fn stop_action(s: &mut Session, _: &Json) -> Result<Json> {
     // Inside another command the open groups are that command's own (an action in progress):
     // a step of it that stopped them would pull the workbook from under the rest of its run.
@@ -1127,7 +1132,16 @@ fn stop_action(s: &mut Session, _: &Json) -> Result<Json> {
         return Err(EngineError::Disabled("automate.stopAction".into(), "Stop Action runs on its own, not as a step of a script or macro.".into()));
     }
     let uid = s.doc()?.uid;
-    Ok(json!({"stopped": s.abort_groups(uid)}))
+    let mut out = json!({"stopped": s.abort_groups(uid)});
+    // A macro being debugged here had its group among them: its run is over.
+    if let Some((name, wrote_files)) = crate::macros::debug::end_stopped(s, uid) {
+        out["macro"] = json!(name);
+        out["message"] = json!(format!(
+            "Macro '{name}', which was being debugged, was stopped and rolled back. {}",
+            crate::macros::run::rolled_back(&wrote_files)
+        ));
+    }
+    Ok(out)
 }
 
 fn delete_script(s: &mut Session, p: &Json) -> Result<Json> {
