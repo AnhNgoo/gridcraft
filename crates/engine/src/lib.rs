@@ -98,7 +98,7 @@ struct OpenGroup {
     redo: Vec<HistoryEntry>,
     /// Where the recording was when the group began (`None` when nothing was recording): a
     /// rollback takes back the steps recorded since, as it takes back their edits.
-    recorded: Option<(usize, usize)>,
+    recorded: Option<(u64, u64)>,
 }
 
 /// Where the last [`Session::group_end`] or [`Session::group_rollback`] left its document: the
