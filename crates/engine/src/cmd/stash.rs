@@ -111,13 +111,20 @@ pub struct Listing<T> {
 }
 
 /// The items whose key starts with `prefix` (`"macro_"`), by lower-cased key, read in one pass
-/// over the names: the first [`MAX_ITEMS`] of [`keys`], without those over the size limit, and
-/// the count of the rest.
+/// over the names: the first [`MAX_ITEMS`] items that can be read, and the count of the readable
+/// ones past them. An item over the size limit is neither listed nor counted, so it takes no
+/// place another item could have. ([`keys`] lists keys without reading the items.)
 pub fn items(wb: &Workbook, prefix: &str) -> Listing<BTreeMap<String, String>> {
-    let all: Vec<(String, Parts)> = group(wb, prefix).into_iter().filter(|(_, parts)| parts.is_item()).collect();
-    let more = all.len().saturating_sub(MAX_ITEMS);
-    let found = all.into_iter().take(MAX_ITEMS).filter_map(|(k, parts)| assemble(&parts).map(|text| (k, text))).collect();
-    Listing { found, more }
+    let mut listing: Listing<BTreeMap<String, String>> = Listing::default();
+    for (k, parts) in group(wb, prefix) {
+        let Some(text) = parts.is_item().then(|| assemble(&parts)).flatten() else { continue };
+        if listing.found.len() < MAX_ITEMS {
+            listing.found.insert(k, text);
+        } else {
+            listing.more = listing.more.saturating_add(1);
+        }
+    }
+    listing
 }
 
 /// The text of the item held by `parts`, as [`get`] reads it.
@@ -588,6 +595,27 @@ mod tests {
         }
         assert_eq!(keys(&wb, "macro_").found, ["macro_big", "macro_legacy"]);
         assert_eq!((items(&wb, "").found.len(), items(&wb, "").more), (3, 0), "the other item too, none past the cap");
+    }
+
+    #[test]
+    fn an_item_over_the_size_limit_takes_no_place_in_a_listing() {
+        // One item too large to read sorts first and one sorts last, around MAX_ITEMS readable
+        // ones: every readable item is listed, and neither oversized one is counted as more.
+        let mut wb = Workbook::new();
+        let oversized = |wb: &mut Workbook, key: &str| {
+            for (i, formula) in chunk_formulas(&"x".repeat(MAX_ITEM_CHARS + 1)).into_iter().enumerate() {
+                wb.names.push(name(&format!("_gc_{key}_{i}"), &formula));
+            }
+        };
+        oversized(&mut wb, "macro_0");
+        for i in 0..MAX_ITEMS {
+            wb.names.push(name(&format!("_gc_macro_{i:05}_0"), &format!("\"m{i}\"")));
+        }
+        oversized(&mut wb, "macro_z");
+        assert_eq!(get(&wb, "macro_0"), None, "too large to read");
+        let listing = items(&wb, "macro_");
+        assert_eq!((listing.found.len(), listing.more), (MAX_ITEMS, 0));
+        assert!(listing.found.contains_key("macro_09999"));
     }
 
     #[test]
