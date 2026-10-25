@@ -143,7 +143,8 @@ refused rather than read as the header.
 output anchor, any approval needed and the footprint, and puts back everything the dry run
 changed. `ok` says whether `macro.run` with the same parameters would go ahead without a question;
 when it wouldn't, `errors` says why: the run would fail at a step, a Stop step rolls it back, it
-would write over data under `ask` or `fail`, shifting can't make room, or the run would go past
+would write over data under `ask` or `fail`, shifting can't make room (the check shifts and
+checks again, then puts everything back), or the run would go past
 the step or parameter limit counting the dry runs before it. The random numbers RAND gives move
 on, as after any recalculation.
 
