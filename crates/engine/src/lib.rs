@@ -102,6 +102,9 @@ struct OpenGroup {
     selection: Selection,
     /// The redo stack when the group began (a rollback puts it back).
     redo: Vec<HistoryEntry>,
+    /// Where the recording was when the group began (`None` when nothing was recording): a
+    /// rollback takes back the steps recorded since, as it takes back their edits.
+    recorded: Option<(usize, usize)>,
 }
 
 /// Where the last [`Session::group_end`] or [`Session::group_rollback`] left its document: the
@@ -442,9 +445,9 @@ pub struct Session {
     /// Serialized size of each journal entry, measured once when it is pushed, and their sum.
     journal_sizes: Vec<usize>,
     journal_bytes: usize,
-    /// Entries the journal has dropped from its front to stay within its limits, ever; a dry run
-    /// that puts the journal back needs to know how many went while it ran.
-    journal_dropped: u64,
+    /// While a dry run runs (the footprint, `macro.check`), its commands are not journaled: the
+    /// dry run is put back, and journaling it would evict the person's own oldest entries.
+    pub(crate) journal_paused: u32,
     pub ui_requests: Vec<UiRequest>,
     /// Format painter source style (sticky when double-clicked).
     pub format_painter: Option<(Arc<Workbook>, usize, RangeRef, bool)>,
@@ -575,14 +578,8 @@ impl Session {
             self.journal.drain(..n);
             self.journal_sizes.drain(..n);
             self.journal_bytes = kept;
-            self.journal_dropped = self.journal_dropped.saturating_add(n as u64);
             self.recording = self.recording.map(|r| r.saturating_sub(n));
         }
-    }
-
-    /// Entries dropped from the journal's front so far, for a caller that puts the journal back.
-    pub(crate) fn journal_dropped(&self) -> u64 {
-        self.journal_dropped
     }
 
     /// Cuts the journal back to its first `keep` entries, with its size bookkeeping.
@@ -695,6 +692,8 @@ impl Session {
                     macros::debug::recover(self);
                     self.trim_history();
                     self.group_step = None;
+                    // A dry run the panic cut short never put journaling back on.
+                    self.journal_paused = 0;
                 }
                 return Err(EngineError::Internal(id.to_string(), msg));
             }
@@ -720,7 +719,9 @@ impl Session {
             {
                 rec.push(record::RecordedStep { doc, sheet, sheet_name, selection, id: id.to_string(), params: cmd::journal_params(&params) });
             }
-            self.push_journal(id, cmd::journal_params(&params));
+            if self.journal_paused == 0 {
+                self.push_journal(id, cmd::journal_params(&params));
+            }
         }
         // Inside an undo group the group owns the step. A command that ended a group open before
         // it leaves the group its step and makes one of its own for what it changed after the end.
@@ -835,6 +836,7 @@ impl Session {
             wb: d.wb.clone(),
             selection: d.selection.clone(),
             redo: d.redo.clone(),
+            recorded: self.recorder.as_ref().map(record::Recorder::mark),
         };
         let token = GroupToken { id: g.id, doc: g.doc };
         self.next_group = self.next_group.saturating_add(1);
@@ -931,6 +933,11 @@ impl Session {
         d.undo.truncate(g.start);
         d.redo = g.redo;
         d.revision += 1;
+        // The steps recorded while the group was open go with their edits (all of them when the
+        // recording started inside the group).
+        if let Some(rec) = self.recorder.as_mut() {
+            rec.cut_back(g.recorded.unwrap_or((0, 0)));
+        }
         // The record of the last group step stays when the document is back exactly where that
         // step left it (this group began there); otherwise the rollback is where the group ended.
         let kept = self.group_step.as_ref().is_some_and(|st| st.doc == g.doc && st.len == g.start && Arc::ptr_eq(&st.after, &d.wb));
