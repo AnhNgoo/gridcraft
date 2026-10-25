@@ -213,7 +213,11 @@ fn a_macro_built_in_code_goes_through_the_size_check_too() {
     assert!(check(&big).unwrap_err().contains("too large"));
     let mut wb = Workbook::new();
     wb.macros.push(big);
-    assert!(crate::io::save_bytes(&wb, "book.xlsx").is_err(), "a macro that fails `check` fails the save");
+    // A macro that fails `check` fails the save in either format, rather than being written and
+    // dropped the next time the file opens.
+    for file in ["book.xlsx", "book.json"] {
+        assert!(crate::io::save_bytes(&wb, file).is_err(), "{file}");
+    }
 }
 
 fn visible(name: &str) -> DefinedName {
@@ -326,7 +330,8 @@ fn damaged_or_oversized_macros_are_dropped_with_a_warning() {
     let mut wb = Workbook::new();
     wb.macros = (0..MAX_MACROS + 5).map(|i| Macro { name: format!("M{i}"), ..Macro::default() }).collect();
     wb.macros[0].steps = vec![Step::command("x", json!({})); MAX_MACRO_STEPS + 1];
-    let bytes = crate::io::save_bytes(&wb, "many.json").unwrap();
+    // Written as another program would: a GridCraft save refuses a macro that fails `check`.
+    let bytes = serde_json::to_vec(&wb).unwrap();
     let (back, warnings) = crate::io::open_bytes("many.json", &bytes).unwrap();
     // Only the first MAX_MACROS entries are read, as in xlsx.
     assert_eq!(back.macros.len(), MAX_MACROS - 1);
@@ -339,7 +344,8 @@ fn damaged_or_oversized_macros_are_dropped_with_a_warning() {
     assert!(err.contains("too large"), "{err}");
     let mut wb = Workbook::new();
     wb.macros.push(Macro { name: "Huge".into(), steps: vec![Step::command("cell.set", json!({"input": huge}))], ..Macro::default() });
-    let bytes = crate::io::save_bytes(&wb, "huge.json").unwrap();
+    // Written as another program would: a GridCraft save refuses a macro that fails `check`.
+    let bytes = serde_json::to_vec(&wb).unwrap();
     let (back, warnings) = crate::io::open_bytes("huge.json", &bytes).unwrap();
     assert!(back.macros.is_empty() && warnings[0].starts_with("1 macro "), "{warnings:?}");
 }
@@ -368,7 +374,8 @@ fn json_field_macros_get_the_name_check_too() {
     let mut wb = Workbook::new();
     wb.macros.push(Macro { name: "a\nb".into(), ..Macro::default() });
     wb.macros.push(Macro { name: "Fine".into(), ..Macro::default() });
-    let bytes = crate::io::save_bytes(&wb, "ctl.json").unwrap();
+    // Written as another program would: a GridCraft save refuses a macro that fails `check`.
+    let bytes = serde_json::to_vec(&wb).unwrap();
     let (back, warnings) = crate::io::open_bytes("ctl.json", &bytes).unwrap();
     let names: Vec<&str> = back.macros.iter().map(|m| m.name.as_str()).collect();
     assert_eq!(names, ["Fine"]);

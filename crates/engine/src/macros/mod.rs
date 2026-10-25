@@ -128,6 +128,11 @@ pub fn with_names(wb: &Workbook) -> crate::Result<Option<Workbook>> {
 /// The JSON format's bytes for `wb`: the workbook, with the macros in a newer format put back into
 /// the `macros` list as the file held them.
 pub fn json_bytes(wb: &Workbook) -> crate::Result<Vec<u8>> {
+    // Every path that adds a macro checks it, so this refuses only one that skipped the check, as
+    // the xlsx save does, instead of writing a macro the next open would drop.
+    for m in &wb.macros {
+        check(m).map_err(crate::EngineError::Other)?;
+    }
     let bytes = if wb.macros_unread.is_empty() {
         serde_json::to_vec_pretty(wb)
     } else {
