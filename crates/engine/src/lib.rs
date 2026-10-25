@@ -615,7 +615,10 @@ impl Session {
         // recording, so stopping again after the run keeps what was recorded.
         let stops_record_actions =
             id == "automate.recordActions" && (params.get("stop").and_then(Json::as_bool) == Some(true) || self.recording.is_some());
-        if (spec.undoable || stops_record_actions) && id != "macro.debug" && locked {
+        // Stop Action rolls back the open groups, the debugger's among them, and would leave the
+        // debugger pointing at a group that is gone: stopping the macro is the debugger's own.
+        let stops_groups = id == "automate.stopAction";
+        if (spec.undoable || stops_record_actions || stops_groups) && id != "macro.debug" && locked {
             return Err(EngineError::Disabled(id.to_string(), macros::debug::BUSY.into()));
         }
         let before = self.active().map(|d| (d.uid, d.wb.clone(), d.selection.clone()));

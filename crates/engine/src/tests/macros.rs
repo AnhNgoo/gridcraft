@@ -296,6 +296,22 @@ fn shifting_makes_room_and_is_checked_again() {
 }
 
 #[test]
+fn stop_action_waits_while_a_macro_is_being_debugged() {
+    // Stop Action rolls back the open undo groups; the debugger's is one, so it waits for the
+    // debugger, which stops the macro itself.
+    let mut s = s();
+    data(&mut s);
+    put(&mut s, totals());
+    s.execute("macro.debug", json!({"action": "start", "name": "Totals", "inputs": "B2:C5", "breakpoints": ["1"]})).unwrap();
+    let r = s.execute("automate.stopAction", json!({}));
+    assert!(matches!(&r, Err(EngineError::Disabled(_, why)) if why == crate::macros::debug::BUSY), "{r:?}");
+    assert!(s.macro_debug.is_some(), "the debugger is still there");
+    s.execute("macro.debug", json!({"action": "stop"})).unwrap();
+    assert!(s.macro_debug.is_none());
+    s.execute("automate.stopAction", json!({})).unwrap();
+}
+
+#[test]
 fn closing_the_debugged_workbook_ends_the_debugger() {
     // `file.close` is not an edit, so the debugger's lock lets it through; the group went with
     // the document, and so must the debugger, or the next workbook could not debug anything and

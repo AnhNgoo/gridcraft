@@ -150,8 +150,9 @@ on, as after any recalculation.
 be given with any action; `breakpointsOnly: true` makes the list replace the steps' own flags. The
 run stays one undo step; while it is open, edits of the workbooks it touched (its own, and any
 other its steps changed) are refused with "Finish or stop the macro first", also when another
-command makes them (stopping Record Actions saves a script), and other workbooks stay
-editable. Each answer gives the next step with its parameters as they would run, the parameters
+command makes them (stopping Record Actions saves a script), and so is Automate › Stop Action,
+which would roll the run's undo group back under the debugger; `stop` ends the run instead. Other
+workbooks stay editable. Each answer gives the next step with its parameters as they would run, the parameters
 of the step that just ran, and the cells changed so far.
 
 ## Storage
