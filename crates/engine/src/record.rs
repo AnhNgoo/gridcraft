@@ -103,4 +103,19 @@ impl Recorder {
             self.ran.insert(index, steps);
         }
     }
+
+    /// Where the recording is now, for [`Recorder::cut_back`].
+    pub(crate) fn mark(&self) -> (usize, usize) {
+        (self.steps.len(), self.dropped)
+    }
+
+    /// Takes back the steps recorded since `mark` (an undo group that recorded them was rolled
+    /// back, so playing them back would make edits the workbook no longer has).
+    pub(crate) fn cut_back(&mut self, (len, dropped): (usize, usize)) {
+        if self.steps.len() > len {
+            self.steps.truncate(len);
+            self.bytes = self.steps.iter().map(|s| serde_json::to_vec(s).map_or(0, |v| v.len())).sum();
+        }
+        self.dropped = self.dropped.min(dropped);
+    }
 }

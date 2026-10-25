@@ -211,12 +211,16 @@ fn a_macro_built_in_code_goes_through_the_size_check_too() {
     };
     assert!(big.check_limits().is_ok(), "the model's limits say nothing about the size");
     assert!(check(&big).unwrap_err().contains("too large"));
-    let mut wb = Workbook::new();
-    wb.macros.push(big);
     // A macro that fails `check` fails the save in either format, rather than being written and
-    // dropped the next time the file opens.
-    for file in ["book.xlsx", "book.json"] {
-        assert!(crate::io::save_bytes(&wb, file).is_err(), "{file}");
+    // dropped the next time the file opens: too large, or past the model's limits.
+    let bad_name = Macro { name: "Two\nlines".into(), ..Macro::default() };
+    assert!(check(&bad_name).is_err());
+    for m in [big, bad_name] {
+        let mut wb = Workbook::new();
+        wb.macros.push(m);
+        for file in ["book.xlsx", "book.json"] {
+            assert!(crate::io::save_bytes(&wb, file).is_err(), "{file}");
+        }
     }
 }
 

@@ -179,6 +179,11 @@ pub fn with_names(wb: &Workbook) -> crate::Result<Option<Workbook>> {
     if wb.macros.is_empty() && wb.macros_unread.is_empty() && !wb.names.iter().any(stored) {
         return Ok(None);
     }
+    // A macro that skipped `check` (built in code) fails the save, as the JSON save does, rather
+    // than being written and dropped the next time the file opens.
+    for m in wb.macros.iter() {
+        check(m).map_err(crate::EngineError::Other)?;
+    }
     let mut out = wb.clone();
     // One pass drops the items of the last save, and one writes the macros (a file can hold a
     // thousand macros and many thousands of names).
