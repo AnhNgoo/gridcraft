@@ -1008,10 +1008,9 @@ struct Saved {
     clipboard: Option<crate::Clipboard>,
     prefs: crate::Prefs,
     mode: crate::Mode,
-    /// The journal's length and how many entries it had dropped from its front; a dry run that
-    /// pushes past the journal's limits drops more, which a length alone cannot see.
+    /// The journal's length: the dry run journals nothing (`Session::journal_paused`), so nothing
+    /// of the person's is evicted, and the length puts back exactly what was there.
     journal: usize,
-    journal_dropped: u64,
     recording: Option<usize>,
     ui_requests: usize,
     format_painter: Option<(Arc<Workbook>, usize, RangeRef, bool)>,
@@ -1024,9 +1023,10 @@ struct Saved {
 }
 
 impl Saved {
+    /// Takes the state and stops journaling until [`Saved::restore`].
     fn take(s: &mut Session, doc: u64) -> Saved {
         let d = s.docs.iter().find(|d| d.uid == doc);
-        Saved {
+        let saved = Saved {
             active: s.active,
             docs: s.docs.iter().map(|d| d.uid).collect(),
             saved: d.map(|d| d.saved.clone()),
@@ -1039,7 +1039,6 @@ impl Saved {
             prefs: s.prefs.clone(),
             mode: s.mode,
             journal: s.journal.len(),
-            journal_dropped: s.journal_dropped(),
             recording: s.recording,
             ui_requests: s.ui_requests.len(),
             format_painter: s.format_painter.clone(),
@@ -1049,7 +1048,9 @@ impl Saved {
             draw: (s.draw_tool.clone(), s.draw_color.clone(), s.draw_width),
             comments_pane: s.comments_pane,
             show_all_notes: s.show_all_notes,
-        }
+        };
+        s.journal_paused = s.journal_paused.saturating_add(1);
+        saved
     }
 
     fn restore(self, s: &mut Session, doc: u64) {
@@ -1070,11 +1071,9 @@ impl Saved {
         s.clipboard = self.clipboard;
         s.prefs = self.prefs;
         s.mode = self.mode;
-        // Entries the dry run pushed go; entries the journal dropped meanwhile are gone for good,
-        // and the recording's start moves back with them.
-        let dropped = usize::try_from(s.journal_dropped().saturating_sub(self.journal_dropped)).unwrap_or(usize::MAX);
-        s.truncate_journal(self.journal.saturating_sub(dropped));
-        s.recording = self.recording.map(|r| r.saturating_sub(dropped));
+        s.truncate_journal(self.journal);
+        s.recording = self.recording;
+        s.journal_paused = s.journal_paused.saturating_sub(1);
         s.ui_requests.truncate(self.ui_requests);
         s.format_painter = self.format_painter;
         s.last_find = self.last_find;
@@ -1092,9 +1091,10 @@ impl Saved {
 pub fn footprint(s: &mut Session, p: &Prepared, run: &Machine) -> Result<Footprint> {
     let i = s.docs.iter().position(|d| d.uid == p.doc).ok_or(EngineError::NoDocument)?;
     s.set_active(i);
-    let saved = Saved::take(s, p.doc);
     let before = s.doc()?.wb.clone();
     let token = s.group_begin("Check Macro")?;
+    // After the calls that can fail, so nothing returns between taking and putting back.
+    let saved = Saved::take(s, p.doc);
     if let Some(d) = s.docs.iter_mut().find(|d| d.uid == p.doc) {
         d.touched = Some(Vec::new());
     }
@@ -1498,8 +1498,8 @@ fn conflict_rule(p: &Json, m: &Macro) -> Result<OnConflict> {
 /// For `macro.check`, as the run would: shifts the data, checks the footprint again, and puts
 /// everything back. What still stands in the way, or `None`.
 fn shifted_conflicts(s: &mut Session, fp: &Footprint, p: &Prepared, budget: &Machine, down: bool) -> Result<Option<String>> {
-    let saved = Saved::take(s, p.doc);
     let token = s.group_begin("Check Macro")?;
+    let saved = Saved::take(s, p.doc);
     let mut spent = budget.clone();
     (spent.executed, spent.param_bytes) = (fp.executed, fp.param_bytes);
     let again = make_room(s, fp, p, down).and_then(|()| footprint(s, p, &spent));

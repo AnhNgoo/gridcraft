@@ -418,33 +418,29 @@ fn a_dry_run_leaves_a_clean_workbook_clean() {
 }
 
 #[test]
-fn a_dry_run_puts_the_journal_back_even_after_it_trimmed_it() {
-    // Every nested command a dry run executes is journaled, so a long macro pushes the journal
-    // past its limit and the journal drops its oldest entries. Putting the journal back by its
-    // old length would then keep entries from the dry run and point a recording at the wrong
-    // place; the restore counts what was dropped.
+fn a_dry_run_leaves_the_journal_and_the_recording_start_as_they_were() {
+    // A dry run journals nothing: journaling its nested commands would push a full journal past
+    // its limit and evict the person's own oldest entries, and move Record Actions' start.
     let mut s = s();
     data(&mut s);
-    s.execute("selection.set", json!({"range": "A1"})).unwrap();
-    let journal = s.journal.clone();
-    s.recording = Some(journal.len().saturating_sub(1));
+    for i in 0..crate::JOURNAL_MAX_ENTRIES {
+        s.execute("selection.set", json!({"range": format!("A{}", i % 50 + 1)})).unwrap();
+    }
+    s.recording = Some(s.journal.len().saturating_sub(100));
     put(
         &mut s,
         json!({"name": "Long", "steps": [{"type": "repeat", "over": "A1:A200", "body": [
             {"type": "repeat", "over": "A1:A60", "body": [{"command": "cell.set", "params": {"cell": "Row.cell(1,1)", "input": "x"}}]}
         ]}]}),
     );
-    s.execute("macro.check", json!({"name": "Long"})).unwrap();
-    let sets = |j: &[(String, Json)]| j.iter().filter(|(id, _)| id == "cell.set").count();
-    assert!(sets(&s.journal) <= sets(&journal), "no dry-run entry stays");
-    assert!(s.journal.len() <= journal.len(), "{} entries, had {}", s.journal.len(), journal.len());
-    assert!(journal.ends_with(&s.journal), "what stays is the journal's own tail");
-    assert!(s.recording.is_some_and(|r| r <= s.journal.len()), "{:?}", s.recording);
-    // A short dry run leaves the journal exactly as it was.
-    put(&mut s, json!({"name": "Short", "steps": [{"command": "cell.set", "params": {"cell": "H1", "input": "x"}}]}));
     let (journal, recording) = (s.journal.clone(), s.recording);
-    s.execute("macro.check", json!({"name": "Short"})).unwrap();
-    assert_eq!((&s.journal, s.recording), (&journal, recording));
+    let c = s.execute("macro.check", json!({"name": "Long"})).unwrap();
+    assert!(c.get("footprint").is_some(), "{c}");
+    assert_eq!((s.journal.len(), s.recording), (journal.len(), recording));
+    assert!(s.journal == journal, "the journal is as it was");
+    // The check itself is a query and isn't journaled; a command after it is.
+    s.execute("selection.set", json!({"range": "B1"})).unwrap();
+    assert_eq!(s.journal.last().map(|(id, _)| id.as_str()), Some("selection.set"));
 }
 
 #[test]

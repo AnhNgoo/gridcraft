@@ -445,9 +445,9 @@ pub struct Session {
     /// Serialized size of each journal entry, measured once when it is pushed, and their sum.
     journal_sizes: Vec<usize>,
     journal_bytes: usize,
-    /// Entries the journal has dropped from its front to stay within its limits, ever; a dry run
-    /// that puts the journal back needs to know how many went while it ran.
-    journal_dropped: u64,
+    /// While a dry run runs (the footprint, `macro.check`), its commands are not journaled: the
+    /// dry run is put back, and journaling it would evict the person's own oldest entries.
+    pub(crate) journal_paused: u32,
     pub ui_requests: Vec<UiRequest>,
     /// Format painter source style (sticky when double-clicked).
     pub format_painter: Option<(Arc<Workbook>, usize, RangeRef, bool)>,
@@ -572,14 +572,8 @@ impl Session {
             self.journal.drain(..n);
             self.journal_sizes.drain(..n);
             self.journal_bytes = kept;
-            self.journal_dropped = self.journal_dropped.saturating_add(n as u64);
             self.recording = self.recording.map(|r| r.saturating_sub(n));
         }
-    }
-
-    /// Entries dropped from the journal's front so far, for a caller that puts the journal back.
-    pub(crate) fn journal_dropped(&self) -> u64 {
-        self.journal_dropped
     }
 
     /// Cuts the journal back to its first `keep` entries, with its size bookkeeping.
@@ -675,6 +669,8 @@ impl Session {
                 if self.depth == 0 {
                     self.trim_history();
                     self.group_step = None;
+                    // A dry run the panic cut short never put journaling back on.
+                    self.journal_paused = 0;
                 }
                 return Err(EngineError::Internal(id.to_string(), msg));
             }
@@ -700,7 +696,9 @@ impl Session {
             {
                 rec.push(record::RecordedStep { doc, sheet, sheet_name, selection, id: id.to_string(), params: cmd::journal_params(&params) });
             }
-            self.push_journal(id, cmd::journal_params(&params));
+            if self.journal_paused == 0 {
+                self.push_journal(id, cmd::journal_params(&params));
+            }
         }
         // Inside an undo group the group owns the step. A command that ended a group open before
         // it leaves the group its step and makes one of its own for what it changed after the end.
