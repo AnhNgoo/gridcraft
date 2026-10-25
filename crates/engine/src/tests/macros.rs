@@ -205,9 +205,20 @@ fn inputs_and_the_output_follow_their_cells_when_a_step_moves_them() {
         {"command": "home.insertSheet", "params": {"name": "Summary", "before": 0}},
         {"command": "cell.set", "params": {"cell": "Input", "input": "x"}}
     ]);
-    put(&mut s, json!({"name": "Front", "inputs": [{"name": "Input", "kind": "cell"}], "output": {"onConflict": "overwrite"}, "steps": steps}));
+    put(
+        &mut s,
+        json!({"name": "Front", "inputs": [{"name": "Input", "kind": "cell"}], "output": {"onConflict": "overwrite"}, "steps": steps.clone()}),
+    );
     s.execute("macro.run", json!({"name": "Front", "inputs": "Sheet1!B2"})).unwrap();
     assert_eq!((on(&s, "Sheet1", "B2"), on(&s, "Summary", "B2")), ("x".into(), "".into()));
+
+    // Data in the input: the step writes into its own input, which isn't data written over, on
+    // the input's sheet wherever it moved.
+    let mut s = super::s();
+    set(&mut s, "B2", "held");
+    put(&mut s, json!({"name": "Front", "inputs": [{"name": "Input", "kind": "cell"}], "output": {"onConflict": "fail"}, "steps": steps}));
+    s.execute("macro.run", json!({"name": "Front", "inputs": "Sheet1!B2"})).unwrap();
+    assert_eq!(on(&s, "Sheet1", "B2"), "x");
 
     // Rows inserted above: the input and the output move down with their cells.
     let mut s = super::s();
