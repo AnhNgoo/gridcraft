@@ -671,3 +671,36 @@ fn an_input_declaration_is_checked_as_a_whole() {
     assert_eq!(wb.macros.iter().map(|m| m.name.as_str()).collect::<Vec<_>>(), ["Fine"]);
     assert_eq!(warnings.len(), 1, "{warnings:?}");
 }
+
+#[test]
+fn the_storage_rules_hold_together_through_both_formats() {
+    // A visible name of the storage shape, a macro in a newer format and one whose input breaks
+    // the declaration rules, in one file, saved and opened again in each format and then the
+    // other: the visible name stays, the newer macro comes back whole, the broken one is left out
+    // once, and the readable one survives.
+    let newer = json!({"name": "Kept", "v": MACRO_VERSION + 1, "fromALaterBuild": true});
+    let broken = json!({"name": "Broken", "inputs": [{"name": "Input", "rows": [5, 2]}]});
+    let mut start = Workbook::new();
+    start.names.push(visible("_gc_macro_0_0"));
+    let mut file: serde_json::Value = serde_json::from_slice(&crate::io::save_bytes(&start, "book.json").unwrap()).unwrap();
+    file["macros"] = json!([newer, broken, {"name": "Good"}]);
+    let (wb, warnings) = crate::io::open_bytes("book.json", file.to_string().as_bytes()).unwrap();
+    assert_eq!(warnings.len(), 2, "one kept, one left out: {warnings:?}");
+    let expect = |wb: &Workbook, how: &str| {
+        assert_eq!(wb.macros.iter().map(|m| m.name.as_str()).collect::<Vec<_>>(), ["Good"], "{how}");
+        assert_eq!(*wb.macros_unread, std::slice::from_ref(&newer), "{how}");
+        assert_eq!(names_of(wb), ["_gc_macro_0_0"], "{how}");
+    };
+    expect(&wb, "opened");
+    for formats in [["book.xlsx", "book.json"], ["book.json", "book.xlsx"]] {
+        let mut now = wb.clone();
+        for file in formats {
+            let (back, warnings) = crate::io::open_bytes(file, &crate::io::save_bytes(&now, file).unwrap()).unwrap();
+            assert_eq!(warnings.len(), 1, "{file}: only the kept macro is reported again: {warnings:?}");
+            expect(&back, file);
+            now = back;
+        }
+    }
+    let bytes = crate::io::save_bytes(&wb, "book.xlsx").unwrap();
+    assert_eq!(names_of(&gridcraft_xlsx::read_xlsx(&bytes).unwrap().0), ["_gc_macro_0_0", "_gc_macro_1_0", "_gc_macro_2_0"]);
+}
