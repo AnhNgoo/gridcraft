@@ -196,7 +196,7 @@ on its own, never as a step of a script or macro, and is never recorded.
 
 `macro.record` toggles recording. Starting takes `relative` (default true; `false` for absolute
 references) and, from the Record Macro dialog, `name`, `shortcut` and `description`: the macro's
-name, its Ctrl+Shift shortcut letter (`"Ctrl+Shift+K"` or `"K"`) and its description. They are
+name, its Ctrl+Shift shortcut letter (`"Ctrl+Shift+M"` or `"M"`) and its description. They are
 checked at once, so a name that is taken (a kept one included), too long or holds line breaks, or a
 letter that GridCraft or another macro uses, is refused before anything is recorded. Without a name
 the macro is called `Macro1`, `Macro2` and so on. A `name` or `description` given when stopping wins
