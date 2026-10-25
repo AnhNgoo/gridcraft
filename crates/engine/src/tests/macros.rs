@@ -3,6 +3,7 @@
 use std::collections::BTreeSet;
 use std::sync::Arc;
 
+use gridcraft_core::CellRef;
 use serde_json::{Value as Json, json};
 
 use super::{s, v};
@@ -179,6 +180,58 @@ fn conflicts_ask_fail_or_overwrite() {
     s.execute("macro.run", json!({"name": "Totals", "inputs": "B2:C5", "overwrite": true})).unwrap();
     assert_eq!(v(&s, "E3").display(), "400");
     assert_eq!(v(&s, "H1").display(), "400");
+}
+
+/// The value of `cell` on the sheet called `sheet`.
+fn on(s: &Session, sheet: &str, cell: &str) -> String {
+    let wb = &s.doc().unwrap().wb;
+    wb.sheet(wb.sheet_index(sheet).unwrap()).unwrap().value(CellRef::parse(cell).unwrap()).display()
+}
+
+#[test]
+fn inputs_and_the_output_follow_their_cells_when_a_step_moves_them() {
+    // A sheet inserted in front: the input is still on Sheet1, not on whatever sheet is first now.
+    let mut s = s();
+    let steps = json!([
+        {"command": "home.insertSheet", "params": {"name": "Summary", "before": 0}},
+        {"command": "cell.set", "params": {"cell": "Input", "input": "x"}}
+    ]);
+    put(&mut s, json!({"name": "Front", "inputs": [{"name": "Input", "kind": "cell"}], "output": {"onConflict": "overwrite"}, "steps": steps}));
+    s.execute("macro.run", json!({"name": "Front", "inputs": "Sheet1!B2"})).unwrap();
+    assert_eq!((on(&s, "Sheet1", "B2"), on(&s, "Summary", "B2")), ("x".into(), "".into()));
+
+    // Rows inserted above: the input and the output move down with their cells.
+    let mut s = super::s();
+    set(&mut s, "B5", "in");
+    let steps = json!([
+        {"command": "home.insertRows", "params": {"rows": "2:3"}},
+        {"command": "cell.set", "params": {"cell": "Input", "input": "x"}},
+        {"command": "cell.set", "params": {"cell": "Output", "input": "y"}}
+    ]);
+    put(
+        &mut s,
+        json!({"name": "Down", "inputs": [{"name": "Input", "kind": "cell"}], "output": {"anchor": "D5", "onConflict": "overwrite"}, "steps": steps}),
+    );
+    s.execute("macro.run", json!({"name": "Down", "inputs": "B5"})).unwrap();
+    assert_eq!((v(&s, "B7").display(), v(&s, "D7").display()), ("x".into(), "y".into()));
+    assert_eq!((v(&s, "B5").display(), v(&s, "D5").display()), ("".into(), "".into()));
+
+    // A step that deletes an input's cells stops the run.
+    let mut s = super::s();
+    set(&mut s, "B5", "in");
+    let steps = json!([{"command": "home.deleteRows", "params": {"rows": "5"}}, {"command": "cell.set", "params": {"cell": "Input", "input": "x"}}]);
+    put(&mut s, json!({"name": "Gone", "inputs": [{"name": "Input", "kind": "cell"}], "output": {"onConflict": "overwrite"}, "steps": steps}));
+    let start = s.doc().unwrap().wb.clone();
+    let err = s.execute("macro.run", json!({"name": "Gone", "inputs": "B5"})).unwrap_err().to_string();
+    assert!(err.contains("Step 1 (home.deleteRows): It deleted the cells of Input."), "{err}");
+    assert!(Arc::ptr_eq(&s.doc().unwrap().wb, &start));
+
+    // A step inside a Repeat that changes the size of the range it goes over stops the run.
+    let mut s = super::s();
+    let body = json!([{"command": "home.insertRows", "params": {"rows": "2"}}]);
+    put(&mut s, json!({"name": "Grow", "output": {"onConflict": "overwrite"}, "steps": [{"type": "repeat", "over": "A1:A3", "body": body}]}));
+    let err = s.execute("macro.run", json!({"name": "Grow"})).unwrap_err().to_string();
+    assert!(err.contains("Step 1.1 (home.insertRows): It changed the size of the range Repeat 1 goes over."), "{err}");
 }
 
 #[test]
@@ -382,6 +435,10 @@ fn each_step_is_checked_for_writes_over_data() {
                 (_, r) => panic!("{first} {rule}: {r:?}"),
             };
             assert!(e.contains("Step 2 (cell.set): It would write over data (B1 on Sheet1)"), "{e}");
+            // The workbook is put back; a file the run wrote stays, and the message says so.
+            let left =
+                if first == &export { "The workbook was put back; the file step 1 (file.exportCsv) wrote stays." } else { "Nothing was changed." };
+            assert!(e.ends_with(left), "{e}");
             assert_eq!(v(&s, "B1").display(), "keep", "{first} {rule}");
             assert!(Arc::ptr_eq(&s.doc().unwrap().wb, &start), "{first} {rule}: rolled back");
         }
@@ -423,6 +480,46 @@ fn a_run_that_takes_another_path_than_its_check_is_still_checked() {
         });
     }
     assert_eq!(outcomes.len(), 2, "both paths were taken: {outcomes:?}");
+}
+
+#[test]
+fn run_parameters_that_would_be_ignored_are_refused() {
+    let mut s = s();
+    data(&mut s);
+    put(&mut s, totals());
+    for (p, says) in [
+        (json!({"inputs": {"Inptu": "B2:C5"}}), "it has no input called 'Inptu' (its inputs: Input)."),
+        (json!({"inputs": {"Input": 5}}), "give the input Input as reference text"),
+        (json!({"inputs": ["B2:C5"]}), "give `inputs` as reference text"),
+        (json!({"inputs": "B2:C5", "onConflict": 1}), "`onConflict` must be"),
+        (json!({"inputs": "B2:C5", "overwrite": "yes"}), "`overwrite` must be true or false."),
+        (json!({"inputs": "B2:C5", "approve": 1}), "`approve` must be true or false."),
+        (json!({"inputs": "B2:C5", "timeLimit": "30"}), "`timeLimit` must be a number of seconds above 0."),
+        (json!({"inputs": "B2:C5", "timeLimit": 0}), "`timeLimit` must be a number of seconds above 0."),
+    ] {
+        let mut p = p;
+        p["name"] = json!("Totals");
+        let err = s.execute("macro.run", p.clone()).unwrap_err().to_string();
+        assert!(err.contains(&format!("Macro 'Totals': {says}")), "{p}: {err}");
+    }
+    put(&mut s, json!({"name": "None", "steps": []}));
+    let err = s.execute("macro.run", json!({"name": "None", "inputs": "A1"})).unwrap_err().to_string();
+    assert!(err.contains("Macro 'None': it takes no inputs."), "{err}");
+    // `null` is the same as not given, and an input's name matches in any case.
+    let p = json!({"name": "Totals", "inputs": {"input": "B2:C5"}, "onConflict": null, "overwrite": true, "timeLimit": null});
+    s.execute("macro.run", p).unwrap();
+}
+
+#[test]
+fn a_run_passes_a_bounded_amount_of_parameters() {
+    // A step with a 3 MB parameter in a Repeat of 100 rows would hand its command 300 MB; the run
+    // stops at 256 MB, which matters on the web build, where there is no time limit.
+    let mut s = s();
+    let big = "x".repeat(3_000_000);
+    let body = json!([{"command": "home.bold", "params": {"range": "A1", "note": big}}]);
+    put(&mut s, json!({"name": "Big", "output": {"onConflict": "overwrite"}, "steps": [{"type": "repeat", "over": "A1:A100", "body": body}]}));
+    let err = s.execute("macro.run", json!({"name": "Big"})).unwrap_err().to_string();
+    assert!(err.contains("passed more than 256 MB of parameters to its steps"), "{err}");
 }
 
 #[test]

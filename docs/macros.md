@@ -59,9 +59,10 @@ no macro debugger, recorder or management commands in this version, and no macro
   whole macro (4,194,304 characters of JSON). A macro read from a file that breaks any of these is
   left out with a warning; it is never changed to fit. When a macro runs, a Repeat whose range has
   more rows or columns than its `max` is refused, and a run executes at most 100,000 steps (each
-  pass through a Repeat counts) and takes at most 60 seconds, both shared by the footprint dry
-  runs and the run itself (`timeLimit` to change the time; the web build has no clock, so there
-  only the step limit applies).
+  pass through a Repeat counts), passes its commands at most 256 MB of parameters, all steps
+  together, and takes at most 60 seconds, all three shared by the footprint dry runs and the run
+  itself (`timeLimit` to change the time; the web build has no clock, so there only the step and
+  parameter limits apply).
 
 ## Tokens
 
@@ -107,23 +108,32 @@ refused rather than read as the header.
    including a blank one and a token, and the policy is checked again on the parameters as they
    are when the step runs. A macro that touches files, or that came with a workbook opened from
    a file, runs once the person approves it: the call fails with `approve: …` and runs with
-   `approve: true`. Approval lasts for the session, until the macro changes.
+   `approve: true`. Approval lasts for the session, until the macro changes. Every step other
+   than an approved file step runs inside the file sandbox that scripts use, so no other
+   parameter reaches a file either.
 2. **Footprint.** Unless the conflict rule is `overwrite`, the macro first runs in dry-run mode on
-   the real workbook, and everything is put back. Cells it would write outside its
-   inputs that hold data, and sheets and objects it would
-   delete, are conflicts, handled by `onConflict` (or the macro's `output.onConflict`): `ask` (the
-   call fails with `confirm: …`; `overwrite: true` answers it), `fail`, `overwrite`, `shiftDown` or
-   `shiftRight` (Insert Cells makes room, then the footprint is checked again). Steps that touch
-   files, and Solver, end the dry run early; the footprint then says it is partial. Unless the
-   rule is `overwrite`, the run also checks every step as it goes, since the footprint can miss a
-   write: it is partial, or a value such as RAND or NOW sends the run another way than the dry
-   run. A step that writes over cells,
-   sheets or objects that held data when the run started stops the run and rolls the workbook
-   back (a file already written stays): it asks (`confirm: …`) under `ask` and fails otherwise,
-   since shifting can't make room that late.
+   the real workbook, and everything is put back. Cells it would write outside its inputs that
+   hold data, and sheets and objects it would delete, are conflicts, handled by `onConflict` (or
+   the macro's `output.onConflict`): `ask` (the call fails with `confirm: …`; `overwrite: true`
+   answers it), `fail`, `overwrite`, `shiftDown` or `shiftRight` (Insert Cells makes room, then
+   the footprint is checked again). Steps that touch files, and Solver, end the dry run early;
+   the footprint then says it is partial. Unless the rule is `overwrite`, the run also checks
+   every step as it goes, since the footprint can miss a write: it is partial, or a value such as
+   RAND or NOW sends the run another way than the dry run. A step that writes over cells, sheets
+   or objects that held data when the run started stops the run and rolls the workbook back (a
+   file already written stays): it asks (`confirm: …`) under `ask` and fails otherwise, since
+   shifting can't make room that late. Moving cells that hold data, as inserting or deleting rows
+   or cells above them does, counts as writing over them, in the footprint and in this check:
+   both compare cells by place.
 3. **Run.** One undo step, "Run Macro: Totals". Any error rolls the whole run back and names the
    step: `Step 3.1 (cell.set): …` (paths are 1-based; `2.1` is inside a Repeat, `4.then.1` inside
-   an If).
+   an If). The message ends "Nothing was changed.", or names the files the run already wrote,
+   which stay. An input the macro doesn't have, an input that isn't reference text, and
+   `onConflict`, `overwrite`, `approve` or `timeLimit` of the wrong kind are refused rather than
+   ignored. When a step inserts, deletes or moves sheets, rows, columns or cells, the inputs, the
+   output and the range of a Repeat in progress move with their cells, as references in formulas
+   do; a step that deletes one of them, or changes the size of a range a Repeat is going over,
+   stops the run.
 
 `macro.check {name, inputs?, timeLimit?}` reports the bound inputs, the output anchor, any
 approval needed and the footprint, without changing anything.
