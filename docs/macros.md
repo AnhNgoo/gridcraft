@@ -115,10 +115,11 @@ refused rather than read as the header.
    step that writes over cells outside the inputs that held data when the run started, or deletes
    sheets or objects that were there, stops the run, which rolls the workbook back (a file already
    written stays). Moving such cells, as inserting or deleting rows or cells above them does,
-   counts as writing over them: the check compares cells by place. The rule is `onConflict` (or the macro's `output.onConflict`): `ask` (the call
-   fails with `confirm: …`; `overwrite: true` answers it), `fail` or `overwrite`. Shifting the
-   data to make room (`shiftDown`, `shiftRight`) needs to know where the macro writes before it
-   runs, which this version doesn't work out, so those rules stop the run as `fail` does.
+   counts as writing over them: the check compares cells by place. The rule is `onConflict` (or
+   the macro's `output.onConflict`): `ask` (the call fails with `confirm: …`; `overwrite: true`
+   answers it), `fail` or `overwrite`. Shifting the data to make room (`shiftDown`,
+   `shiftRight`) needs to know where the macro writes before it runs, which this version doesn't
+   work out, so those rules stop the run as `fail` does.
 3. **Run.** One undo step, "Run Macro: Totals". Any error rolls the whole run back and names the
    step: `Step 3.1 (cell.set): …` (paths are 1-based; `2.1` is inside a Repeat, `4.then.1` inside
    an If). The message ends "Nothing was changed.", or names the files the run already wrote,
