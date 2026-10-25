@@ -184,7 +184,8 @@ While a macro is being debugged, its workbook is locked between steps: only `mac
 `sheet.next` and `sheet.previous`, Go To, Go To Special, Find, Copy and the zoom commands), Switch
 Window, Close (which ends the run with its workbook) and Automate › Stop Action run there.
 Everything else, undoable or not, saving included, is refused with "Finish or stop the macro
-first", also when another command runs it (stopping Record Actions saves a script). Other
+first", also when another command runs it (stopping Record Actions saves a script), and so is
+`macro.check`, whose dry run runs the macro's steps. Other
 workbooks stay editable. The person may look around between steps: before the next step runs, the
 debugger puts the active sheet and the selection back where the run left them, so the run goes on
 as `macro.run` would run it. A zoom change made meanwhile is part of the run, and is undone with

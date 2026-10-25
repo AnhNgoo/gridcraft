@@ -440,6 +440,8 @@ fn between_steps_only_looking_around_runs_and_the_run_continues_where_it_was() {
     assert!(busy(s.execute("file.save", json!({}))));
     assert!(busy(s.execute("automate.recordActions", json!({}))));
     assert!(busy(s.execute("cell.set", json!({"cell": "A1", "input": "x"}))));
+    // A check would dry-run the macro's steps, which the lock refuses: it waits too.
+    assert!(busy(s.execute("macro.check", json!({"name": "Sel"}))));
     assert!(!path.exists(), "nothing was saved");
     // The next step runs on the run's sheet and selection, as macro.run would.
     let st = debug(&mut s, json!({"action": "step"}));

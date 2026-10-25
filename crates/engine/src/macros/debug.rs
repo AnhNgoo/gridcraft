@@ -51,7 +51,9 @@ pub const LOOKS_AROUND: &[&str] = &[
 
 /// Whether command `id` (a query when `query`) runs on a workbook the debugger locks.
 pub fn runs_while_locked(id: &str, query: bool) -> bool {
-    query || id == "macro.debug" || LOOKS_AROUND.contains(&id)
+    // `macro.check` is a query, but its dry run runs the macro's steps, which the lock refuses: it
+    // waits too, rather than report the lock as the failure of a step.
+    (query && id != "macro.check") || id == "macro.debug" || LOOKS_AROUND.contains(&id)
 }
 
 /// A macro being debugged.
