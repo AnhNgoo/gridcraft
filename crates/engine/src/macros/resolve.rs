@@ -288,9 +288,12 @@ pub fn resolve_token(text: &str, env: &Env) -> R<Place> {
                 return bad(format!("'{t}': '{name}' with these arguments isn't a token method ({}).", METHODS.join(", ")));
             }
         };
-        // After a method the result is plain cells: `data` no longer applies, and only `data`
-        // keeps the header row for `col("…")`.
-        header = false;
+        // After a method the result is plain cells, except that `col` and `cols` keep the input's top
+        // row, so a later `data` still takes the header off; only `data` keeps the header row for
+        // `col("…")`.
+        if !matches!(method.as_str(), "col" | "cols") {
+            header = false;
+        }
         if method != "data" {
             names_row = None;
         }
@@ -615,7 +618,9 @@ mod tests {
             ("input", "B2:D11"),
             ("Input.col(2)", "C2:C11"),
             ("Input.col(\"Amount\")", "C2:C11"),
-            ("Input.col(\"date\").data", "D2:D11"),
+            ("Input.col(\"date\").data", "D3:D11"),
+            ("Input.cols(2..3).data", "C3:D11"),
+            ("Input.col(2).data.col(1)", "C3:C11"),
             ("Input.data", "B3:D11"),
             ("Input.data.col(2)", "C3:C11"),
             ("Input.data.col(\"Amount\")", "C3:C11"),

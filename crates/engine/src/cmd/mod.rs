@@ -109,7 +109,7 @@ pub fn can_redo(s: &Session) -> std::result::Result<(), String> {
 /// Undo and Redo wait while an undo group is open on the active document (an action that spans
 /// several calls is still running).
 fn not_grouping(s: &Session) -> std::result::Result<(), String> {
-    if s.active().is_some_and(|d| s.in_group(d.uid)) { Err("finish or stop the running action first".into()) } else { Ok(()) }
+    if s.active().is_some_and(|d| s.in_group(d.uid)) { Err("finish or stop the running action first (automate.stopAction)".into()) } else { Ok(()) }
 }
 pub fn has_clipboard(s: &Session) -> std::result::Result<(), String> {
     has_doc(s)?;

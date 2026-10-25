@@ -188,6 +188,11 @@ pub struct Workbook {
     /// Never written.
     #[serde(rename = "macros", default, skip_serializing, deserialize_with = "crate::macros::entries")]
     pub macros_read: Vec<serde_json::Value>,
+    /// Macros in a newer format than this build reads, as the file held them. They are never read,
+    /// listed or run; a save writes them back unchanged, so the newer build gets them back whole.
+    /// Shared between snapshots, as nothing changes them.
+    #[serde(skip)]
+    pub macros_unread: Arc<Vec<serde_json::Value>>,
     /// Unmodelled file content kept for saving (package root and workbook level). Not in JSON.
     #[serde(skip)]
     pub preserved: Option<Arc<crate::preserved::Preserved>>,
@@ -236,6 +241,7 @@ impl Workbook {
             csv_delimiter: None,
             macros: crate::macros::Macros::default(),
             macros_read: vec![],
+            macros_unread: Arc::default(),
             preserved: None,
             source_dir: None,
             source_path: None,

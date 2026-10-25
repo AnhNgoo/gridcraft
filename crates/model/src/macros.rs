@@ -13,8 +13,17 @@ pub const MAX_MACRO_STEPS: usize = 10_000;
 pub const MAX_MACRO_DEPTH: usize = 4;
 /// The longest macro or input name, in characters.
 pub const MAX_MACRO_NAME: usize = 255;
-/// The longest macro description or step note, in characters.
+/// The longest macro description, step note, Stop message or If value (as JSON), in characters.
 pub const MAX_MACRO_TEXT: usize = 4_096;
+/// The longest reference or token in a macro (an output anchor, an input's default range, a
+/// Repeat's range, an If's cell), in characters.
+pub const MAX_MACRO_REF: usize = 1_024;
+/// The longest shortcut text (`Ctrl+Shift+M`), in characters.
+pub const MAX_MACRO_SHORTCUT: usize = 64;
+/// The most commands a macro's permissions list.
+pub const MAX_MACRO_PERMISSIONS: usize = 256;
+/// The most column types an input lists: one per column of a sheet.
+pub const MAX_MACRO_COLUMNS: usize = 16_384;
 
 /// A recorded or hand-made macro: a list of typed steps that runs as one undo step. Most steps run
 /// a GridCraft command; Repeat, If and Stop add bounded control flow. References in step
@@ -63,11 +72,17 @@ impl Macro {
         count(&self.steps)
     }
 
-    /// Checks the format version ([`check_version`]), the size limits ([`MAX_MACRO_STEPS`],
-    /// [`MAX_MACRO_DEPTH`], name and text lengths) and that the name has no control characters.
+    /// Checks every field a file can set: the format version ([`check_version`]); the lengths of
+    /// the name, description, shortcut, notes, messages, references and command ids; the counts of
+    /// steps ([`MAX_MACRO_STEPS`]), inputs, permissions and column types; the nesting depth
+    /// ([`MAX_MACRO_DEPTH`]); and each input's declaration. Command parameters are bounded only by
+    /// the size of the whole macro, which [`MAX_MACRO_STEPS`] and the workbook's item limit cap.
+    /// Every struct is taken apart field by field, so a field added later doesn't compile here
+    /// until someone decides its limit.
     pub fn check_limits(&self) -> Result<(), String> {
-        check_version(u64::from(self.v))?;
-        let name = self.name.trim();
+        let Macro { v, name, description, shortcut, inputs, steps, output, permissions } = self;
+        check_version(u64::from(*v))?;
+        let name = name.trim();
         if name.is_empty() {
             return Err("A macro needs a name.".into());
         }
@@ -77,8 +92,19 @@ impl Macro {
         if name.chars().any(char::is_control) {
             return Err("A macro name can't hold line breaks or other control characters.".into());
         }
-        if self.description.chars().count() > MAX_MACRO_TEXT {
-            return Err(format!("A macro description can be at most {MAX_MACRO_TEXT} characters long."));
+        check_text("A macro description", description, MAX_MACRO_TEXT, false)?;
+        if let Some(shortcut) = shortcut {
+            check_text("A shortcut", shortcut, MAX_MACRO_SHORTCUT, true)?;
+        }
+        let OutputRule { anchor, on_conflict: _ } = output;
+        if let Some(anchor) = anchor {
+            check_text("The output anchor", anchor, MAX_MACRO_REF, true)?;
+        }
+        if permissions.len() > MAX_MACRO_PERMISSIONS {
+            return Err(format!("A macro can list at most {MAX_MACRO_PERMISSIONS} permissions."));
+        }
+        for p in permissions {
+            check_id("A permission", p)?;
         }
         // Count without recursing past the depth limit (a hostile file can nest deeper).
         // A Repeat or If at the top is nested 1 deep; one inside it, 2 deep.
@@ -88,24 +114,36 @@ impl Macro {
                 if *count > MAX_MACRO_STEPS {
                     return Err(format!("A macro can have at most {MAX_MACRO_STEPS} steps."));
                 }
-                if s.note.chars().count() > MAX_MACRO_TEXT {
-                    return Err(format!("A step note can be at most {MAX_MACRO_TEXT} characters long."));
+                let Step { kind, enabled: _, breakpoint: _, note } = s;
+                check_text("A step note", note, MAX_MACRO_TEXT, false)?;
+                match kind {
+                    StepKind::Command { id, params: _ } => check_id("A step's command", id)?,
+                    StepKind::Repeat { over, of: _, max: _, body: _ } => check_text("A Repeat step's range", over, MAX_MACRO_REF, true)?,
+                    StepKind::If { cell, op: _, value, then: _, otherwise: _ } => {
+                        check_text("An If step's cell", cell, MAX_MACRO_REF, true)?;
+                        // Empty and NotEmpty ignore the value, which is then null.
+                        if serde_json::to_string(value).map_or(usize::MAX, |t| t.chars().count()) > MAX_MACRO_TEXT {
+                            return Err(format!("An If step's value can be at most {MAX_MACRO_TEXT} characters long."));
+                        }
+                    }
+                    StepKind::Stop { message, rollback: _ } => check_text("A Stop message", message, MAX_MACRO_TEXT, false)?,
                 }
-                if s.kind.children().next().is_some() && level > MAX_MACRO_DEPTH {
+                if kind.children().next().is_some() && level > MAX_MACRO_DEPTH {
                     return Err(format!("Repeat and If steps can nest at most {MAX_MACRO_DEPTH} deep."));
                 }
-                for body in s.kind.children() {
+                for body in kind.children() {
                     walk(body, level + 1, count)?;
                 }
             }
             Ok(())
         }
-        walk(&self.steps, 1, &mut 0)?;
-        if self.inputs.len() > 64 {
+        walk(steps, 1, &mut 0)?;
+        if inputs.len() > 64 {
             return Err("A macro can declare at most 64 inputs.".into());
         }
-        for (k, i) in self.inputs.iter().enumerate() {
-            let n = i.name.as_str();
+        for (k, i) in inputs.iter().enumerate() {
+            let NamedInput { name, kind, rows, cols, header, col_types, non_empty: _, default_ref } = i;
+            let n = name.as_str();
             let ident = n.chars().next().is_some_and(char::is_alphabetic) && n.chars().all(|c| c.is_alphanumeric() || c == '_');
             if !ident || n.chars().count() > MAX_MACRO_NAME {
                 return Err(format!("'{n}' can't name an input: use letters, digits and _, starting with a letter."));
@@ -117,12 +155,48 @@ impl Macro {
             if gridcraft_core::RangeRef::parse(n).is_some() {
                 return Err(format!("'{n}' reads as a cell reference and can't name an input."));
             }
-            if self.inputs.iter().take(k).any(|o| o.name.eq_ignore_ascii_case(n)) {
+            if inputs.iter().take(k).any(|o| o.name.eq_ignore_ascii_case(n)) {
                 return Err(format!("Two inputs are called '{n}'."));
+            }
+            for (what, [least, most]) in [("rows", rows), ("columns", cols)] {
+                if *most != 0 && least > most {
+                    return Err(format!("Input '{n}' allows {least} to {most} {what}: the least can't be more than the most."));
+                }
+            }
+            // A cell is one row and one column ([1, 1], or the default [1, 0]) with no header.
+            let one = |b: &[u32; 2]| *b == [1, 1] || *b == [1, 0];
+            if *kind == InputKind::Cell && (!one(rows) || !one(cols) || *header || col_types.len() > 1) {
+                return Err(format!("Input '{n}' is a single cell: one row and one column, no header, at most one column type."));
+            }
+            let most = if cols[1] == 0 { MAX_MACRO_COLUMNS } else { usize::try_from(cols[1]).unwrap_or(usize::MAX).min(MAX_MACRO_COLUMNS) };
+            if col_types.len() > most {
+                return Err(format!("Input '{n}' lists the types of {} columns, but has at most {most}.", col_types.len()));
+            }
+            if let Some(r) = default_ref {
+                check_text(&format!("The default range of input '{n}'"), r, MAX_MACRO_REF, true)?;
             }
         }
         Ok(())
     }
+}
+
+/// Refuses `text` longer than `max` characters, and, for a one-line field, one that holds line
+/// breaks or other control characters.
+fn check_text(what: &str, text: &str, max: usize, one_line: bool) -> Result<(), String> {
+    if text.chars().count() > max {
+        return Err(format!("{what} can be at most {max} characters long."));
+    }
+    if one_line && text.chars().any(char::is_control) {
+        return Err(format!("{what} can't hold line breaks or other control characters."));
+    }
+    Ok(())
+}
+
+/// Refuses a command id that isn't one: empty, longer than a name, or holding anything other than
+/// letters, digits, `.` and `_` (every command id is of that form).
+fn check_id(what: &str, id: &str) -> Result<(), String> {
+    let ok = !id.is_empty() && id.len() <= MAX_MACRO_NAME && id.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'.' || b == b'_');
+    if ok { Ok(()) } else { Err(format!("{what} must be a command id (letters, digits, . and _): '{}'", id.chars().take(64).collect::<String>())) }
 }
 
 /// The macros of a workbook. Workbook snapshots share the list until one of them changes it, so
