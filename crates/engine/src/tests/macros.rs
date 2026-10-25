@@ -1,5 +1,6 @@
 //! Macros: running, input checks, the footprint dry run, the policy and the limits.
 
+use std::collections::BTreeSet;
 use std::sync::Arc;
 
 use serde_json::{Value as Json, json};
@@ -398,6 +399,30 @@ fn each_step_is_checked_for_writes_over_data() {
     s.execute("macro.run", json!({"name": "Twice", "approve": true})).unwrap();
     assert_eq!(v(&s, "E1").display(), "b");
     let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn a_run_that_takes_another_path_than_its_check_is_still_checked() {
+    // RAND gives the run other values than the dry run before it, so an If can go the other way:
+    // the write the footprint didn't see must still not go over data.
+    let mut s = s();
+    let steps = json!([
+        {"command": "cell.set", "params": {"cell": "A1", "input": "=RAND()"}},
+        {"type": "if", "cell": "A1", "op": "gt", "value": 0.5, "then": [{"command": "cell.set", "params": {"cell": "B1", "input": "over"}}]}
+    ]);
+    put(&mut s, json!({"name": "Coin", "output": {"onConflict": "fail"}, "steps": steps}));
+    let mut outcomes = BTreeSet::new();
+    for _ in 0..40 {
+        set(&mut s, "B1", "keep");
+        let r = s.execute("macro.run", json!({"name": "Coin"}));
+        assert_eq!(v(&s, "B1").display(), "keep", "{r:?}");
+        outcomes.insert(match r {
+            Ok(_) => "ran",
+            Err(e) if e.to_string().contains("would write over") => "refused",
+            Err(e) => panic!("{e}"),
+        });
+    }
+    assert_eq!(outcomes.len(), 2, "both paths were taken: {outcomes:?}");
 }
 
 #[test]

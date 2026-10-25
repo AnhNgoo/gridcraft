@@ -9,9 +9,9 @@
 //! 3. **Footprint**: unless the macro may overwrite, it first runs on the real workbook in dry-run
 //!    mode, the changes are compared with `CellStore::diff`, and everything is put back. Cells it
 //!    would write outside its inputs that already hold data are conflicts, handled by the output
-//!    rule: ask, fail, overwrite, or shift the data down or right (and check again). A dry run
-//!    that stops early (a file step, Solver) proves nothing about later steps, so the run then
-//!    checks each step as it goes.
+//!    rule: ask, fail, overwrite, or shift the data down or right (and check again). The
+//!    footprint can miss a write (a dry run stops early at a file step or Solver, and RAND or NOW
+//!    can send the run another way than the dry run), so the run also checks each step as it goes.
 //! 4. **Run**: one undo step (`Session::grouped`); an error at any step rolls everything back and
 //!    names the step.
 //!
@@ -430,27 +430,30 @@ pub struct Machine {
     pub partial: Option<(String, String)>,
     /// The last step's resolved parameters (for the debugger).
     pub last_params: Option<Json>,
-    /// Set when the footprint was partial: each step is checked for writes over data as it runs.
+    /// Set unless the macro may overwrite: each step is checked for writes over data as it runs,
+    /// since the footprint can miss a write (it stopped early, or the run took another path).
     guard: Option<Guard>,
 }
 
-/// Checks each step of a real run for writes over data the footprint couldn't see.
+/// Checks each step of a real run for writes over data the footprint didn't see.
 #[derive(Clone, Debug)]
 struct Guard {
     /// The workbook when the run started, and for each sheet now, its index there (`None` for a
     /// sheet the run added).
     start: Arc<Workbook>,
     origin: Vec<Option<usize>>,
-    /// Where the footprint stopped: "step 2 (file.exportCsv writes a file)".
-    partial: String,
+    /// Where the footprint stopped, if it did: "step 2 (file.exportCsv writes a file)".
+    partial: Option<String>,
     /// The conflict rule is ask.
     ask: bool,
 }
 
 impl Guard {
-    fn new(start: Arc<Workbook>, partial: &Json, ask: bool) -> Guard {
-        let text = |k: &str| partial.get(k).and_then(Json::as_str).unwrap_or_default().to_string();
-        let partial = format!("step {} ({})", text("step"), text("reason"));
+    fn new(start: Arc<Workbook>, partial: Option<&Json>, ask: bool) -> Guard {
+        let partial = partial.map(|p| {
+            let text = |k: &str| p.get(k).and_then(Json::as_str).unwrap_or_default().to_string();
+            format!("step {} ({})", text("step"), text("reason"))
+        });
         Guard { origin: (0..start.sheets.len()).map(Some).collect(), start, partial, ask }
     }
 
@@ -714,7 +717,11 @@ impl Machine {
             let after = s.docs.iter().find(|d| d.uid == self.doc).map(|d| d.wb.clone()).ok_or_else(|| fail("The workbook was closed.".into()))?;
             let what = g.check(&prev, &after, &self.inputs);
             if !what.is_empty() {
-                let msg = format!("It would write over data ({what}); the check before the run stopped at {} and couldn't see this.", g.partial);
+                let msg = match &g.partial {
+                    Some(at) => format!("It would write over data ({what}); the check before the run stopped at {at} and couldn't see this."),
+                    // A value such as RAND or NOW differed from the check's, and the run went another way.
+                    None => format!("It would write over data ({what}); the check before the run didn't see this write."),
+                };
                 return Err(StepError { confirm: g.ask, ..fail(msg) });
             }
         }
@@ -1167,8 +1174,9 @@ pub fn begin(s: &mut Session, name: &str, p: &Json) -> Result<Begun> {
 /// the machine for the run and whether it shifted. The dry runs count towards the run's time
 /// limit.
 ///
-/// A partial footprint proves nothing about the steps it didn't reach, so then the machine
-/// checks each step as it runs and stops the run at one that writes over data.
+/// The footprint proves nothing about steps it didn't reach (it stopped early) or a path the run
+/// takes and the dry run didn't (RAND, NOW), so the machine also checks each step as it runs and
+/// stops the run at one that writes over data.
 pub fn make_way(s: &mut Session, b: &Begun) -> Result<(Machine, bool)> {
     let (m, rule) = (&b.mac, b.rule);
     let mut machine = Machine::new(&b.prepared, false);
@@ -1213,10 +1221,8 @@ pub fn make_way(s: &mut Session, b: &Begun) -> Result<(Machine, bool)> {
             }
         }
     }
-    if let Some(p) = &fp.partial {
-        let start = s.docs.iter().find(|d| d.uid == b.prepared.doc).ok_or(EngineError::NoDocument)?.wb.clone();
-        machine.guard = Some(Guard::new(start, p, rule == OnConflict::Ask));
-    }
+    let start = s.docs.iter().find(|d| d.uid == b.prepared.doc).ok_or(EngineError::NoDocument)?.wb.clone();
+    machine.guard = Some(Guard::new(start, fp.partial.as_ref(), rule == OnConflict::Ask));
     Ok((machine, shifted))
 }
 

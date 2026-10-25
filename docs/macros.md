@@ -114,8 +114,10 @@ refused rather than read as the header.
    delete, are conflicts, handled by `onConflict` (or the macro's `output.onConflict`): `ask` (the
    call fails with `confirm: …`; `overwrite: true` answers it), `fail`, `overwrite`, `shiftDown` or
    `shiftRight` (Insert Cells makes room, then the footprint is checked again). Steps that touch
-   files, and Solver, end the dry run early; the footprint then says it is partial, and unless
-   the rule is `overwrite`, the run checks every step as it goes. A step that writes over cells,
+   files, and Solver, end the dry run early; the footprint then says it is partial. Unless the
+   rule is `overwrite`, the run also checks every step as it goes, since the footprint can miss a
+   write: it is partial, or a value such as RAND or NOW sends the run another way than the dry
+   run. A step that writes over cells,
    sheets or objects that held data when the run started stops the run and rolls the workbook
    back (a file already written stays): it asks (`confirm: …`) under `ask` and fails otherwise,
    since shifting can't make room that late.
