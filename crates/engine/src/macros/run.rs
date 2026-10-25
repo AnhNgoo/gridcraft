@@ -998,6 +998,9 @@ struct Saved {
     /// The workbook as last saved: `sheet.activate` and the view commands move it to the
     /// current workbook on a clean document, and the rollback puts the workbook back but not this.
     saved: Option<Arc<Workbook>>,
+    /// The document's revision: the rollback counts as a change, and front ends key their caches
+    /// on it, so a check that changed nothing leaves it as it was.
+    revision: Option<u64>,
     sheet_selections: Vec<Selection>,
     unlocked_ranges: Vec<(String, String)>,
     trust: Trust,
@@ -1027,6 +1030,7 @@ impl Saved {
             active: s.active,
             docs: s.docs.iter().map(|d| d.uid).collect(),
             saved: d.map(|d| d.saved.clone()),
+            revision: d.map(|d| d.revision),
             sheet_selections: d.map(|d| d.sheet_selections.clone()).unwrap_or_default(),
             unlocked_ranges: d.map(|d| d.unlocked_ranges.clone()).unwrap_or_default(),
             trust: d.map_or(Trust::Local, |d| d.trust),
@@ -1053,6 +1057,9 @@ impl Saved {
         if let Some(d) = s.docs.iter_mut().find(|d| d.uid == doc) {
             if let Some(saved) = self.saved {
                 d.saved = saved;
+            }
+            if let Some(revision) = self.revision {
+                d.revision = revision;
             }
             d.sheet_selections = self.sheet_selections;
             d.unlocked_ranges = self.unlocked_ranges;
