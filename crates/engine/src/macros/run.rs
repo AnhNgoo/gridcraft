@@ -737,14 +737,15 @@ impl Machine {
         let prev = self.guard.as_ref().and_then(|_| s.docs.iter().find(|d| d.uid == self.doc)).map(|d| d.wb.clone());
         let queued = s.ui_requests.len();
         let r = s.execute(id, resolved);
-        // Macros never open dialogs or web pages; messages for the person stay queued.
+        // Macros never open dialogs or web pages, and never start editing a cell; messages for
+        // the person stay queued.
         let mut blocked = None;
         let asked: Vec<UiRequest> = s.ui_requests.drain(queued.min(s.ui_requests.len())..).collect();
         for q in asked {
             match q {
                 UiRequest::Dialog(name, _) => blocked = Some(format!("{id} would open the {name} dialog; give the step the parameters it needs.")),
                 UiRequest::OpenUrl(_) => blocked = Some(format!("{id} would open a web page, which macros don't do.")),
-                UiRequest::EditCell(_) => {}
+                UiRequest::EditCell(_) | UiRequest::InsertName(_) => {}
                 m @ UiRequest::Message(_) => s.ui_requests.push(m),
             }
         }

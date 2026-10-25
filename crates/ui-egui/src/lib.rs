@@ -10,6 +10,7 @@ pub mod backstage;
 mod border_preview;
 mod cell_pictures;
 pub mod chartview;
+pub mod code_editor;
 pub mod control;
 pub mod credits;
 pub mod dialogs;
@@ -632,6 +633,10 @@ impl SheetApp {
                 self.ui.ribbon_collapsed = !self.ui.ribbon_collapsed;
                 Ok(Json::Null)
             }
+            "view.expandFormulaBar" => {
+                self.ui.formula_bar_expanded = p.get("on").and_then(Json::as_bool).unwrap_or(!self.ui.formula_bar_expanded);
+                Ok(json!({"on": self.ui.formula_bar_expanded}))
+            }
             "view.darkMode" => {
                 let current = if self.ui.system_theme { self.effective_dark } else { self.ui.dark };
                 self.ui.dark = p.get("on").and_then(Json::as_bool).unwrap_or(!current);
@@ -748,6 +753,7 @@ impl SheetApp {
                     });
                     self.begin_edit(text, false);
                 }
+                UiRequest::InsertName(name) => dialogs::insert_name(self, &name),
                 UiRequest::OpenUrl(u) => {
                     if let Some(f) = &self.services.open_url {
                         f(&u);
@@ -1392,7 +1398,19 @@ impl SheetApp {
                 keytips::Action::Command(id @ ("edit.copy" | "edit.cut")) => self.copy_to_clipboard(ctx, id),
                 keytips::Action::Command("edit.paste") => self.paste_from_clipboard(),
                 keytips::Action::Command(id) => self.run_or_alert(id, json!({})),
+                keytips::Action::CommandWith(id, params) => {
+                    let params: Json = serde_json::from_str(params).unwrap_or_else(|_| json!({}));
+                    // A Borders preset picked by key tip becomes the split button's face, as a
+                    // click on the same menu item does.
+                    if id == "home.borders"
+                        && let Some(preset) = params.get("preset").and_then(Json::as_str)
+                    {
+                        self.grid.last_border = preset.to_string();
+                    }
+                    self.run_or_alert(id, params);
+                }
                 keytips::Action::Dialog(name) => self.open_dialog(name, json!({})),
+                keytips::Action::DialogWith(name, params) => self.open_dialog(name, serde_json::from_str(params).unwrap_or_else(|_| json!({}))),
                 // Reserved sequence: fires silently while its command is missing. When the
                 // command lands in the catalog it goes live with no table edit.
                 keytips::Action::Pending(id) => {

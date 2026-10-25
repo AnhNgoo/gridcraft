@@ -665,6 +665,12 @@ fn the_policy_keeps_macros_away_from_files_and_the_app() {
     let err = s.execute("macro.run", json!({"name": "Pic"})).unwrap_err().to_string();
     assert!(err.contains("would open the insertPicture dialog"), "{err}");
     assert!(s.ui_requests.is_empty());
+    // A step that would start editing a cell, or put a name in the edit, runs without it.
+    let (use_name, insert) = (json!({"name": "Rate"}), json!({"name": "SUM"}));
+    let steps = json!([{"command": "formulas.useInFormula", "params": use_name}, {"command": "formulas.insertFunction", "params": insert}]);
+    put(&mut s, json!({"name": "Edit", "output": {"onConflict": "overwrite"}, "steps": steps}));
+    s.execute("macro.run", json!({"name": "Edit"})).unwrap();
+    assert!(s.ui_requests.is_empty());
 }
 
 #[test]
