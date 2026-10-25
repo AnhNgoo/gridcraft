@@ -514,3 +514,16 @@ fn naming_clashing_macros_takes_linear_work() {
     taken.insert("a (2)");
     assert_eq!(taken.unique("a"), "a (4)");
 }
+
+#[test]
+fn a_json_workbook_with_no_sheets_keeps_its_macros() {
+    // A JSON file with an empty sheet list opens as a new workbook; its macros come along.
+    let mut wb = Workbook::new();
+    wb.macros.push(sample_macro("A"));
+    let mut v: serde_json::Value = serde_json::from_slice(&crate::io::save_bytes(&wb, "book.json").unwrap()).unwrap();
+    v["sheets"] = json!([]);
+    let (back, warnings) = crate::io::open_bytes("book.json", v.to_string().as_bytes()).unwrap();
+    assert!(warnings.is_empty(), "{warnings:?}");
+    assert_eq!(back.sheets.len(), 1);
+    assert_eq!(back.macros, wb.macros);
+}
