@@ -165,7 +165,7 @@ pub fn find_command(id: &str) -> Option<&'static CommandSpec> {
     test_commands().iter().find(|c| c.id == id).copied()
 }
 
-static TEST_COMMANDS: std::sync::Mutex<Vec<&'static CommandSpec>> = std::sync::Mutex::new(Vec::new());
+static TEST_COMMANDS: std::sync::Mutex<Vec<&CommandSpec>> = std::sync::Mutex::new(Vec::new());
 
 /// Test-only: register an extra command so UI integration tests can prove a pending
 /// keytip becomes live the moment its command lands (see crates/ui-egui/tests/keytips.rs).
@@ -552,9 +552,15 @@ pub fn auto_row_height(wb: &mut Workbook, si: usize, row: u32) {
         return;
     }
     let mut need: f32 = default;
+    // The cell loop must not rescan every merge per cell: the merges touching this row are
+    // picked out once, and per cell the candidates are re-checked (normally none or a couple;
+    // a sheet with many merges and many saved columns would otherwise scan all of them per
+    // cell, rows × merges × columns).
+    let row_merges: Vec<gridcraft_core::RangeRef> =
+        sh.merges.iter().copied().filter(|m| !m.is_single() && m.start.row <= row && row <= m.end.row).collect();
     for (c, cell) in sh.cells.row(row, 0, gridcraft_core::MAX_COLS - 1) {
         // Merged cells never auto-fit their rows, like Excel (column autofit skips them too).
-        if sh.merge_at(CellRef::new(row, c)).is_some_and(|m| !m.is_single()) {
+        if row_merges.iter().any(|m| m.contains(CellRef::new(row, c))) {
             continue;
         }
         let st = wb.styles.get(cell.style);
