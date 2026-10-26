@@ -386,12 +386,15 @@ fn the_editor_works_only_on_the_workbook_it_opened_in() {
     h.state_mut().message = None;
     h.state_mut().macros.editor = Some(ed);
     h.run_steps(3);
-    assert!(h.query_by_label_contains("Switch back to it").is_some(), "the editor says whose macro it is");
-    // Back in its own workbook, the editor saves there.
+    // The editor stays with its own workbook's window: it is not drawn over the other one.
+    assert!(h.state().dialog.as_ref().is_none_or(|d| d.name() != "macroEditor"), "the editor is not shown here");
+    // Back in its own workbook, the editor shows again and saves there.
+    let i = h.state().session.documents().iter().position(|d| d.uid == book1).unwrap();
+    h.state_mut().session.set_active(i);
+    h.run_steps(3);
+    assert!(h.state().dialog.as_ref().is_some_and(|d| d.name() == "macroEditor"), "the editor is back with its workbook");
     let mut ed = h.state_mut().macros.editor.take().unwrap();
     let app = h.state_mut();
-    let i = app.session.documents().iter().position(|d| d.uid == book1).unwrap();
-    app.session.set_active(i);
     assert!(gridcraft_ui_egui::macro_editor::save(app, &mut ed));
     assert_eq!(app.session.active().unwrap().wb.macros.iter().map(|m| m.name.as_str()).collect::<Vec<_>>(), ["Fresh"]);
     app.macros.editor = Some(ed);
@@ -435,7 +438,8 @@ fn quitting_asks_about_the_editors_unsaved_steps_first() {
     assert!(!sent.contains(&egui::ViewportCommand::Close), "{sent:?}");
     assert!(h.query_by_label_contains("Save changes to macro “Unsaved”").is_some());
     // Cancel keeps the app and the draft.
-    h.get_by_label("Cancel").click();
+    // The formula bar's Cancel button has the same name; the question's is the button drawn last.
+    h.get_all_by_role_and_label(egui::Role::Button, "Cancel").last().unwrap().click();
     let sent = step_commands(&mut h);
     assert!(!sent.contains(&egui::ViewportCommand::Close), "{sent:?}");
     assert_eq!(h.state().macros.editor.as_ref().map(|e| e.draft.name.as_str()), Some("Unsaved"));

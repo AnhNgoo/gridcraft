@@ -1074,13 +1074,16 @@ fn body(app: &mut SheetApp, ui: &mut Ui, d: &mut Dialog, ed: &mut Editor) {
     let debugging = app.session.macro_debug.is_some();
     // Name, description, Save; they wrap in a narrow window.
     ui.horizontal_wrapped(|ui| {
-        ui.label("Name:");
-        let name = ui.add_enabled(!debugging, egui::TextEdit::singleline(&mut ed.draft.name).desired_width(180.0).id_salt("me_name"));
-        ui.label("Description:");
-        let desc = ui.add_enabled(
-            !debugging,
-            egui::TextEdit::singleline(&mut ed.draft.description).desired_width((ui.available_width() - 90.0).max(80.0)).id_salt("me_desc"),
-        );
+        let label = ui.label("Name:");
+        let name =
+            ui.add_enabled(!debugging, egui::TextEdit::singleline(&mut ed.draft.name).desired_width(180.0).id_salt("me_name")).labelled_by(label.id);
+        let label = ui.label("Description:");
+        let desc = ui
+            .add_enabled(
+                !debugging,
+                egui::TextEdit::singleline(&mut ed.draft.description).desired_width((ui.available_width() - 90.0).max(80.0)).id_salt("me_desc"),
+            )
+            .labelled_by(label.id);
         if name.changed() || desc.changed() {
             ed.dirty = true;
         }

@@ -1797,6 +1797,7 @@ impl SheetApp {
             });
         }
         dialogs::show(self, &ctx);
+        macro_ui::forget_closed_editor(self);
         macro_ui::question_box(self, &ctx);
         widgets::message_box(self, &ctx);
         widgets::toast(self, &ctx);
