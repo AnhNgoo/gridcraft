@@ -417,6 +417,11 @@ pub(super) fn translate(text: &str) -> Option<&'static str> {
         "Workbook calculation" => "Tính toán sổ làm việc",
         "Enable iterative calculation" => "Bật tính toán lặp",
         "Calculation settings are saved with the workbook." => "Thiết lập tính toán được lưu cùng sổ làm việc.",
+        "Maximum Iterations:" => "Số lần lặp tối đa:",
+        "Maximum Change:" => "Mức thay đổi tối đa:",
+        "Maximum Iterations must be a whole number from 1 to 32767." => "Số lần lặp tối đa phải là số nguyên từ 1 đến 32767.",
+        "Maximum Change must be a number of 0 or more." => "Mức thay đổi tối đa phải là một số không âm.",
+        "100% Stacked Area" => "Biểu đồ vùng xếp chồng 100%",
         "Text Box" => "Hộp văn bản",
         _ => return None,
     })
