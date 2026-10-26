@@ -128,7 +128,7 @@ fn note_touched(s: &mut Session, before: &[(u64, Arc<Workbook>)]) {
 fn remember_view(s: &mut Session) {
     let Some(uid) = s.macro_debug.as_ref().map(|d| d.doc) else { return };
     let view = s.docs.iter().find(|d| d.uid == uid).map(|d| View {
-        sheet: d.wb.active_sheet,
+        sheet: d.wb.active_sheet(),
         selection: d.selection.clone(),
         sheet_selections: d.sheet_selections.clone(),
     });
@@ -142,13 +142,9 @@ fn remember_view(s: &mut Session) {
 fn put_back_view(s: &mut Session) {
     let Some((uid, Some(view))) = s.macro_debug.as_ref().map(|d| (d.doc, d.view.clone())) else { return };
     let Some(d) = s.docs.iter_mut().find(|d| d.uid == uid) else { return };
-    if d.wb.active_sheet != view.sheet && view.sheet < d.wb.sheets.len() {
-        // The active sheet is view state: change it without making the workbook dirty.
-        let dirty = d.is_dirty();
-        Arc::make_mut(&mut d.wb).active_sheet = view.sheet;
-        if !dirty {
-            d.saved = d.wb.clone();
-        }
+    if view.sheet < d.wb.sheets.len() {
+        // The active sheet is view state: setting it doesn't make the workbook dirty.
+        d.wb.set_active_sheet(view.sheet);
     }
     d.selection = view.selection;
     d.sheet_selections = view.sheet_selections;
