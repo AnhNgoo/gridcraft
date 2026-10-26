@@ -449,7 +449,7 @@ fn between_steps_only_looking_around_runs_and_the_run_continues_where_it_was() {
     assert!(bold_on(&s, "Sheet1", "C3"));
     assert!(!bold_on(&s, "Other", "B2") && !bold_on(&s, "Other", "A1"));
     let d = s.doc().unwrap();
-    assert_eq!((d.wb.active_sheet, d.selection.active), (0, CellRef::parse("C3").unwrap()));
+    assert_eq!((d.wb.active_sheet(), d.selection.active), (0, CellRef::parse("C3").unwrap()));
 }
 
 #[test]
