@@ -111,7 +111,7 @@ pub fn big_button(ui: &mut Ui, icon: Icon, label: &str, tip: &str, dropdown: boo
     paint_big_label(ui, rect, &lines, dropdown);
     let name = label.replace('\n', " ");
     let enabled = ui.is_enabled();
-    resp.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, enabled, &name));
+    resp.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Button, enabled, &name));
     resp.on_hover_text(tip_text(ui, tip))
 }
 
@@ -209,7 +209,7 @@ pub fn small_button(ui: &mut Ui, icon: Icon, label: &str, tip: &str, dropdown: b
     // The accessible name is the label, or the tooltip for an icon-only button.
     let name = if label.is_empty() { tr(ui, tip) } else { label };
     let enabled = ui.is_enabled();
-    resp.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, enabled, name));
+    resp.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Button, enabled, name));
     resp.on_hover_text(tip_text(ui, tip))
 }
 
@@ -231,7 +231,7 @@ pub fn small_toggle_button(ui: &mut Ui, icon: Icon, label: &str, tip: &str, on: 
     icons::paint(ui.painter(), Rect::from_center_size(pos2(rect.left() + 12.0, rect.center().y), vec2(16.0, 16.0)), icon, color);
     ui.painter().text(pos2(rect.left() + 24.0, rect.center().y), Align2::LEFT_CENTER, label, font, color);
     let enabled = ui.is_enabled();
-    resp.widget_info(|| egui::WidgetInfo::selected(egui::WidgetType::Checkbox, enabled, on, label));
+    resp.widget_info(|| egui::WidgetInfo::selected(egui::Role::CheckBox, enabled, on, label));
     resp.on_hover_text(tip_text(ui, tip))
 }
 

@@ -54,7 +54,7 @@ pub struct RecordingStart {
 impl RecordingStart {
     /// Recording starting now in `d`.
     pub fn new(d: &crate::DocState, relative: bool) -> RecordingStart {
-        let sheet = d.wb.active_sheet;
+        let sheet = d.wb.active_sheet();
         RecordingStart {
             doc: d.uid,
             sheet,

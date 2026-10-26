@@ -188,7 +188,7 @@ pub fn question_box(app: &mut SheetApp, ctx: &egui::Context) {
     }
     let Some(q) = app.macros.question.clone() else { return };
     let mut answer: Option<Option<Json>> = None;
-    egui::Modal::new(egui::Id::new("gridcraft.macro_question")).show(ctx, |ui| {
+    egui::Modal::new(egui::Id::unique("gridcraft.macro_question")).show(ctx, |ui| {
         ui.set_width(400.0);
         ui.label(egui::RichText::new(&q.title).strong());
         ui.add(egui::Label::new(&q.text).wrap());

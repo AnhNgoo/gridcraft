@@ -451,7 +451,7 @@ pub fn parse_refs(text: &str) -> Vec<(Option<String>, RangeRef)> {
 
 /// The inputs bound to their examples, for showing tokens as A1 and A1 as tokens.
 fn bound_inputs(wb: &Workbook, ed: &Editor) -> Vec<(String, Place, bool)> {
-    let env = Env { wb, active_sheet: wb.active_sheet, inputs: &[], output: None, item: None };
+    let env = Env { wb, active_sheet: wb.active_sheet(), inputs: &[], output: None, item: None };
     ed.draft
         .inputs
         .iter()
@@ -830,7 +830,7 @@ pub fn window(app: &mut SheetApp, ctx: &egui::Context, d: &mut Dialog, open: &mu
     let mut win_open = true;
     ed.refs.drawn = false;
     egui::Window::new(format!("Macro: {}{dirty_mark}", ed.draft.name))
-        .id(Id::new("gridcraft.macro_editor"))
+        .id(Id::unique("gridcraft.macro_editor"))
         .collapsible(false)
         .resizable(true)
         // Never larger than the app's window, so a narrow one keeps every control on screen.
@@ -931,7 +931,7 @@ fn selection_ref(app: &SheetApp, home_sheet: Option<usize>) -> String {
     let Some(doc) = app.session.active() else { return String::new() };
     let areas: Vec<String> = doc.selection.ranges.iter().map(abs).collect();
     match (home_sheet, doc.wb.active()) {
-        (Some(h), Some(sh)) if h != doc.wb.active_sheet => {
+        (Some(h), Some(sh)) if h != doc.wb.active_sheet() => {
             let q = gridcraft_engine::formula::quote_sheet(&sh.name);
             areas.iter().map(|a| format!("{q}!{a}")).collect::<Vec<_>>().join(",")
         }
@@ -946,7 +946,7 @@ fn begin_pick(app: &SheetApp, refs: &mut RefPick, key: &str) {
         && let Some(doc) = app.session.active()
     {
         let ranges: Vec<String> = doc.selection.ranges.iter().map(|r| r.a1()).collect();
-        refs.home = Some((doc.wb.active_sheet, ranges.join(","), doc.selection.active.a1()));
+        refs.home = Some((doc.wb.active_sheet(), ranges.join(","), doc.selection.active.a1()));
     }
     refs.pick = Some(key.to_string());
     refs.seen = selection_ref(app, refs.home.as_ref().map(|h| h.0));
@@ -996,7 +996,7 @@ fn ref_edit(app: &SheetApp, ui: &mut Ui, d: &mut Dialog, refs: &mut RefPick, key
 fn prompts(app: &mut SheetApp, ctx: &egui::Context, ed: &mut Editor, open: &mut bool) {
     if ed.ask_stop {
         let mut answer: Option<Option<bool>> = None;
-        egui::Modal::new(Id::new("gridcraft.macro_editor.stop")).show(ctx, |ui| {
+        egui::Modal::new(Id::unique("gridcraft.macro_editor.stop")).show(ctx, |ui| {
             ui.set_width(360.0);
             ui.label(egui::RichText::new("Stop debugging").strong());
             ui.label("Keep the changes the macro has made so far? They are one undo step either way.");
@@ -1033,7 +1033,7 @@ fn prompts(app: &mut SheetApp, ctx: &egui::Context, ed: &mut Editor, open: &mut 
     }
     if ed.ask_close {
         let mut answer: Option<Option<bool>> = None;
-        egui::Modal::new(Id::new("gridcraft.macro_editor.close")).show(ctx, |ui| {
+        egui::Modal::new(Id::unique("gridcraft.macro_editor.close")).show(ctx, |ui| {
             ui.set_width(360.0);
             ui.label(egui::RichText::new(format!("Save changes to macro “{}”?", ed.draft.name)).strong());
             ui.add_space(8.0);
@@ -1273,13 +1273,13 @@ fn step_list(app: &mut SheetApp, ui: &mut Ui, ed: &mut Editor, debugging: bool) 
             let indent = row.depth as f32 * 16.0;
             if let Some(label) = row.branch {
                 p.text(pos2(rect.left() + 58.0 + indent, rect.center().y), egui::Align2::LEFT_CENTER, label, theme::ui_bold(12.0), t.text_dim);
-                resp.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, format!("{label} branch {}", row.parent)));
+                resp.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Button, true, format!("{label} branch {}", row.parent)));
                 continue;
             }
             let Some(st) = step_at(&ed.draft.steps, &row.key) else { continue };
             // Gutter: the breakpoint dot (click to toggle), the current-step arrow.
             let gutter = Rect::from_min_size(rect.min, vec2(18.0, rect.height()));
-            let g = ui.interact(gutter, Id::new(("me_bp", &row.key)), Sense::click());
+            let g = ui.interact(gutter, Id::unique(("me_bp", &row.key)), Sense::click());
             if st.breakpoint {
                 p.circle_filled(gutter.center(), 5.0, t.breakpoint);
             } else if g.hovered() {
@@ -1289,7 +1289,7 @@ fn step_list(app: &mut SheetApp, ui: &mut Ui, ed: &mut Editor, debugging: bool) 
                 let c = pos2(gutter.right() + 1.0, gutter.center().y);
                 p.add(egui::Shape::convex_polygon(vec![c + vec2(-6.0, -5.0), c + vec2(1.0, 0.0), c + vec2(-6.0, 5.0)], t.accent, Stroke::NONE));
             }
-            g.widget_info(|| egui::WidgetInfo::selected(egui::WidgetType::Checkbox, true, st.breakpoint, format!("Breakpoint {}", row.key)));
+            g.widget_info(|| egui::WidgetInfo::selected(egui::Role::CheckBox, true, st.breakpoint, format!("Breakpoint {}", row.key)));
             if g.on_hover_text("Breakpoint: the debugger stops before this step").clicked()
                 && let Some(s) = step_mut(&mut ed.draft.steps, &row.key)
             {
@@ -1304,14 +1304,14 @@ fn step_list(app: &mut SheetApp, ui: &mut Ui, ed: &mut Editor, debugging: bool) 
             let text_left = rect.left() + 76.0 + indent;
             let text_clip = Rect::from_min_max(pos2(text_left, rect.top()), pos2(rect.right() - 46.0, rect.bottom()));
             p.with_clip_rect(text_clip).text(pos2(text_left, rect.center().y), egui::Align2::LEFT_CENTER, &text, theme::ui_font(12.5), text_color);
-            resp.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, format!("Step {}: {text}", row.key)));
+            resp.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Button, true, format!("Step {}: {text}", row.key)));
             // Error marker.
             let error = ed.errors.get(&row.key).cloned().or_else(|| static_error(&ed.draft, &st));
             if let Some(err) = error {
                 let c = pos2(rect.right() - 36.0, rect.center().y);
                 p.circle_filled(c, 7.0, t.danger);
                 p.text(c, egui::Align2::CENTER_CENTER, "!", theme::ui_bold(11.0), t.window);
-                ui.interact(Rect::from_center_size(c, vec2(16.0, 16.0)), Id::new(("me_err", &row.key)), Sense::hover()).on_hover_text(err);
+                ui.interact(Rect::from_center_size(c, vec2(16.0, 16.0)), Id::unique(("me_err", &row.key)), Sense::hover()).on_hover_text(err);
             }
             // Enabled.
             let mut on = st.enabled;
@@ -1611,7 +1611,7 @@ fn ref_field(app: &mut SheetApp, ui: &mut Ui, d: &mut Dialog, ed: &mut Editor, p
         let Some(doc) = app.session.active() else { return };
         let wb = doc.wb.clone();
         let inputs = bound_inputs(&wb, ed);
-        let env = Env { wb: &wb, active_sheet: wb.active_sheet, inputs: &inputs, output: None, item: None };
+        let env = Env { wb: &wb, active_sheet: wb.active_sheet(), inputs: &inputs, output: None, item: None };
         let relative = !current.trim().is_empty() && resolve::is_token(&current, &env);
         if path != "@example" {
             if ui.selectable_label(relative, "Rel").on_hover_text("Relative: a token that follows the input the macro runs on").clicked() && !relative
@@ -1657,7 +1657,7 @@ fn ref_field(app: &mut SheetApp, ui: &mut Ui, d: &mut Dialog, ed: &mut Editor, p
     if let Some(doc) = app.session.active() {
         let wb = &doc.wb;
         let inputs = bound_inputs(wb, ed);
-        let env = Env { wb, active_sheet: wb.active_sheet, inputs: &inputs, output: None, item: None };
+        let env = Env { wb, active_sheet: wb.active_sheet(), inputs: &inputs, output: None, item: None };
         if !current.trim().is_empty() && resolve::is_token(&current, &env) && !current.starts_with("Row") && !current.starts_with("Output") {
             let t = Tokens::get(ui.ctx());
             match resolve::resolve_ref(&current, &env) {
@@ -2061,7 +2061,7 @@ fn example_headers(app: &SheetApp, example: &str, header: bool) -> Vec<String> {
     let (Some(doc), true) = (app.session.active(), header) else { return vec![] };
     let wb = &doc.wb;
     let Some((sheet, r)) = parse_refs(example).into_iter().next() else { return vec![] };
-    let si = sheet.and_then(|s| wb.sheet_index(&s)).unwrap_or(wb.active_sheet);
+    let si = sheet.and_then(|s| wb.sheet_index(&s)).unwrap_or(wb.active_sheet());
     let Some(sh) = wb.sheet(si) else { return vec![] };
     (r.start.col..=r.end.col.min(r.start.col.saturating_add(15)))
         .map(|c| gridcraft_engine::display::cell_text(wb, sh, gridcraft_engine::core::CellRef::new(r.start.row, c)))

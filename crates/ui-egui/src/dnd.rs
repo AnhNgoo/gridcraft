@@ -33,7 +33,7 @@ pub fn drag_under<T: std::any::Any + Send + Sync>(ui: &mut Ui, id: Id, payload: 
 /// While dragging: outlines `zone` and draws the line where a drop at `y` would land among `rows`.
 pub fn drop_marker(ui: &Ui, zone: Rect, rows: &[Rect], y: f32) {
     let t = Tokens::get(ui.ctx());
-    let painter = ui.ctx().layer_painter(egui::LayerId::new(egui::Order::Foreground, Id::new("dnd_drop_marker")));
+    let painter = ui.ctx().layer_painter(egui::LayerId::new(egui::Order::Foreground, Id::unique("dnd_drop_marker")));
     painter.rect_stroke(zone, 4.0, Stroke::new(2.0, t.accent), egui::StrokeKind::Inside);
     let k = insert_index(rows, y);
     let y = match (rows.get(k), k.checked_sub(1).and_then(|j| rows.get(j))) {
@@ -47,7 +47,7 @@ pub fn drop_marker(ui: &Ui, zone: Rect, rows: &[Rect], y: f32) {
 /// The dragged item's label following the pointer.
 pub fn ghost(ui: &Ui, text: &str, at: Pos2) {
     let t = Tokens::get(ui.ctx());
-    let painter = ui.ctx().layer_painter(egui::LayerId::new(egui::Order::Tooltip, Id::new("dnd_ghost")));
+    let painter = ui.ctx().layer_painter(egui::LayerId::new(egui::Order::Tooltip, Id::unique("dnd_ghost")));
     let galley = painter.layout_no_wrap(text.to_string(), theme::ui_font(12.0), t.text);
     let rect = Rect::from_min_size(at + vec2(12.0, 8.0), galley.size() + vec2(12.0, 6.0));
     painter.rect_filled(rect, 3.0, t.input_bg);
