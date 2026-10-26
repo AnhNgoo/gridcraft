@@ -211,7 +211,7 @@ pub struct Prepared {
 
 impl Prepared {
     pub fn inputs_json(&self, wb: &Workbook) -> Json {
-        let env = Env { wb, active_sheet: wb.active_sheet, inputs: &[], output: None, item: None };
+        let env = Env { wb, active_sheet: wb.active_sheet(), inputs: &[], output: None, item: None };
         Json::Object(self.inputs.iter().map(|(n, p, _)| (n.clone(), json!(resolve::a1(*p, &env)))).collect())
     }
 }
@@ -228,7 +228,7 @@ pub fn prepare(s: &Session, m: &Macro, given: Option<&Json>) -> Result<Prepared>
         let text = named.and_then(Json::as_str).or_else(|| if i == 0 { given.and_then(Json::as_str) } else { None }).or(input.default_ref.as_deref());
         let place = match text {
             Some(t) => {
-                let env = Env { wb, active_sheet: wb.active_sheet, inputs: &inputs, output: None, item: None };
+                let env = Env { wb, active_sheet: wb.active_sheet(), inputs: &inputs, output: None, item: None };
                 match resolve::resolve_ref(t, &env) {
                     Ok(p) => p,
                     Err(e) => {
@@ -237,7 +237,7 @@ pub fn prepare(s: &Session, m: &Macro, given: Option<&Json>) -> Result<Prepared>
                     }
                 }
             }
-            None if i == 0 => Place { sheet: wb.active_sheet, range: d.selection.current() },
+            None if i == 0 => Place { sheet: wb.active_sheet(), range: d.selection.current() },
             None => {
                 problems.push(format!("{0} needs a range: pass inputs: {{\"{0}\": \"A1:B5\"}}.", input.name));
                 continue;
@@ -252,7 +252,7 @@ pub fn prepare(s: &Session, m: &Macro, given: Option<&Json>) -> Result<Prepared>
     }
     let output = match &m.output.anchor {
         Some(a) if !a.trim().is_empty() => {
-            let env = Env { wb, active_sheet: wb.active_sheet, inputs: &inputs, output: None, item: None };
+            let env = Env { wb, active_sheet: wb.active_sheet(), inputs: &inputs, output: None, item: None };
             Some(
                 resolve::resolve_ref(a, &env)
                     .map_err(|e| EngineError::Other(format!("Macro '{}': its output anchor {}", m.name, lower_first(e.message()))))?,
@@ -730,7 +730,7 @@ impl Machine {
     }
 
     fn env<'a>(&'a self, wb: &'a Workbook) -> Env<'a> {
-        Env { wb, active_sheet: wb.active_sheet, inputs: &self.inputs, output: self.output, item: self.item() }
+        Env { wb, active_sheet: wb.active_sheet(), inputs: &self.inputs, output: self.output, item: self.item() }
     }
 
     fn command(&mut self, s: &mut Session, path: &str, id: &str, params: &Json) -> std::result::Result<(), StepError> {
