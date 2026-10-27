@@ -20,13 +20,20 @@ pub(super) fn command_search(app: &mut SheetApp, ui: &mut egui::Ui, d: &mut Dial
     }
 
     let q = d.search.to_ascii_lowercase();
-    let cmds: Vec<(String, String, String)> = app
+    let cmds: Vec<(String, String, String, Option<&str>)> = app
         .session
         .commands()
         .into_iter()
         .filter(|c| c.enabled)
         .filter(|c| q.is_empty() || c.label.to_ascii_lowercase().contains(&q) || c.id.to_ascii_lowercase().contains(&q))
-        .map(|c| (c.id.to_string(), c.label.to_string(), c.menu.join(" › ")))
+        .map(|c| {
+            (
+                c.id.to_string(),
+                c.label.to_string(),
+                c.menu.join(" › "),
+                crate::widgets::tooltip_shortcut(c.label, cfg!(target_os = "macos")).or(c.shortcut),
+            )
+        })
         .take(40)
         .collect();
 
@@ -62,8 +69,13 @@ pub(super) fn command_search(app: &mut SheetApp, ui: &mut egui::Ui, d: &mut Dial
 
     egui::ScrollArea::vertical().max_height(LIST_HEIGHT).auto_shrink([true, false]).show(ui, |ui| {
         let scroll_area_width = ui.available_width();
-        for (i, (id, label, menu)) in cmds.iter().enumerate() {
-            let r = ui.add(egui::Button::selectable(i == d.list_index, format!("{label}    {menu}")).min_size(vec2(scroll_area_width, 20.0)));
+        for (i, (id, label, menu, shortcut)) in cmds.iter().enumerate() {
+            let shortcut = shortcut.map(|keys| if cfg!(target_os = "macos") { keys.to_string() } else { keys.replace("Cmd+", "Ctrl+") });
+            let text = match shortcut {
+                Some(keys) => format!("{label}  ({keys})    {menu}"),
+                None => format!("{label}    {menu}"),
+            };
+            let r = ui.add(egui::Button::selectable(i == d.list_index, text).truncate().min_size(vec2(scroll_area_width, 20.0)));
 
             if (down || up || home || end || pgup || pgdn) && i == d.list_index && !ui.clip_rect().contains_rect(r.rect) {
                 r.scroll_to_me(Some(if down || end || pgdn { egui::Align::Max } else { egui::Align::Min }));

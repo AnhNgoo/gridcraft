@@ -2,6 +2,7 @@
 //! column width without clicking into the field first.
 
 use egui::{Event, Key, vec2};
+use egui_kittest::kittest::Queryable;
 use gridcraft_engine::Session;
 use gridcraft_engine::core::CellRef;
 use gridcraft_ui_egui::SheetApp;
@@ -80,4 +81,23 @@ fn command_search_arrow_and_page_keys_move_the_selection_and_keep_the_search_foc
     let after_page = h.state().dialog.as_ref().map(|d| d.list_index).unwrap_or(0);
     assert!(after_page > 2, "PageDown moved past the third row, got {after_page}");
     assert!(h.ctx.memory(|m| m.focused()).is_some(), "the search field kept focus");
+}
+
+#[test]
+fn command_search_shows_shortcuts_for_current_platform() {
+    let mut h = harness();
+    h.state_mut().open_dialog("commandSearch", json!({}));
+    h.run_steps(6);
+
+    h.state_mut().dialog.as_mut().unwrap().search = "bold".into();
+    h.run_steps(3);
+
+    let bold = if cfg!(target_os = "macos") { "Bold  (⌘B)" } else { "Bold  (Ctrl+B)" };
+    h.get_by_label_contains(bold);
+
+    h.state_mut().dialog.as_mut().unwrap().search = "filter".into();
+    h.run_steps(3);
+
+    let filter = if cfg!(target_os = "macos") { "Filter  (⌘⇧F)" } else { "Filter  (Ctrl+Shift+L)" };
+    h.get_by_label_contains(filter);
 }
