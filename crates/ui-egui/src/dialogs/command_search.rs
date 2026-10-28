@@ -1,5 +1,6 @@
 use super::*;
 
+/// Shows enabled commands and their platform-specific keyboard shortcuts.
 pub(super) fn command_search(app: &mut SheetApp, ui: &mut egui::Ui, d: &mut Dialog, confirm: &mut bool) {
     let (down, up, home, end, pgup, pgdn) = ui.input_mut(|i| {
         (
@@ -70,7 +71,15 @@ pub(super) fn command_search(app: &mut SheetApp, ui: &mut egui::Ui, d: &mut Dial
     egui::ScrollArea::vertical().max_height(LIST_HEIGHT).auto_shrink([true, false]).show(ui, |ui| {
         let scroll_area_width = ui.available_width();
         for (i, (id, label, menu, shortcut)) in cmds.iter().enumerate() {
-            let shortcut = shortcut.map(|keys| if cfg!(target_os = "macos") { keys.to_string() } else { keys.replace("Cmd+", "Ctrl+") });
+            let shortcut = shortcut.map(|keys| {
+                if cfg!(target_os = "macos") {
+                    keys.to_string()
+                } else if keys == "Ctrl+Cmd+V" {
+                    "Ctrl+Alt+V".to_string()
+                } else {
+                    keys.strip_prefix("Cmd+").map_or_else(|| keys.to_string(), |rest| format!("Ctrl+{rest}"))
+                }
+            });
             let text = match shortcut {
                 Some(keys) => format!("{label}  ({keys})    {menu}"),
                 None => format!("{label}    {menu}"),

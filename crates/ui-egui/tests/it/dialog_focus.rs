@@ -83,6 +83,7 @@ fn command_search_arrow_and_page_keys_move_the_selection_and_keep_the_search_foc
     assert!(h.ctx.memory(|m| m.focused()).is_some(), "the search field kept focus");
 }
 
+/// Checks platform-specific labels for the Bold and Filter shortcuts.
 #[test]
 fn command_search_shows_shortcuts_for_current_platform() {
     let mut h = harness();
@@ -100,4 +101,23 @@ fn command_search_shows_shortcuts_for_current_platform() {
 
     let filter = if cfg!(target_os = "macos") { "Filter  (⌘⇧F)" } else { "Filter  (Ctrl+Shift+L)" };
     h.get_by_label_contains(filter);
+}
+
+/// Checks that Paste Special shows a usable shortcut after copying a cell.
+#[test]
+fn command_search_shows_paste_special_shortcut() {
+    let mut h = harness();
+
+    h.state_mut().session.execute("cell.set", json!({"cell": "C3", "input": "copied"})).unwrap();
+    h.state_mut().session.execute("edit.copy", json!({"range": "C3"})).unwrap();
+
+    h.state_mut().open_dialog("commandSearch", json!({}));
+    h.run_steps(6);
+
+    h.state_mut().dialog.as_mut().unwrap().search = "pasteSpecial".into();
+    h.run_steps(3);
+
+    let expected = if cfg!(target_os = "macos") { "Paste Special…  (Ctrl+Cmd+V)" } else { "Paste Special…  (Ctrl+Alt+V)" };
+
+    h.get_by_label_contains(expected);
 }
