@@ -20,6 +20,7 @@ pub(super) fn command_search(app: &mut SheetApp, ui: &mut egui::Ui, d: &mut Dial
         d.focus_initialized = true;
     }
 
+    let mac = ui.ctx().os() == egui::os::OperatingSystem::Mac;
     let q = d.search.to_ascii_lowercase();
     let cmds: Vec<(String, String, String, Option<&str>)> = app
         .session
@@ -27,14 +28,7 @@ pub(super) fn command_search(app: &mut SheetApp, ui: &mut egui::Ui, d: &mut Dial
         .into_iter()
         .filter(|c| c.enabled)
         .filter(|c| q.is_empty() || c.label.to_ascii_lowercase().contains(&q) || c.id.to_ascii_lowercase().contains(&q))
-        .map(|c| {
-            (
-                c.id.to_string(),
-                c.label.to_string(),
-                c.menu.join(" › "),
-                crate::widgets::tooltip_shortcut(c.label, cfg!(target_os = "macos")).or(c.shortcut),
-            )
-        })
+        .map(|c| (c.id.to_string(), c.label.to_string(), c.menu.join(" › "), command_search_shortcut(c.id, mac)))
         .take(40)
         .collect();
 
@@ -71,15 +65,6 @@ pub(super) fn command_search(app: &mut SheetApp, ui: &mut egui::Ui, d: &mut Dial
     egui::ScrollArea::vertical().max_height(LIST_HEIGHT).auto_shrink([true, false]).show(ui, |ui| {
         let scroll_area_width = ui.available_width();
         for (i, (id, label, menu, shortcut)) in cmds.iter().enumerate() {
-            let shortcut = shortcut.map(|keys| {
-                if cfg!(target_os = "macos") {
-                    keys.to_string()
-                } else if keys == "Ctrl+Cmd+V" {
-                    "Ctrl+Alt+V".to_string()
-                } else {
-                    keys.strip_prefix("Cmd+").map_or_else(|| keys.to_string(), |rest| format!("Ctrl+{rest}"))
-                }
-            });
             let text = match shortcut {
                 Some(keys) => format!("{label}  ({keys})    {menu}"),
                 None => format!("{label}    {menu}"),
@@ -106,4 +91,39 @@ pub(super) fn command_search(app: &mut SheetApp, ui: &mut egui::Ui, d: &mut Dial
         app.dialog = None;
         app.run_or_alert(&id, json!({}));
     }
+}
+
+/// Only advertises shortcuts verified against the grid keymap and ribbon.
+/// Commands without a confirmed binding are shown without a shortcut.
+fn command_search_shortcut(id: &str, mac: bool) -> Option<&'static str> {
+    let (mac_keys, other_keys) = match id {
+        "file.new" => ("⌘N", Some("Ctrl+N")),
+        "file.open" => ("⌘O", Some("Ctrl+O")),
+        "file.save" => ("⌘S", Some("Ctrl+S")),
+        "file.saveAs" => ("⌘⇧S", Some("Ctrl+Shift+S")),
+        "file.close" => ("⌘W", Some("Ctrl+W")),
+        "edit.copy" => ("⌘C", Some("Ctrl+C")),
+        "edit.cut" => ("⌘X", Some("Ctrl+X")),
+        "edit.paste" => ("⌘V", Some("Ctrl+V")),
+        "edit.undo" => ("⌘Z", Some("Ctrl+Z")),
+        "edit.redo" => ("⌘Y", Some("Ctrl+Y")),
+        "edit.selectAll" => ("⌘A", Some("Ctrl+A")),
+        "edit.fillDown" => ("⌘D", Some("Ctrl+D")),
+        "edit.fillRight" => ("⌘R", Some("Ctrl+R")),
+        "home.bold" => ("⌘B", Some("Ctrl+B")),
+        "home.italic" => ("⌘I", Some("Ctrl+I")),
+        "home.underline" => ("⌘U", Some("Ctrl+U")),
+        "formulas.autoSum" => ("⌘⇧T", Some("Alt+=")),
+        "insert.table" => ("⌘T", Some("Ctrl+T")),
+        "data.filter" => ("⌘⇧F", Some("Ctrl+Shift+L")),
+        "edit.flashFill" => ("Control+E", Some("Ctrl+E")),
+        "edit.pasteSpecial" => ("Ctrl+Cmd+V", Some("Ctrl+Alt+V")),
+        "home.alignLeft" => ("⌘L", None),
+        "home.alignCenter" => ("⌘E", None),
+        "view.showObjects" => ("Ctrl+6", Some("Ctrl+6")),
+        "formulas.showFormulas" => ("⌘`", Some("Ctrl+`")),
+        _ => return None,
+    };
+
+    if mac { Some(mac_keys) } else { other_keys }
 }

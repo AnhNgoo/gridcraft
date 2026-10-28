@@ -93,13 +93,13 @@ fn command_search_shows_shortcuts_for_current_platform() {
     h.state_mut().dialog.as_mut().unwrap().search = "bold".into();
     h.run_steps(3);
 
-    let bold = if cfg!(target_os = "macos") { "Bold  (⌘B)" } else { "Bold  (Ctrl+B)" };
+    let bold = if h.ctx.os() == egui::os::OperatingSystem::Mac { "Bold  (⌘B)" } else { "Bold  (Ctrl+B)" };
     h.get_by_label_contains(bold);
 
     h.state_mut().dialog.as_mut().unwrap().search = "filter".into();
     h.run_steps(3);
 
-    let filter = if cfg!(target_os = "macos") { "Filter  (⌘⇧F)" } else { "Filter  (Ctrl+Shift+L)" };
+    let filter = if h.ctx.os() == egui::os::OperatingSystem::Mac { "Filter  (⌘⇧F)" } else { "Filter  (Ctrl+Shift+L)" };
     h.get_by_label_contains(filter);
 }
 
@@ -117,7 +117,57 @@ fn command_search_shows_paste_special_shortcut() {
     h.state_mut().dialog.as_mut().unwrap().search = "pasteSpecial".into();
     h.run_steps(3);
 
-    let expected = if cfg!(target_os = "macos") { "Paste Special…  (Ctrl+Cmd+V)" } else { "Paste Special…  (Ctrl+Alt+V)" };
+    let expected = if h.ctx.os() == egui::os::OperatingSystem::Mac { "Paste Special…  (Ctrl+Cmd+V)" } else { "Paste Special…  (Ctrl+Alt+V)" };
 
     h.get_by_label_contains(expected);
+}
+
+/// Checks both OS mappings on one host, including commands with conflicting keys.
+#[test]
+fn command_search_uses_runtime_os_and_verified_shortcuts() {
+    use egui::os::OperatingSystem;
+
+    for (os, bold, filter, flash, paste, left, center) in [
+        (
+            OperatingSystem::Windows,
+            "Bold  (Ctrl+B)",
+            "Filter  (Ctrl+Shift+L)",
+            "Flash Fill  (Ctrl+E)",
+            "Paste Special…  (Ctrl+Alt+V)",
+            "Align Left    Home",
+            "Center    Home",
+        ),
+        (
+            OperatingSystem::Mac,
+            "Bold  (⌘B)",
+            "Filter  (⌘⇧F)",
+            "Flash Fill  (Control+E)",
+            "Paste Special…  (Ctrl+Cmd+V)",
+            "Align Left  (⌘L)",
+            "Center  (⌘E)",
+        ),
+    ] {
+        let mut h = harness();
+        h.ctx.set_os(os);
+        h.run_steps(2);
+
+        h.state_mut().session.execute("cell.set", json!({"cell": "C3", "input": "copied"})).unwrap();
+        h.state_mut().session.execute("edit.copy", json!({"range": "C3"})).unwrap();
+
+        h.state_mut().open_dialog("commandSearch", json!({}));
+        h.run_steps(6);
+
+        for (query, expected) in [
+            ("bold", bold),
+            ("filter", filter),
+            ("edit.flashFill", flash),
+            ("edit.pasteSpecial", paste),
+            ("home.alignLeft", left),
+            ("home.alignCenter", center),
+        ] {
+            h.state_mut().dialog.as_mut().unwrap().search = query.into();
+            h.run_steps(3);
+            h.get_by_label_contains(expected);
+        }
+    }
 }
