@@ -171,3 +171,26 @@ fn command_search_uses_runtime_os_and_verified_shortcuts() {
         }
     }
 }
+/// Selection shortcuts use the same bindings as the runtime keyboard handler.
+#[test]
+fn command_search_selection_shortcuts_match_runtime_os() {
+    for (os, column_label) in [
+        (egui::os::OperatingSystem::Windows, "Select Entire Column  (Ctrl+Space)"),
+        (egui::os::OperatingSystem::Mac, "Select Entire Column  (Control+Space)"),
+    ] {
+        let mut h = harness();
+        h.ctx.set_os(os);
+        h.run_steps(2);
+
+        h.state_mut().open_dialog("commandSearch", json!({}));
+        h.run_steps(6);
+
+        h.state_mut().dialog.as_mut().unwrap().search = "selection.row".into();
+        h.run_steps(3);
+        h.get_by_label_contains("Select Entire Row  (Shift+Space)");
+
+        h.state_mut().dialog.as_mut().unwrap().search = "selection.column".into();
+        h.run_steps(3);
+        h.get_by_label_contains(column_label);
+    }
+}

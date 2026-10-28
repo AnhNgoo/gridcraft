@@ -120,6 +120,8 @@ fn command_search_shortcut(id: &str, mac: bool) -> Option<&'static str> {
         "edit.pasteSpecial" => ("Ctrl+Cmd+V", Some("Ctrl+Alt+V")),
         "home.alignLeft" => ("⌘L", None),
         "home.alignCenter" => ("⌘E", None),
+        "selection.row" => ("Shift+Space", Some("Shift+Space")),
+        "selection.column" => ("Control+Space", Some("Ctrl+Space")),
         "view.showObjects" => ("Ctrl+6", Some("Ctrl+6")),
         "formulas.showFormulas" => ("⌘`", Some("Ctrl+`")),
         _ => return None,
