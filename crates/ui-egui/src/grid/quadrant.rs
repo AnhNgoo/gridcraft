@@ -260,7 +260,18 @@ pub(crate) fn paint_quadrant(
                 _ => text_left + pad + indent,
             };
             let y = wrapped_cell_text_y(st.align.v, *rect, galley.size().y, z);
-            p.with_clip_rect(rect.intersect(p.clip_rect())).galley(pos2(x, y), galley, color);
+            let mut text_clip = rect.intersect(p.clip_rect());
+
+            // A partially visible wrapped line can leave a few pixels
+            // touching the row border. For top-aligned text, show only
+            // complete lines within the available cell height.
+            if st.align.v == VAlign::Top {
+                let last_full_bottom = galley.rows.iter().map(|row| y + row.rect().bottom()).rfind(|bottom| *bottom <= rect.bottom() + 0.01);
+
+                text_clip.max.y = last_full_bottom.map(|bottom| text_clip.bottom().min(bottom)).unwrap_or(text_clip.top()).max(text_clip.top());
+            }
+
+            p.with_clip_rect(text_clip).galley(pos2(x, y), galley, color);
             continue;
         }
         // Wrap Text off: Excel ignores the line breaks and draws the whole string on one line.
