@@ -229,3 +229,25 @@ fn command_palette_and_ribbon_tooltips_share_shortcuts() {
     assert_eq!(command_shortcut("selection.row", false), Some("Shift+Space"));
     assert_eq!(command_shortcut("unverified.command", false), None);
 }
+
+/// Current Region must show the physical Control shortcut on both platforms.
+#[test]
+fn command_search_shows_current_region_shortcut() {
+    use egui::os::OperatingSystem;
+
+    for (os, expected) in
+        [(OperatingSystem::Windows, "Select Current Region  (Ctrl+Shift+8)"), (OperatingSystem::Mac, "Select Current Region  (Control+Shift+8)")]
+    {
+        let mut h = harness();
+        h.ctx.set_os(os);
+        h.run_steps(2);
+
+        h.state_mut().open_dialog("commandSearch", json!({}));
+        h.run_steps(6);
+
+        h.state_mut().dialog.as_mut().unwrap().search = "selection.currentRegion".into();
+
+        h.run_steps(3);
+        h.get_by_label_contains(expected);
+    }
+}

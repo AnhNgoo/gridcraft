@@ -44,6 +44,7 @@ const SHORTCUTS: &[(&str, &str, &str, Option<&str>)] = &[
     ("home.alignLeft", "", "⌘L", None),
     ("home.alignCenter", "", "⌘E", None),
     ("selection.row", "", "Shift+Space", Some("Shift+Space")),
+    ("selection.currentRegion", "", "Control+Shift+8", Some("Ctrl+Shift+8")),
     ("selection.column", "", "Control+Space", Some("Ctrl+Space")),
     ("view.showObjects", "", "Control+6", Some("Ctrl+6")),
     ("formulas.showFormulas", "Show Formulas", "⌘`", Some("Ctrl+`")),
@@ -745,6 +746,25 @@ mod tooltip_shortcut_tests {
                 assert_eq!(tooltip_shortcut(tip, true), Some(*mac), "{id}");
                 assert_eq!(tooltip_shortcut(tip, false), *other, "{id}");
             }
+        }
+    }
+
+    #[test]
+    fn ribbon_tip_text_obeys_runtime_os() {
+        use egui::os::OperatingSystem;
+
+        for (os, expected) in [(OperatingSystem::Windows, "Flash Fill (Ctrl+E)"), (OperatingSystem::Mac, "Flash Fill (Control+E)")] {
+            let ctx = egui::Context::default();
+            ctx.set_os(os);
+
+            let mut actual = String::new();
+
+            let mut output = ctx.run_ui(egui::RawInput::default(), |ui| {
+                actual = super::tip_text(ui, "Flash Fill");
+            });
+            output.textures_delta.clear();
+
+            assert_eq!(actual, expected, "{os:?}");
         }
     }
 }
