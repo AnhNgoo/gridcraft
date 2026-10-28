@@ -425,7 +425,7 @@ fn forecast_sheet(s: &mut Session, p: &Json) -> Result<Json> {
             legend: LegendPos::Bottom,
             data_labels: false,
             gridlines: true,
-            style: 1,
+            style: 2,
             x_title: None,
             y_title: None,
             source: None,
