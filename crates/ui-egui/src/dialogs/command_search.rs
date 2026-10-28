@@ -28,7 +28,7 @@ pub(super) fn command_search(app: &mut SheetApp, ui: &mut egui::Ui, d: &mut Dial
         .into_iter()
         .filter(|c| c.enabled)
         .filter(|c| q.is_empty() || c.label.to_ascii_lowercase().contains(&q) || c.id.to_ascii_lowercase().contains(&q))
-        .map(|c| (c.id.to_string(), c.label.to_string(), c.menu.join(" › "), command_search_shortcut(c.id, mac)))
+        .map(|c| (c.id.to_string(), c.label.to_string(), c.menu.join(" › "), crate::widgets::command_shortcut(c.id, mac)))
         .take(40)
         .collect();
 
@@ -69,7 +69,7 @@ pub(super) fn command_search(app: &mut SheetApp, ui: &mut egui::Ui, d: &mut Dial
                 Some(keys) => format!("{label}  ({keys})    {menu}"),
                 None => format!("{label}    {menu}"),
             };
-            let r = ui.add(egui::Button::selectable(i == d.list_index, text).truncate().min_size(vec2(scroll_area_width, 20.0)));
+            let r = ui.add(egui::Button::selectable(i == d.list_index, text.clone()).truncate().min_size(vec2(scroll_area_width, 20.0)));
 
             if (down || up || home || end || pgup || pgdn) && i == d.list_index && !ui.clip_rect().contains_rect(r.rect) {
                 r.scroll_to_me(Some(if down || end || pgdn { egui::Align::Max } else { egui::Align::Min }));
@@ -80,7 +80,7 @@ pub(super) fn command_search(app: &mut SheetApp, ui: &mut egui::Ui, d: &mut Dial
                 *confirm = true;
             }
 
-            r.on_hover_text(id);
+            r.on_hover_text(format!("{text}\n{id}"));
         }
     });
     if ui.input(|i| i.key_pressed(Key::Enter)) {
@@ -91,41 +91,4 @@ pub(super) fn command_search(app: &mut SheetApp, ui: &mut egui::Ui, d: &mut Dial
         app.dialog = None;
         app.run_or_alert(&id, json!({}));
     }
-}
-
-/// Only advertises shortcuts verified against the grid keymap and ribbon.
-/// Commands without a confirmed binding are shown without a shortcut.
-fn command_search_shortcut(id: &str, mac: bool) -> Option<&'static str> {
-    let (mac_keys, other_keys) = match id {
-        "file.new" => ("⌘N", Some("Ctrl+N")),
-        "file.open" => ("⌘O", Some("Ctrl+O")),
-        "file.save" => ("⌘S", Some("Ctrl+S")),
-        "file.saveAs" => ("⌘⇧S", Some("Ctrl+Shift+S")),
-        "file.close" => ("⌘W", Some("Ctrl+W")),
-        "edit.copy" => ("⌘C", Some("Ctrl+C")),
-        "edit.cut" => ("⌘X", Some("Ctrl+X")),
-        "edit.paste" => ("⌘V", Some("Ctrl+V")),
-        "edit.undo" => ("⌘Z", Some("Ctrl+Z")),
-        "edit.redo" => ("⌘Y", Some("Ctrl+Y")),
-        "edit.selectAll" => ("⌘A", Some("Ctrl+A")),
-        "edit.fillDown" => ("⌘D", Some("Ctrl+D")),
-        "edit.fillRight" => ("⌘R", Some("Ctrl+R")),
-        "home.bold" => ("⌘B", Some("Ctrl+B")),
-        "home.italic" => ("⌘I", Some("Ctrl+I")),
-        "home.underline" => ("⌘U", Some("Ctrl+U")),
-        "formulas.autoSum" => ("⌘⇧T", Some("Alt+=")),
-        "insert.table" => ("⌘T", Some("Ctrl+T")),
-        "data.filter" => ("⌘⇧F", Some("Ctrl+Shift+L")),
-        "edit.flashFill" => ("Control+E", Some("Ctrl+E")),
-        "edit.pasteSpecial" => ("Ctrl+Cmd+V", Some("Ctrl+Alt+V")),
-        "home.alignLeft" => ("⌘L", None),
-        "home.alignCenter" => ("⌘E", None),
-        "selection.row" => ("Shift+Space", Some("Shift+Space")),
-        "selection.column" => ("Control+Space", Some("Ctrl+Space")),
-        "view.showObjects" => ("Ctrl+6", Some("Ctrl+6")),
-        "formulas.showFormulas" => ("⌘`", Some("Ctrl+`")),
-        _ => return None,
-    };
-
-    if mac { Some(mac_keys) } else { other_keys }
 }

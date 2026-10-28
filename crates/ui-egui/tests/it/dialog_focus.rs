@@ -194,3 +194,38 @@ fn command_search_selection_shortcuts_match_runtime_os() {
         h.get_by_label_contains(column_label);
     }
 }
+
+/// Ribbon tooltips and the Command Palette read the same shortcut metadata.
+#[test]
+fn command_palette_and_ribbon_tooltips_share_shortcuts() {
+    use gridcraft_ui_egui::widgets::{command_shortcut, tooltip_shortcut};
+
+    for (id, tip) in [
+        ("file.save", "Save"),
+        ("edit.undo", "Undo"),
+        ("edit.redo", "Redo"),
+        ("edit.copy", "Copy"),
+        ("edit.cut", "Cut"),
+        ("edit.paste", "Paste"),
+        ("home.bold", "Bold"),
+        ("home.italic", "Italic"),
+        ("home.underline", "Underline"),
+        ("formulas.autoSum", "AutoSum"),
+        ("insert.table", "Table"),
+        ("data.filter", "Filter"),
+        ("edit.flashFill", "Flash Fill"),
+        ("formulas.showFormulas", "Show Formulas"),
+    ] {
+        for mac in [false, true] {
+            assert_eq!(command_shortcut(id, mac), tooltip_shortcut(tip, mac), "{id} and {tip} diverged on mac={mac}");
+        }
+    }
+
+    assert_eq!(command_shortcut("edit.flashFill", true), Some("Control+E"));
+    assert_eq!(command_shortcut("home.alignCenter", true), Some("⌘E"));
+    assert_eq!(command_shortcut("home.alignCenter", false), None);
+    assert_eq!(command_shortcut("formulas.showFormulas", true), Some("⌘`"));
+    assert_eq!(command_shortcut("edit.pasteSpecial", false), Some("Ctrl+Alt+V"));
+    assert_eq!(command_shortcut("selection.row", false), Some("Shift+Space"));
+    assert_eq!(command_shortcut("unverified.command", false), None);
+}
