@@ -317,6 +317,10 @@ fn should_expand_text(filter_space: f32, overflows: bool, across_end: u32, col: 
     filter_space == 0.0 && (overflows || across_end > col) && !in_merge
 }
 
+/// Paint one worksheet cell using its computed appearance and visible geometry.
+///
+/// Handles text layout, wrapping, alignment, overflow into neighbouring cells,
+/// and clipping, while preserving cell decoration and merged-cell constraints.
 fn paint_cell(q: &QuadrantPaint<'_>, painted: &(CellRef, Rect, Look, Option<CfLook>), merges: &[RangeRef]) {
     let (cell, rect, lk, cfl) = painted;
     let c = *cell;
