@@ -68,6 +68,30 @@ fn mirror_shape(shape: &mut egui::Shape, axis: f32) {
     }
 }
 
+/// Restrict top-aligned wrapped text to complete lines inside the cell.
+///
+/// Preserve the cell and viewport clip when every line fits. Otherwise,
+/// exclude overflowing lines while retaining the visible fitting lines.
+fn wrapped_text_clip(p: &Painter, rect: Rect, galley: &egui::Galley, y: f32, valign: VAlign) -> Rect {
+    let mut clip = rect.intersect(p.clip_rect());
+    if valign != VAlign::Top {
+        return clip;
+    }
+
+    let Some(last_row) = galley.rows.last() else {
+        return clip;
+    };
+
+    if y + last_row.rect().bottom() <= rect.bottom() + 0.01 {
+        return clip;
+    }
+
+    let last_full_bottom = galley.rows.iter().map(|row| y + row.rect().bottom()).rfind(|bottom| *bottom <= rect.bottom() + 0.01);
+
+    clip.max.y = last_full_bottom.map(|bottom| clip.bottom().min(bottom)).unwrap_or(clip.top()).max(clip.top());
+
+    clip
+}
 pub(crate) struct QuadrantPaint<'a> {
     pub(crate) painter: &'a Painter,
     pub(crate) geo: &'a Geo,
@@ -368,17 +392,7 @@ fn paint_cell(q: &QuadrantPaint<'_>, painted: &(CellRef, Rect, Look, Option<CfLo
             _ => text_left + pad + indent,
         };
         let y = wrapped_cell_text_y(st.align.v, *rect, galley.size().y, z);
-        let mut text_clip = rect.intersect(p.clip_rect());
-
-        // A partially visible wrapped line can leave a few pixels
-        // touching the row border. For top-aligned text, show only
-        // complete lines within the available cell height.
-        if st.align.v == VAlign::Top {
-            let last_full_bottom = galley.rows.iter().map(|row| y + row.rect().bottom()).rfind(|bottom| *bottom <= rect.bottom() + 0.01);
-
-            text_clip.max.y = last_full_bottom.map(|bottom| text_clip.bottom().min(bottom)).unwrap_or(text_clip.top()).max(text_clip.top());
-        }
-
+        let text_clip = wrapped_text_clip(p, *rect, &galley, y, st.align.v);
         p.with_clip_rect(text_clip).galley(pos2(x, y), galley, color);
         return;
     }
