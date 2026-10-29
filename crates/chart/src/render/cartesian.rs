@@ -179,6 +179,12 @@ fn column_slots(fams: &[Fam], sec: &[bool]) -> (Vec<usize>, f32) {
     (slot_of, slot_keys.len().max(1) as f32)
 }
 
+/// Renders Cartesian column, bar, line, area, and combination charts.
+///
+/// Resolves series families and their axes, calculates stacking and
+/// category positions, and draws the corresponding primitives.
+/// Explicit chart style 9 adds white outlines to column and bar
+/// rectangles, including stacked and 100%-stacked variants.
 pub(super) fn cartesian(ctx: &mut Ctx, chart: &Chart, data: &ChartData, area: Bx, horizontal: bool) {
     let ncat = data.categories.len().max(data.series.iter().map(|s| s.values.len()).max().unwrap_or(0)).min(MAX_CATS);
     if ncat == 0 {
