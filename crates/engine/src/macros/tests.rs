@@ -617,8 +617,10 @@ fn changed(change: fn(&mut serde_json::Value)) -> serde_json::Value {
 
 #[test]
 fn every_field_a_file_sets_has_a_limit() {
+    // A named edit to the sample file's JSON.
+    type Edit = (&'static str, fn(&mut serde_json::Value));
     // The sample's steps: 0 a command, 1 a Repeat whose body holds an If whose else holds a Stop.
-    let refused: [(&str, fn(&mut serde_json::Value)); 14] = [
+    let refused: [Edit; 14] = [
         ("shortcut", |v| v["shortcut"] = json!(long(MAX_MACRO_SHORTCUT + 1))),
         ("shortcut line break", |v| v["shortcut"] = json!("Ctrl+\nM")),
         ("permission count", |v| v["permissions"] = json!(vec!["data.getData"; MAX_MACRO_PERMISSIONS + 1])),
@@ -641,7 +643,7 @@ fn every_field_a_file_sets_has_a_limit() {
     for (what, change) in refused {
         assert!(parse_macro(&changed(change)).is_err(), "{what} past its limit is refused");
     }
-    let accepted: [(&str, fn(&mut serde_json::Value)); 9] = [
+    let accepted: [Edit; 9] = [
         ("shortcut", |v| v["shortcut"] = json!(long(MAX_MACRO_SHORTCUT))),
         ("permission count", |v| v["permissions"] = json!(vec!["data.getData"; MAX_MACRO_PERMISSIONS])),
         ("output anchor", |v| v["output"]["anchor"] = json!(long(MAX_MACRO_REF))),

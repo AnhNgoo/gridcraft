@@ -3,8 +3,13 @@ use super::{EngineError, Json, Result, SCRIPTS_NAME, Session, Workbook, bad, boo
 pub(super) fn record(s: &mut Session, p: &Json) -> Result<Json> {
     if bool_param(p, "stop").unwrap_or(false) || s.recording.is_some() {
         let Some(start) = s.recording.take() else { return Ok(json!({"recording": false})) };
-        let cmds: Vec<Json> =
-            s.journal.iter().skip(start).filter(|(id, _)| !id.starts_with("automate.") && !crate::record::NOT_RECORDED.contains(&id.as_str())).map(|(id, p)| json!({"command": id, "params": p})).collect();
+        let cmds: Vec<Json> = s
+            .journal
+            .iter()
+            .skip(start)
+            .filter(|(id, _)| !id.starts_with("automate.") && !crate::record::NOT_RECORDED.contains(&id.as_str()))
+            .map(|(id, p)| json!({"command": id, "params": p}))
+            .collect();
         let name = str_param(p, "name").map(str::to_string).unwrap_or_else(|| format!("Script {}", start));
         s.execute("automate.newScript", json!({"name": name, "commands": cmds}))?;
         return Ok(json!({"recording": false, "saved": name, "steps": cmds.len()}));

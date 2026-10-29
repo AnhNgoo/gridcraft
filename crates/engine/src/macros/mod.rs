@@ -420,6 +420,71 @@ impl Taken {
     }
 }
 
+/// Ctrl+Shift (Cmd+Shift on a Mac) letters that GridCraft already uses, on any platform, which a
+/// macro cannot take.
+pub const RESERVED_SHORTCUTS: &[(char, &str)] = &[
+    ('F', "Format Cells (Font) or Filter"),
+    ('G', "Workbook Statistics"),
+    ('H', "Replace"),
+    ('J', "Ungroup"),
+    ('K', "Group"),
+    ('L', "Filter"),
+    ('R', "Sort"),
+    ('S', "Save As"),
+    ('T', "AutoSum"),
+    ('Z', "Redo"),
+];
+
+/// The letter of a macro shortcut: `"Ctrl+Shift+M"`, `"Cmd+Shift+M"`, `"⌘⇧M"` and `"m"` all give
+/// `'M'`. `None` when it is not one letter from A to Z, alone or after Ctrl+Shift (Cmd+Shift):
+/// other modifiers (`"Ctrl+Alt+M"`) are refused rather than read as Ctrl+Shift.
+pub fn parse_shortcut(s: &str) -> Option<char> {
+    let letter = |t: &str| {
+        let mut chars = t.trim().chars();
+        match (chars.next(), chars.next()) {
+            (Some(c), None) if c.is_ascii_alphabetic() => Some(c.to_ascii_uppercase()),
+            _ => None,
+        }
+    };
+    let t = s.trim().to_ascii_lowercase();
+    ["ctrl+shift+", "cmd+shift+", "⌘⇧"].iter().find_map(|p| t.strip_prefix(p)).map_or_else(|| letter(&t), letter)
+}
+
+/// How a shortcut is stored and shown: `Ctrl+Shift+M`.
+pub fn shortcut_text(letter: char) -> String {
+    format!("Ctrl+Shift+{}", letter.to_ascii_uppercase())
+}
+
+/// Why macro `name` cannot use Ctrl+Shift+`letter`: GridCraft uses it, or another macro has it.
+pub fn shortcut_conflict(wb: &Workbook, name: &str, letter: char) -> Option<String> {
+    let letter = letter.to_ascii_uppercase();
+    if let Some((_, what)) = RESERVED_SHORTCUTS.iter().find(|(c, _)| *c == letter) {
+        return Some(format!("{} is {what}. Choose another letter.", shortcut_text(letter)));
+    }
+    wb.macros
+        .iter()
+        .find(|m| !m.name.eq_ignore_ascii_case(name.trim()) && m.shortcut.as_deref().and_then(parse_shortcut) == Some(letter))
+        .map(|m| format!("{} already runs macro “{}”. Choose another letter.", shortcut_text(letter), m.name))
+}
+
+/// `name` trimmed, if it can name a new macro in `wb`; otherwise why not: it is empty, too long,
+/// holds line breaks or another macro has it.
+pub fn check_new_name(wb: &Workbook, name: &str) -> Result<String, String> {
+    let name = name.trim();
+    let probe = Macro { name: name.to_string(), ..Macro::default() };
+    probe.check_limits()?;
+    if name.chars().any(char::is_control) {
+        return Err("A macro name cannot hold line breaks or other control characters.".into());
+    }
+    if find(wb, name).is_some() {
+        return Err(format!("A macro called “{name}” already exists. Choose another name."));
+    }
+    if let Some(kept) = kept_name(wb, name) {
+        return Err(format!("A macro called “{kept}” is kept from a newer version of GridCraft. Choose another name."));
+    }
+    Ok(name.to_string())
+}
+
 /// The first free `Macro1`, `Macro2`… name, also free among the kept macros ([`kept_name`]).
 pub fn next_name(wb: &Workbook) -> String {
     (1..).map(|n| format!("Macro{n}")).find(|n| find(wb, n).is_none() && kept_name(wb, n).is_none()).unwrap_or_else(|| "Macro".into())
