@@ -12,11 +12,15 @@ const LEFT: &str = "This is a very long left-aligned text that overflows into ma
 const RIGHT: &str = "This is a very long right-aligned text that overflows into many empty neighbouring cells";
 
 fn harness(setup: impl FnOnce(&mut Session)) -> Harness {
+    harness_with_size(egui::vec2(1200.0, 800.0), setup)
+}
+
+fn harness_with_size(size: egui::Vec2, setup: impl FnOnce(&mut Session)) -> Harness {
     let mut s = Session::new();
     s.new_workbook();
     setup(&mut s);
     s.execute("selection.set", json!({"range": "A20"})).unwrap();
-    let mut h = crate::common::builder().with_size(egui::vec2(1200.0, 800.0)).build_ui_state(
+    let mut h = crate::common::builder().with_size(size).build_ui_state(
         |ui, app: &mut SheetApp| {
             app.logic(ui.ctx());
             app.ui(ui);
@@ -222,70 +226,128 @@ fn wrapped_text_in_tiny_row_has_no_partial_lines() {
     assert!(clip.height() <= 0.5, "no partial line should be visible: clip={clip:?}");
 }
 
-/// Issue #2752: scrolling through a wrapped cell may clip at
-/// the viewport edge, but must not change its row-bottom limit.
+/// Issue #2752: the viewport bottom can cut through a line
+/// that otherwise fits fully inside a wrapped cell.
 #[test]
 fn wrapped_text_clipping_survives_partial_vertical_scroll() {
-    const TEXT: &str = "Wrapped viewport regression text with enough words \
-         to occupy many lines in a narrow spreadsheet column.";
+    let text = "Wrapped text must stay within both the worksheet cell \
+        and the viewport during vertical scrolling. "
+        .repeat(40);
 
-    let mut h = harness(|s| {
+    let mut h = harness_with_size(egui::vec2(1200.0, 520.0), |s| {
         s.execute("home.columnWidth", json!({"cols": "B:B", "chars": 12})).unwrap();
-        s.execute("cell.set", json!({"cell": "B3", "input": TEXT})).unwrap();
+        s.execute("cell.set", json!({"cell": "B3", "input": text})).unwrap();
         s.execute("home.wrapText", json!({"range": "B3", "on": true})).unwrap();
         s.execute("home.formatCells", json!({"range": "B3", "style": {"align": {"v": "Top"}}})).unwrap();
-        s.execute("home.rowHeight", json!({"rows": "3:3", "height": 76})).unwrap();
+        s.execute("home.rowHeight", json!({"rows": "3:3", "height": 350})).unwrap();
     });
 
-    let original_cell = cell_rect(&h, "B3");
-    let original_clip = text_clips(&h, TEXT);
-    assert_eq!(original_clip.len(), 1);
+    let initial_cell = cell_rect(&h, "B3");
+
+    let (target_center, zoom) = {
+        let app = h.state();
+        let sheet = app.session.active().unwrap().wb.active().unwrap();
+        let geo = Geo::new(sheet, app.grid.rect.unwrap(), app.view().scroll);
+
+        let shapes: Vec<_> = h
+            .output()
+            .shapes
+            .iter()
+            .filter_map(|shape| match &shape.shape {
+                Shape::Text(t) if t.galley.job.text == text => Some(t),
+                _ => None,
+            })
+            .collect();
+
+        assert_eq!(shapes.len(), 1, "expected wrapped B3 text");
+
+        let painted = shapes[0];
+
+        let center = painted
+            .galley
+            .rows
+            .iter()
+            .map(|row| {
+                let top = painted.pos.y + row.rect().top();
+                let bottom = painted.pos.y + row.rect().bottom();
+                (top, bottom)
+            })
+            .find(|(top, bottom)| {
+                let center = (top + bottom) / 2.0;
+                center > geo.cells.bottom() + 32.0 && *bottom < initial_cell.bottom() - 1.0
+            })
+            .map(|(top, bottom)| (top + bottom) / 2.0)
+            .expect("fixture must provide a cell-fitting line below the viewport");
+
+        (center, geo.z)
+    };
+
+    let viewport_bottom_before_scroll = {
+        let app = h.state();
+        let sheet = app.session.active().unwrap().wb.active().unwrap();
+        let geo = Geo::new(sheet, app.grid.rect.unwrap(), app.view().scroll);
+        geo.cells.bottom()
+    };
 
     {
         let app = h.state_mut();
-        let sheet = app.session.active().unwrap().wb.active().unwrap();
-        let scroll = sheet.row_top(2) as f32 + 8.0;
-        app.view_mut().unwrap().scroll.y = scroll;
+        app.view_mut().unwrap().scroll.y = (target_center - viewport_bottom_before_scroll) / zoom;
     }
 
     h.run_steps(4);
 
     let cell = cell_rect(&h, "B3");
-    let app = h.state();
-    let sheet = app.session.active().unwrap().wb.active().unwrap();
-    let geo = Geo::new(sheet, app.grid.rect.unwrap(), app.view().scroll);
-    let viewport = geo.cells;
+
+    let (viewport, scroll_zoom) = {
+        let app = h.state();
+        let sheet = app.session.active().unwrap().wb.active().unwrap();
+        let geo = Geo::new(sheet, app.grid.rect.unwrap(), app.view().scroll);
+        (geo.cells, geo.z)
+    };
+
+    assert!(scroll_zoom > 0.0);
 
     let shapes: Vec<_> = h
         .output()
         .shapes
         .iter()
         .filter_map(|shape| match &shape.shape {
-            Shape::Text(t) if t.galley.job.text == TEXT => Some((t, shape.clip_rect)),
+            Shape::Text(t) if t.galley.job.text == text => Some((t, shape.clip_rect)),
             _ => None,
         })
         .collect();
 
-    assert_eq!(shapes.len(), 1, "B3 must remain visible after scrolling");
+    assert_eq!(shapes.len(), 1, "B3 must remain painted");
 
-    let (text, clip) = shapes[0];
+    let (painted, clip) = shapes[0];
 
-    assert!(clip.top() > cell.top() + 1.0, "test must scroll through B3: clip={clip:?}, cell={cell:?}");
+    assert!(clip.top() >= viewport.top() - 0.5, "clip exceeds viewport top: {clip:?} vs {viewport:?}");
 
-    assert!(clip.top() >= viewport.top() - 0.5, "text must not paint above viewport: {clip:?} vs {viewport:?}");
+    assert!(clip.bottom() <= viewport.bottom() + 0.5, "clip exceeds viewport bottom: {clip:?} vs {viewport:?}");
 
-    assert!(clip.bottom() <= cell.bottom() + 0.5, "text must stay within B3: {clip:?} vs {cell:?}");
+    assert!(clip.bottom() <= cell.bottom() + 0.5, "clip exceeds cell bottom: {clip:?} vs {cell:?}");
 
     let full_line_bottoms: Vec<f32> =
-        text.galley.rows.iter().map(|row| text.pos.y + row.rect().bottom()).filter(|bottom| *bottom <= cell.bottom() + 0.01).collect();
+        painted.galley.rows.iter().map(|row| painted.pos.y + row.rect().bottom()).filter(|bottom| *bottom <= cell.bottom() + 0.01).collect();
 
-    let expected_bottom = full_line_bottoms.last().copied().expect("at least one wrapped line must fit B3");
+    let cell_line_bottom = full_line_bottoms.last().copied().expect("at least one line must fit within B3");
+
+    assert!(
+        painted.galley.rows.iter().any(|row| {
+            let top = painted.pos.y + row.rect().top();
+            let bottom = painted.pos.y + row.rect().bottom();
+
+            top + 0.5 < viewport.bottom() && viewport.bottom() < bottom - 0.5 && bottom <= cell.bottom() + 0.01
+        }),
+        "viewport bottom must cross a line that fits B3: \
+         viewport={viewport:?}, cell={cell:?}"
+    );
+
+    let expected_bottom = viewport.bottom().min(cell_line_bottom);
 
     assert!(
         (clip.bottom() - expected_bottom).abs() <= 0.5,
-        "scrolling must preserve complete-line clipping: \
-         clip={clip:?}, expected_bottom={expected_bottom:.2}"
+        "clip must respect viewport and complete-line limits: \
+         clip={clip:?}, expected={expected_bottom:.2}"
     );
-
-    assert!(original_cell.height() > 0.0 && original_clip[0].height() > 0.0, "unscrolled B3 must display text");
 }

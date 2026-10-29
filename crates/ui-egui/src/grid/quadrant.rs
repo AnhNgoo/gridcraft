@@ -65,6 +65,14 @@ fn mirror_shape(shape: &mut egui::Shape, axis: f32) {
     }
 }
 
+/// Paint a worksheet quadrant, including cell backgrounds, borders, and text.
+///
+/// Cell content is clipped to its drawing region and the current painter
+/// viewport. For top-aligned wrapped text, only complete lines that fit
+/// within the cell height are painted, preventing fragments of an additional
+/// line from appearing against the next row's border.
+///
+/// Other vertical alignment modes retain their existing rendering behavior.
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn paint_quadrant(
     p: &Painter,
