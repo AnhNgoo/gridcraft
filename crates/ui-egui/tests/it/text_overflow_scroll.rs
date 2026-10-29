@@ -113,6 +113,45 @@ fn scrolled_overflow_does_not_draw_over_frozen_columns() {
     assert!(clips.iter().all(|r| !r.intersects(a1.shrink(1.0))), "C1's overflow stays out of frozen column A: {clips:?}");
 }
 
+/// Fully fitting wrapped lines retain the whole cell clip, including
+/// room for glyphs extending below their logical line boxes.
+#[test]
+fn wrapped_text_fitting_lines_keep_full_cell_clip() {
+    const TEXT: &str = "Short wrapped text with two or three lines.";
+
+    let h = harness(|s| {
+        s.execute("home.columnWidth", json!({"cols": "B:B", "chars": 15})).unwrap();
+        s.execute("cell.set", json!({"cell": "B3", "input": TEXT})).unwrap();
+        s.execute("home.wrapText", json!({"range": "B3", "on": true})).unwrap();
+        s.execute("home.formatCells", json!({"range": "B3", "style": {"align": {"v": "Top"}}})).unwrap();
+        s.execute("home.rowHeight", json!({"rows": "3:3", "height": 120})).unwrap();
+    });
+
+    let cell = cell_rect(&h, "B3");
+
+    let shapes: Vec<_> = h
+        .output()
+        .shapes
+        .iter()
+        .filter_map(|shape| match &shape.shape {
+            Shape::Text(t) if t.galley.job.text == TEXT => Some((t, shape.clip_rect)),
+            _ => None,
+        })
+        .collect();
+
+    assert_eq!(shapes.len(), 1, "expected one wrapped text shape");
+
+    let (text, clip) = shapes[0];
+
+    assert!(text.galley.rows.len() >= 2, "text must wrap");
+    assert!(text.galley.size().y < cell.height(), "all lines must fit");
+
+    let last_bottom = text.pos.y + text.galley.rows.last().unwrap().rect().bottom();
+
+    assert!(last_bottom < cell.bottom() - 1.0, "room must remain below the final line");
+
+    assert!((clip.bottom() - cell.bottom()).abs() <= 0.5, "full cell clip must be retained: clip={clip:?}, cell={cell:?}");
+}
 /// Issue #2752: fixed-height wrapped cells must not paint
 /// a fraction of a text line against the next row's border.
 #[test]
