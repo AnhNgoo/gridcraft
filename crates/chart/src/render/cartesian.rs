@@ -284,10 +284,10 @@ pub(super) fn cartesian(ctx: &mut Ctx, chart: &Chart, data: &ChartData, area: Bx
                         let len = (pb - pt).abs();
                         if horizontal {
                             let y = c + nslots * bw / 2.0 - (k + 1.0) * bw;
-                            ctx.rect(lo, y, len, bw, s.color, None);
+                            ctx.rect(lo, y, len, bw, s.color, (chart.style == 9).then_some((WHITE, 1.0)));
                         } else {
                             let x = c - nslots * bw / 2.0 + k * bw;
-                            ctx.rect(x, lo, bw, len, s.color, None);
+                            ctx.rect(x, lo, bw, len, s.color, (chart.style == 9).then_some((WHITE, 1.0)));
                         }
                         if labels_on && let Some(v) = s.values.get(j).copied().flatten() {
                             let t = fmt.format(v, None);
