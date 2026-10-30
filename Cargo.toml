@@ -26,7 +26,8 @@ gridcraft-mcp = { path = "crates/mcp" }
 gridcraft-pdf = { path = "crates/pdf" }
 # Every craft-libs crate (craft-update and craft-window here, craft-ui in ui-egui, craft-print in
 # the app) comes from one storytold/craft-libs revision.
-craft-update = { git = "https://github.com/storytold/craft-libs", rev = "92d392cff132eaf53e13afff77f38b5c11b73aa0", version = "=0.1.0", features = ["egui"] }
+# craft-update with storytold/craft-libs#434: the update prompt shows the app's icon, accent and developer.
+craft-update = { git = "https://github.com/storytold/craft-libs", rev = "1065653e75854e9c17e1ff563acdd344c1b185f0", version = "=0.1.0", features = ["egui"] }
 
 # foundation
 thiserror = "2"
