@@ -128,11 +128,15 @@ fn custom_ok(v: &Value, text: &str, op: &str, crit: &str) -> bool {
         // A numeric ordering comparison only matches numbers; blanks and text never do.
         (None, Some(_)) if matches!(op, "<" | "<=" | ">" | ">=") => None,
         _ => {
-            let (lhs, rhs) = if matches!(op, "=" | "<>") { (text.trim(), crit.trim()) } else { (text, crit) };
-            Some(gridcraft_core::compare_text(lhs, rhs))
+            if matches!(op, "=" | "<>") && text.trim().is_empty() && crit.trim().is_empty() && filter_blank(v) != crit.is_empty() {
+                Some(if filter_blank(v) { Ordering::Less } else { Ordering::Greater })
+            } else {
+                let (lhs, rhs) = if matches!(op, "=" | "<>") { (text.trim(), crit.trim()) } else { (text, crit) };
+                Some(gridcraft_core::compare_text(lhs, rhs))
+            }
         }
     };
-    let wild = || crate::cmd::edit::wildcard(&text.to_lowercase(), &crit.to_lowercase());
+    let wild = || crate::cmd::edit::wildcard(&text.trim().to_lowercase(), &crit.trim().to_lowercase());
     match op {
         "=" => {
             if crit.contains(['*', '?']) {
@@ -323,8 +327,14 @@ pub fn filter_values(wb: &Workbook, sheet: usize, col: u32) -> Vec<(String, bool
         // Group equivalent text values without modifying cell contents.
         let is_text = !blank && matches!(v, Value::Text(_));
         let (sort, canonical, label) = if is_text {
-            let normalized = t.trim().to_lowercase();
-            let label = if t.trim().is_empty() { t.clone() } else { t.trim().to_string() };
+            let normalized = t.trim().to_ascii_lowercase();
+            let label = if t.trim().eq_ignore_ascii_case("(Blanks)") {
+                format!("'{}'", t.trim())
+            } else if t.trim().is_empty() {
+                t.clone()
+            } else {
+                t.trim().to_string()
+            };
             ((1, 0, normalized.clone()), normalized, label)
         } else {
             let sort = if blank { sort_key(&Value::Empty) } else { sort_key(&v) };
