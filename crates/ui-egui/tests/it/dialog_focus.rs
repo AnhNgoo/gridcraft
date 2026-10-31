@@ -104,6 +104,8 @@ fn command_search_shows_engine_shortcuts() {
             ("home.alignCenter", if os == OperatingSystem::Mac { "Center  (Cmd+E)" } else { "Center    Home" }),
             ("selection.row", "Select Entire Row  (Shift+Space)"),
             ("selection.column", "Select Entire Column  (Ctrl+Space)"),
+            ("data.group", if os == OperatingSystem::Mac { "Group  (Cmd+Shift+K)" } else { "Group  (Alt+Shift+Right)" }),
+            ("data.ungroup", if os == OperatingSystem::Mac { "Ungroup  (Cmd+Shift+J)" } else { "Ungroup  (Alt+Shift+Left)" }),
         ] {
             h.state_mut().dialog.as_mut().unwrap().search = query.into();
             h.run_steps(3);
@@ -152,6 +154,8 @@ fn command_palette_shortcuts_come_from_engine_metadata() {
         ("selection.currentRegion", "Ctrl+Shift+8"),
         ("home.alignLeft", "Cmd+L"),
         ("home.alignCenter", "Cmd+E"),
+        ("data.group", "Alt+Shift+Right"),
+        ("data.ungroup", "Alt+Shift+Left"),
     ] {
         let command = commands.iter().find(|c| c.id == id).unwrap();
         assert_eq!(command.shortcut, Some(expected), "{id}");
