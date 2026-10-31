@@ -97,11 +97,11 @@ fn command_search_shows_engine_shortcuts() {
         h.run_steps(6);
 
         for (query, expected) in [
-            ("home.bold", "Bold  (Cmd+B)"),
+            ("home.bold", if os == OperatingSystem::Mac { "Bold  (Cmd+B)" } else { "Bold  (Ctrl+B)" }),
             ("data.filter", "Filter  (Ctrl+Shift+L)"),
             ("edit.flashFill", "Flash Fill  (Ctrl+E)"),
-            ("home.alignLeft", "Align Left  (Cmd+L)"),
-            ("home.alignCenter", "Center  (Cmd+E)"),
+            ("home.alignLeft", if os == OperatingSystem::Mac { "Align Left  (Cmd+L)" } else { "Align Left    Home" }),
+            ("home.alignCenter", if os == OperatingSystem::Mac { "Center  (Cmd+E)" } else { "Center    Home" }),
             ("selection.row", "Select Entire Row  (Shift+Space)"),
             ("selection.column", "Select Entire Column  (Ctrl+Space)"),
         ] {
@@ -132,7 +132,7 @@ fn command_search_shows_paste_special_metadata() {
         h.state_mut().dialog.as_mut().unwrap().search = "edit.pasteSpecial".into();
         h.run_steps(3);
 
-        h.get_by_label_contains("Paste Special…  (Ctrl+Cmd+V)");
+        h.get_by_label_contains(if os == OperatingSystem::Mac { "Paste Special…  (Ctrl+Cmd+V)" } else { "Paste Special…  (Ctrl+Alt+V)" });
     }
 }
 

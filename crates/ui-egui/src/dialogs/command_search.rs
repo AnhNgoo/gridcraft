@@ -20,6 +20,7 @@ pub(super) fn command_search(app: &mut SheetApp, ui: &mut egui::Ui, d: &mut Dial
         d.focus_initialized = true;
     }
 
+    let mac = ui.ctx().os() == egui::os::OperatingSystem::Mac;
     let q = d.search.to_ascii_lowercase();
     let cmds: Vec<(String, String, String, Option<String>)> = app
         .session
@@ -27,7 +28,20 @@ pub(super) fn command_search(app: &mut SheetApp, ui: &mut egui::Ui, d: &mut Dial
         .into_iter()
         .filter(|c| c.enabled)
         .filter(|c| q.is_empty() || c.label.to_ascii_lowercase().contains(&q) || c.id.to_ascii_lowercase().contains(&q))
-        .map(|c| (c.id.to_string(), c.label.to_string(), c.menu.join(" › "), c.shortcut.map(str::to_string)))
+        .map(|c| {
+            (
+                c.id.to_string(),
+                c.label.to_string(),
+                c.menu.join(" › "),
+                match (mac, c.id, c.shortcut) {
+                    (false, "home.bold", Some(_)) => Some("Ctrl+B".to_owned()),
+                    (false, "edit.pasteSpecial", Some(_)) => Some("Ctrl+Alt+V".to_owned()),
+                    // These metadata shortcuts are only bound on macOS.
+                    (false, "home.alignLeft" | "home.alignCenter", Some(_)) => None,
+                    (_, _, keys) => keys.map(str::to_string),
+                },
+            )
+        })
         .take(40)
         .collect();
 
