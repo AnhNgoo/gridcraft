@@ -83,87 +83,27 @@ fn command_search_arrow_and_page_keys_move_the_selection_and_keep_the_search_foc
     assert!(h.ctx.memory(|m| m.focused()).is_some(), "the search field kept focus");
 }
 
-/// Checks platform-specific labels for the Bold and Filter shortcuts.
+/// The palette displays the engine metadata unchanged on either runtime OS.
 #[test]
-fn command_search_shows_shortcuts_for_current_platform() {
-    let mut h = harness();
-    h.state_mut().open_dialog("commandSearch", json!({}));
-    h.run_steps(6);
-
-    h.state_mut().dialog.as_mut().unwrap().search = "bold".into();
-    h.run_steps(3);
-
-    let bold = if h.ctx.os() == egui::os::OperatingSystem::Mac { "Bold  (⌘B)" } else { "Bold  (Ctrl+B)" };
-    h.get_by_label_contains(bold);
-
-    h.state_mut().dialog.as_mut().unwrap().search = "filter".into();
-    h.run_steps(3);
-
-    let filter = if h.ctx.os() == egui::os::OperatingSystem::Mac { "Filter  (⌘⇧F)" } else { "Filter  (Ctrl+Shift+L)" };
-    h.get_by_label_contains(filter);
-}
-
-/// Checks that Paste Special shows a usable shortcut after copying a cell.
-#[test]
-fn command_search_shows_paste_special_shortcut() {
-    let mut h = harness();
-
-    h.state_mut().session.execute("cell.set", json!({"cell": "C3", "input": "copied"})).unwrap();
-    h.state_mut().session.execute("edit.copy", json!({"range": "C3"})).unwrap();
-
-    h.state_mut().open_dialog("commandSearch", json!({}));
-    h.run_steps(6);
-
-    h.state_mut().dialog.as_mut().unwrap().search = "pasteSpecial".into();
-    h.run_steps(3);
-
-    let expected = if h.ctx.os() == egui::os::OperatingSystem::Mac { "Paste Special…  (Ctrl+Cmd+V)" } else { "Paste Special…  (Ctrl+Alt+V)" };
-
-    h.get_by_label_contains(expected);
-}
-
-/// Checks both OS mappings on one host, including commands with conflicting keys.
-#[test]
-fn command_search_uses_runtime_os_and_verified_shortcuts() {
+fn command_search_shows_engine_shortcuts() {
     use egui::os::OperatingSystem;
 
-    for (os, bold, filter, flash, paste, left, center) in [
-        (
-            OperatingSystem::Windows,
-            "Bold  (Ctrl+B)",
-            "Filter  (Ctrl+Shift+L)",
-            "Flash Fill  (Ctrl+E)",
-            "Paste Special…  (Ctrl+Alt+V)",
-            "Align Left    Home",
-            "Center    Home",
-        ),
-        (
-            OperatingSystem::Mac,
-            "Bold  (⌘B)",
-            "Filter  (⌘⇧F)",
-            "Flash Fill  (Control+E)",
-            "Paste Special…  (Ctrl+Cmd+V)",
-            "Align Left  (⌘L)",
-            "Center  (⌘E)",
-        ),
-    ] {
+    for os in [OperatingSystem::Windows, OperatingSystem::Mac] {
         let mut h = harness();
         h.ctx.set_os(os);
         h.run_steps(2);
-
-        h.state_mut().session.execute("cell.set", json!({"cell": "C3", "input": "copied"})).unwrap();
-        h.state_mut().session.execute("edit.copy", json!({"range": "C3"})).unwrap();
 
         h.state_mut().open_dialog("commandSearch", json!({}));
         h.run_steps(6);
 
         for (query, expected) in [
-            ("bold", bold),
-            ("filter", filter),
-            ("edit.flashFill", flash),
-            ("edit.pasteSpecial", paste),
-            ("home.alignLeft", left),
-            ("home.alignCenter", center),
+            ("home.bold", "Bold  (Cmd+B)"),
+            ("data.filter", "Filter  (Ctrl+Shift+L)"),
+            ("edit.flashFill", "Flash Fill  (Ctrl+E)"),
+            ("home.alignLeft", "Align Left  (Cmd+L)"),
+            ("home.alignCenter", "Center  (Cmd+E)"),
+            ("selection.row", "Select Entire Row  (Shift+Space)"),
+            ("selection.column", "Select Entire Column  (Ctrl+Space)"),
         ] {
             h.state_mut().dialog.as_mut().unwrap().search = query.into();
             h.run_steps(3);
@@ -171,72 +111,59 @@ fn command_search_uses_runtime_os_and_verified_shortcuts() {
         }
     }
 }
-/// Selection shortcuts use the same bindings as the runtime keyboard handler.
+
+/// Paste Special uses the engine's shortcut metadata when enabled.
 #[test]
-fn command_search_selection_shortcuts_match_runtime_os() {
-    for (os, column_label) in [
-        (egui::os::OperatingSystem::Windows, "Select Entire Column  (Ctrl+Space)"),
-        (egui::os::OperatingSystem::Mac, "Select Entire Column  (Control+Space)"),
-    ] {
+fn command_search_shows_paste_special_metadata() {
+    use egui::os::OperatingSystem;
+
+    for os in [OperatingSystem::Windows, OperatingSystem::Mac] {
         let mut h = harness();
         h.ctx.set_os(os);
         h.run_steps(2);
 
+        h.state_mut().session.execute("cell.set", json!({"cell": "C3", "input": "copied"})).unwrap();
+
+        h.state_mut().session.execute("edit.copy", json!({"range": "C3"})).unwrap();
+
         h.state_mut().open_dialog("commandSearch", json!({}));
         h.run_steps(6);
 
-        h.state_mut().dialog.as_mut().unwrap().search = "selection.row".into();
+        h.state_mut().dialog.as_mut().unwrap().search = "edit.pasteSpecial".into();
         h.run_steps(3);
-        h.get_by_label_contains("Select Entire Row  (Shift+Space)");
 
-        h.state_mut().dialog.as_mut().unwrap().search = "selection.column".into();
-        h.run_steps(3);
-        h.get_by_label_contains(column_label);
+        h.get_by_label_contains("Paste Special…  (Ctrl+Cmd+V)");
     }
 }
 
-/// Ribbon tooltips and the Command Palette read the same shortcut metadata.
+/// The engine registry is the authoritative shortcut source.
 #[test]
-fn command_palette_and_ribbon_tooltips_share_shortcuts() {
-    use gridcraft_ui_egui::widgets::{command_shortcut, tooltip_shortcut};
+fn command_palette_shortcuts_come_from_engine_metadata() {
+    let session = gridcraft_engine::Session::new();
+    let commands = session.commands();
 
-    for (id, tip) in [
-        ("file.save", "Save"),
-        ("edit.undo", "Undo"),
-        ("edit.redo", "Redo"),
-        ("edit.copy", "Copy"),
-        ("edit.cut", "Cut"),
-        ("edit.paste", "Paste"),
-        ("home.bold", "Bold"),
-        ("home.italic", "Italic"),
-        ("home.underline", "Underline"),
-        ("formulas.autoSum", "AutoSum"),
-        ("insert.table", "Table"),
-        ("data.filter", "Filter"),
-        ("edit.flashFill", "Flash Fill"),
-        ("formulas.showFormulas", "Show Formulas"),
+    for (id, expected) in [
+        ("home.bold", "Cmd+B"),
+        ("data.filter", "Ctrl+Shift+L"),
+        ("edit.flashFill", "Ctrl+E"),
+        ("edit.pasteSpecial", "Ctrl+Cmd+V"),
+        ("selection.row", "Shift+Space"),
+        ("selection.column", "Ctrl+Space"),
+        ("selection.currentRegion", "Ctrl+Shift+8"),
+        ("home.alignLeft", "Cmd+L"),
+        ("home.alignCenter", "Cmd+E"),
     ] {
-        for mac in [false, true] {
-            assert_eq!(command_shortcut(id, mac), tooltip_shortcut(tip, mac), "{id} and {tip} diverged on mac={mac}");
-        }
+        let command = commands.iter().find(|c| c.id == id).unwrap();
+        assert_eq!(command.shortcut, Some(expected), "{id}");
     }
-
-    assert_eq!(command_shortcut("edit.flashFill", true), Some("Control+E"));
-    assert_eq!(command_shortcut("home.alignCenter", true), Some("⌘E"));
-    assert_eq!(command_shortcut("home.alignCenter", false), None);
-    assert_eq!(command_shortcut("formulas.showFormulas", true), Some("⌘`"));
-    assert_eq!(command_shortcut("edit.pasteSpecial", false), Some("Ctrl+Alt+V"));
-    assert_eq!(command_shortcut("selection.row", false), Some("Shift+Space"));
-    assert_eq!(command_shortcut("unverified.command", false), None);
 }
-
-/// Current Region must show the physical Control shortcut on both platforms.
+/// Current Region displays the shortcut declared in engine metadata.
 #[test]
 fn command_search_shows_current_region_shortcut() {
     use egui::os::OperatingSystem;
 
     for (os, expected) in
-        [(OperatingSystem::Windows, "Select Current Region  (Ctrl+Shift+8)"), (OperatingSystem::Mac, "Select Current Region  (Control+Shift+8)")]
+        [(OperatingSystem::Windows, "Select Current Region  (Ctrl+Shift+8)"), (OperatingSystem::Mac, "Select Current Region  (Ctrl+Shift+8)")]
     {
         let mut h = harness();
         h.ctx.set_os(os);

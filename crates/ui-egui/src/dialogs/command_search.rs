@@ -1,6 +1,6 @@
 use super::*;
 
-/// Shows enabled commands and their platform-specific keyboard shortcuts.
+/// Shows enabled commands and their shortcuts from engine metadata.
 pub(super) fn command_search(app: &mut SheetApp, ui: &mut egui::Ui, d: &mut Dialog, confirm: &mut bool) {
     let (down, up, home, end, pgup, pgdn) = ui.input_mut(|i| {
         (
@@ -20,15 +20,14 @@ pub(super) fn command_search(app: &mut SheetApp, ui: &mut egui::Ui, d: &mut Dial
         d.focus_initialized = true;
     }
 
-    let mac = ui.ctx().os() == egui::os::OperatingSystem::Mac;
     let q = d.search.to_ascii_lowercase();
-    let cmds: Vec<(String, String, String, Option<&str>)> = app
+    let cmds: Vec<(String, String, String, Option<String>)> = app
         .session
         .commands()
         .into_iter()
         .filter(|c| c.enabled)
         .filter(|c| q.is_empty() || c.label.to_ascii_lowercase().contains(&q) || c.id.to_ascii_lowercase().contains(&q))
-        .map(|c| (c.id.to_string(), c.label.to_string(), c.menu.join(" › "), crate::widgets::command_shortcut(c.id, mac)))
+        .map(|c| (c.id.to_string(), c.label.to_string(), c.menu.join(" › "), c.shortcut.map(str::to_string)))
         .take(40)
         .collect();
 

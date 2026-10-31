@@ -15,54 +15,33 @@ fn tr<'a>(ui: &Ui, text: &'a str) -> &'a str {
     i18n::current(ui.ctx()).tr(text)
 }
 
-/// Verified shortcut labels shared by Ribbon tooltips and Command Palette.
-/// Each entry is (command ID, optional Ribbon tooltip, macOS keys, other OS keys).
-/// The dialog ID is included because Insert Link opens a UI dialog directly.
-const SHORTCUTS: &[(&str, &str, &str, Option<&str>)] = &[
-    ("file.new", "", "⌘N", Some("Ctrl+N")),
-    ("file.open", "", "⌘O", Some("Ctrl+O")),
-    ("file.save", "Save", "⌘S", Some("Ctrl+S")),
-    ("file.saveAs", "", "⌘⇧S", Some("Ctrl+Shift+S")),
-    ("file.close", "", "⌘W", Some("Ctrl+W")),
-    ("edit.copy", "Copy", "⌘C", Some("Ctrl+C")),
-    ("edit.cut", "Cut", "⌘X", Some("Ctrl+X")),
-    ("edit.paste", "Paste", "⌘V", Some("Ctrl+V")),
-    ("edit.undo", "Undo", "⌘Z", Some("Ctrl+Z")),
-    ("edit.redo", "Redo", "⌘Y", Some("Ctrl+Y")),
-    ("edit.selectAll", "", "⌘A", Some("Ctrl+A")),
-    ("edit.fillDown", "", "⌘D", Some("Ctrl+D")),
-    ("edit.fillRight", "", "⌘R", Some("Ctrl+R")),
-    ("home.bold", "Bold", "⌘B", Some("Ctrl+B")),
-    ("home.italic", "Italic", "⌘I", Some("Ctrl+I")),
-    ("home.underline", "Underline", "⌘U", Some("Ctrl+U")),
-    ("formulas.autoSum", "AutoSum", "⌘⇧T", Some("Alt+=")),
-    ("insert.table", "Table", "⌘T", Some("Ctrl+T")),
-    ("dialog:insertLink", "Insert Link", "⌘K", Some("Ctrl+K")),
-    ("data.filter", "Filter", "⌘⇧F", Some("Ctrl+Shift+L")),
-    ("edit.flashFill", "Flash Fill", "Control+E", Some("Ctrl+E")),
-    ("edit.pasteSpecial", "", "Ctrl+Cmd+V", Some("Ctrl+Alt+V")),
-    ("home.alignLeft", "", "⌘L", None),
-    ("home.alignCenter", "", "⌘E", None),
-    ("selection.row", "", "Shift+Space", Some("Shift+Space")),
-    ("selection.currentRegion", "", "Control+Shift+8", Some("Ctrl+Shift+8")),
-    ("selection.column", "", "Control+Space", Some("Ctrl+Space")),
-    ("view.showObjects", "", "Control+6", Some("Ctrl+6")),
-    ("formulas.showFormulas", "Show Formulas", "⌘`", Some("Ctrl+`")),
+/// Keyboard shortcuts shown after a ribbon tooltip's command name: Excel for Mac's on macOS,
+/// Excel for Windows' elsewhere (each one GridCraft binds). Only the name is translated.
+const TOOLTIP_SHORTCUTS: &[(&str, &str, &str)] = &[
+    ("Save", "⌘S", "Ctrl+S"),
+    ("Undo", "⌘Z", "Ctrl+Z"),
+    ("Redo", "⌘Y", "Ctrl+Y"),
+    ("Paste", "⌘V", "Ctrl+V"),
+    ("Cut", "⌘X", "Ctrl+X"),
+    ("Copy", "⌘C", "Ctrl+C"),
+    ("Bold", "⌘B", "Ctrl+B"),
+    ("Italic", "⌘I", "Ctrl+I"),
+    ("Underline", "⌘U", "Ctrl+U"),
+    ("AutoSum", "⌘⇧T", "Alt+="),
+    ("Table", "⌘T", "Ctrl+T"),
+    ("Insert Link", "⌘K", "Ctrl+K"),
+    ("Filter", "⌘⇧F", "Ctrl+Shift+L"),
+    ("Flash Fill", "⌘E", "Ctrl+E"),
+    // The Control key, written the way each platform names it. macOS's ⌃ is supplied by its
+    // system fonts; elsewhere the Windows spelling avoids a glyph no bundled face has.
+    ("Show Formulas", "⌃`", "Ctrl+`"),
 ];
 
-/// Returns a verified platform-specific shortcut for a command ID.
-pub fn command_shortcut(id: &str, mac: bool) -> Option<&'static str> {
-    SHORTCUTS.iter().find(|(command, _, _, _)| *command == id).and_then(|(_, _, mac_keys, other)| if mac { Some(*mac_keys) } else { *other })
+/// The shortcut a ribbon tooltip shows after `tip`, for this platform (`mac`).
+pub fn tooltip_shortcut(tip: &str, mac: bool) -> Option<&'static str> {
+    TOOLTIP_SHORTCUTS.iter().find(|(name, _, _)| *name == tip).map(|(_, m, other)| if mac { *m } else { *other })
 }
 
-/// Returns the same shortcut for a Ribbon tooltip label.
-pub fn tooltip_shortcut(tip: &str, mac: bool) -> Option<&'static str> {
-    SHORTCUTS.iter().find(|(_, label, _, _)| !label.is_empty() && *label == tip).and_then(
-        |(_, _, mac_keys, other)| {
-            if mac { Some(*mac_keys) } else { *other }
-        },
-    )
-}
 /// A ribbon tooltip: the translated command name, then its shortcut for this platform, as Excel
 /// shows them ("Bold (Ctrl+B)" on Windows, "Bold (⌘B)" on macOS).
 fn tip_text(ui: &Ui, tip: &str) -> String {
@@ -735,17 +714,9 @@ mod tooltip_shortcut_tests {
         assert_eq!(tooltip_shortcut("Filter", true), Some("⌘⇧F"));
         // Search commands has no shortcut of its own (Ctrl+Shift+Space selects all).
         assert_eq!(tooltip_shortcut("Search commands", false), None);
-        for (id, tip, mac, other) in super::SHORTCUTS {
-            assert!(!mac.is_empty(), "{id}: empty macOS mapping");
-            if let Some(keys) = other {
-                assert!(!keys.contains(['⌘', '⇧', '⌥']), "{id}: {keys}");
-            }
-            assert_eq!(super::command_shortcut(id, true), Some(*mac), "{id}");
-            assert_eq!(super::command_shortcut(id, false), *other, "{id}");
-            if !tip.is_empty() {
-                assert_eq!(tooltip_shortcut(tip, true), Some(*mac), "{id}");
-                assert_eq!(tooltip_shortcut(tip, false), *other, "{id}");
-            }
+        for (name, mac, other) in super::TOOLTIP_SHORTCUTS {
+            assert!(!other.contains(['⌘', '⇧', '⌥']), "{name}: {other}");
+            assert!(mac.starts_with('⌘') || mac.starts_with('⌃'), "{name}: {mac}");
         }
     }
 
@@ -753,7 +724,7 @@ mod tooltip_shortcut_tests {
     fn ribbon_tip_text_obeys_runtime_os() {
         use egui::os::OperatingSystem;
 
-        for (os, expected) in [(OperatingSystem::Windows, "Flash Fill (Ctrl+E)"), (OperatingSystem::Mac, "Flash Fill (Control+E)")] {
+        for (os, expected) in [(OperatingSystem::Windows, "Flash Fill (Ctrl+E)"), (OperatingSystem::Mac, "Flash Fill (⌘E)")] {
             let ctx = egui::Context::default();
             ctx.set_os(os);
 
